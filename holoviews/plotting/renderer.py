@@ -7,15 +7,18 @@ from __future__ import annotations
 
 import base64
 import os
+import typing as t
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from functools import partial
 from io import BytesIO, StringIO
+from pathlib import Path
 
 import param
 from bokeh.document import Document
 from bokeh.embed import file_html
 from bokeh.io import curdoc
-from bokeh.resources import CDN, INLINE
+from bokeh.resources import CDN, INLINE, Resources as BokehResources
 from panel import config
 from panel.io.notebook import (
     JupyterCommManagerBinary,
@@ -90,6 +93,28 @@ static_template = """
   </body>
 </html>
 """
+
+
+@dataclass
+class SaveContext:
+    obj: t.Any = None
+    target: t.Union[str, BytesIO, StringIO, None] = None
+    is_path_str: bool = False
+    is_file_obj: bool = False
+    path_base: str = ""
+    fmt: str = "auto"
+    original_fmt: str = "auto"
+    widget_mode: t.Optional[str] = None
+    file_ext: t.Optional[str] = None
+    resources: t.Any = None
+    resources_str: str = "cdn"
+    title: str = "HoloViews Plot"
+    toolbar_mode: t.Any = None
+    plotly_config: dict = field(default_factory=dict)
+    plot: t.Any = None
+    is_viewable: bool = False
+    options: t.Optional[dict] = None
+    extra: dict = field(default_factory=dict)
 
 
 class Renderer(Exporter):
@@ -628,6 +653,145 @@ class Renderer(Exporter):
         raise NotImplementedError
 
     @bothmethod
+    def _normalize_save_context(
+        self_or_cls,
+        obj,
+        basename,
+        fmt="auto",
+        resources="cdn",
+        title=None,
+        toolbar=None,
+        options=None,
+        **extra,
+    ):
+        """Build a SaveContext with everything except ``ctx.plot``.
+
+        Path/format inference, resource normalization, and title
+        resolution are done here. Plot validation (``_validate``) is
+        intentionally deferred so that backends can apply
+        backend-specific opts (e.g. Bokeh toolbar) before constructing
+        the plot.
+        """
+        ctx = SaveContext()
+        ctx.obj = obj
+        ctx.original_fmt = fmt
+        ctx.options = options
+        ctx.extra = extra
+
+        if isinstance(basename, Path):
+            basename = str(basename.absolute())
+
+        ctx.target = basename
+        ctx.is_path_str = isinstance(basename, str)
+        ctx.is_file_obj = isinstance(basename, (BytesIO, StringIO))
+
+        supported = [
+            mfmt for tformats in self_or_cls.mode_formats.values() for mfmt in tformats
+        ]
+
+        if ctx.is_path_str:
+            parts = basename.split(".")
+            if fmt == "auto" and parts and parts[-1] != "html":
+                fmt = parts[-1]
+            if parts[-1] in supported:
+                basename = ".".join(parts[:-1])
+                ctx.target = basename
+            ctx.path_base = os.path.basename(basename)
+
+        if fmt in ("widgets", "scrubber"):
+            ctx.widget_mode = fmt
+            resolved_ext = "html"
+        else:
+            ctx.widget_mode = None
+            resolved_ext = fmt if fmt != "auto" else None
+
+        ctx.fmt = fmt
+        if resolved_ext is not None:
+            ctx.file_ext = resolved_ext
+
+        if isinstance(resources, str):
+            resources_str = resources.lower()
+        else:
+            resources_str = "inline"
+        ctx.resources_str = resources_str
+
+        if isinstance(resources, BokehResources):
+            ctx.resources = resources
+        elif resources_str == "cdn":
+            ctx.resources = CDN
+        else:
+            ctx.resources = INLINE
+
+        if title is not None and title != "":
+            ctx.title = title
+        elif ctx.is_path_str and ctx.path_base:
+            ctx.title = ctx.path_base
+        else:
+            ctx.title = "HoloViews Plot"
+
+        if toolbar is None:
+            ctx.toolbar_mode = "default"
+        elif toolbar is True:
+            ctx.toolbar_mode = "show"
+        elif toolbar is False:
+            ctx.toolbar_mode = "hide"
+        else:
+            ctx.toolbar_mode = toolbar
+
+        return ctx
+
+    @bothmethod
+    def _build_plot(self_or_cls, ctx: SaveContext):
+        """Populate ``ctx.plot`` / ``ctx.is_viewable`` / ``ctx.file_ext``
+        by running ``_validate`` on the (possibly opts-modified) object.
+
+        Backends call this after applying any backend-specific opts
+        (such as Bokeh toolbar adjustments).
+        """
+        options = ctx.options
+        extra = ctx.extra
+        obj = ctx.obj if ctx.obj is not None else ctx.plot
+        fmt = ctx.fmt
+
+        if options or extra:
+            with StoreOptions.options(obj, options, **extra):
+                plot, validated_fmt = self_or_cls._validate(obj, fmt)
+        else:
+            plot, validated_fmt = self_or_cls._validate(obj, fmt)
+
+        ctx.plot = plot
+        ctx.is_viewable = isinstance(plot, Viewable)
+        ctx.fmt = validated_fmt
+        if ctx.file_ext is None or ctx.file_ext not in MIME_TYPES:
+            ctx.file_ext = validated_fmt
+
+        return ctx
+
+    @bothmethod
+    def _write_output(self_or_cls, ctx: SaveContext, encoded: bytes | str):
+        """Write encoded data to the target described by ``ctx``.
+
+        Handles path extension (avoiding duplicates) and BytesIO/StringIO
+        seek reset uniformly across backends.
+        """
+        if ctx.is_file_obj:
+            data = encoded.encode("utf-8") if isinstance(encoded, str) else encoded
+            ctx.target.write(data)
+            ctx.target.seek(0)
+            return
+
+        if ctx.is_path_str:
+            ext = "." + ctx.file_ext
+            path = ctx.target if ctx.target.endswith(ext) else ctx.target + ext
+            mode = "wb" if isinstance(encoded, (bytes, bytearray)) else "w"
+            if mode == "w" and isinstance(encoded, (bytes, bytearray)):
+                encoded = encoded.decode("utf-8")
+            elif mode == "wb" and isinstance(encoded, str):
+                encoded = encoded.encode("utf-8")
+            with open(path, mode) as f:
+                f.write(encoded)
+
+    @bothmethod
     def save(
         self_or_cls,
         obj,
@@ -638,11 +802,14 @@ class Renderer(Exporter):
         options=None,
         resources="inline",
         title=None,
+        toolbar=None,
         **kwargs,
     ):
         """Save a HoloViews object to file, either using an explicitly
         supplied format or to the appropriate default.
 
+        Backend subclasses should override ``_save_from_context`` rather
+        than this method to consume the shared :class:`SaveContext`.
         """
         if info is None:
             info = {}
@@ -659,40 +826,35 @@ class Renderer(Exporter):
                 "the next minor release."
             )
 
-        with StoreOptions.options(obj, options, **kwargs):
-            plot, fmt = self_or_cls._validate(obj, fmt)
+        ctx = self_or_cls._normalize_save_context(
+            obj,
+            basename,
+            fmt=fmt,
+            resources=resources,
+            title=title,
+            toolbar=toolbar,
+            options=options,
+        )
+        self_or_cls._save_from_context(ctx)
 
-        if isinstance(resources, str):
-            resources = resources.lower()
+    @bothmethod
+    def _save_from_context(self_or_cls, ctx: SaveContext):
+        """Default save implementation consuming a normalized SaveContext.
 
-        is_path_str = isinstance(basename, str)
-        is_file_obj = isinstance(basename, (BytesIO, StringIO))
+        Subclasses (BokehRenderer, PlotlyRenderer) should override this
+        to handle backend-specific concerns. Backend implementations
+        should call ``_build_plot(ctx)`` after applying any
+        backend-specific opts, then dispatch based on ``ctx.is_viewable``.
+        """
+        self_or_cls._build_plot(ctx)
 
-        if is_path_str:
-            if title is None:
-                title = os.path.basename(basename) or "HoloViews Plot"
-        elif title is None:
-            title = "HoloViews Plot"
-
-        if isinstance(plot, Viewable):
-            from bokeh.resources import CDN, INLINE, Resources
-
-            if isinstance(resources, str):
-                if resources == "cdn":
-                    resources = CDN
-                elif resources == "inline":
-                    resources = INLINE
-            elif not isinstance(resources, Resources):
-                resources = INLINE
-
-            if is_path_str and fmt in MIME_TYPES:
-                ext = "." + fmt
-                if not basename.endswith(ext):
-                    basename = f"{basename}{ext}"
-            plot.layout.save(basename, embed=True, resources=resources, title=title)
+        if ctx.is_viewable:
+            ctx.plot.layout.save(
+                ctx.target, embed=True, resources=ctx.resources, title=ctx.title
+            )
             return
 
-        rendered = self_or_cls(plot, fmt)
+        rendered = self_or_cls(ctx.plot, ctx.fmt)
         if rendered is None:
             return
         (_data, info) = rendered
@@ -700,17 +862,9 @@ class Renderer(Exporter):
         prefix = self_or_cls._save_prefix(info["file-ext"])
         if prefix:
             encoded = prefix + encoded
-        if is_file_obj:
-            basename.write(encoded)
-            basename.seek(0)
-        else:
-            ext = info["file-ext"]
-            if is_path_str:
-                full_ext = "." + ext
-                if not basename.endswith(full_ext):
-                    basename = f"{basename}{full_ext}"
-            with open(basename, "wb") as f:
-                f.write(encoded)
+        if ctx.file_ext is None:
+            ctx.file_ext = info["file-ext"]
+        self_or_cls._write_output(ctx, encoded)
 
     @bothmethod
     def _save_prefix(self_or_cls, ext):

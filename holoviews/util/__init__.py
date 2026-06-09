@@ -843,53 +843,9 @@ def save(
     renderer_obj = renderer(backend)
     if kwargs:
         renderer_obj = renderer_obj.instance(**kwargs)
-    if isinstance(filename, Path):
-        filename = str(filename.absolute())
-
-    is_filename_str = isinstance(filename, str)
-    supported = [mfmt for tformats in renderer_obj.mode_formats.values() for mfmt in tformats]
-
-    if is_filename_str:
-        formats = filename.split(".")
-        if fmt == "auto" and formats and formats[-1] != "html":
-            fmt = formats[-1]
-        if formats[-1] in supported:
-            filename = ".".join(formats[:-1])
-
-    inferred_fmt = fmt
-    if inferred_fmt in ("widgets", "scrubber"):
-        inferred_fmt = "html"
-
-    if backend == "bokeh":
-        is_png = inferred_fmt == "png" or (
-            is_filename_str and filename.endswith(("png", ".png"))
-        )
-        if toolbar is not None:
-            if toolbar:
-                try:
-                    toolbar_location = (
-                        obj.opts.get().kwargs.get("toolbar_location")
-                        or obj.opts.get().kwargs.get("toolbar")
-                        or "right"
-                    )
-                except Exception:
-                    toolbar_location = "right"
-                obj = obj.opts(
-                    toolbar=toolbar_location, autohide_toolbar=False, backend="bokeh", clone=True
-                )
-            else:
-                obj = obj.opts(toolbar=None, backend="bokeh", clone=True)
-        elif is_png:
-            obj = obj.opts(toolbar=None, backend="bokeh", clone=True)
-
-    if backend == "bokeh":
-        from bokeh.core.validation.warnings import FIXED_SIZING_MODE
-
-        from ..plotting.bokeh.util import silence_warnings
-
-        with silence_warnings(FIXED_SIZING_MODE):
-            return renderer_obj.save(obj, filename, fmt=fmt, resources=resources, title=title)
-    return renderer_obj.save(obj, filename, fmt=fmt, resources=resources, title=title)
+    return renderer_obj.save(
+        obj, filename, fmt=fmt, resources=resources, toolbar=toolbar, title=title
+    )
 
 
 def render(obj, backend: _BackendT | None = None, **kwargs):

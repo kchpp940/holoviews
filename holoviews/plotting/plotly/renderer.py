@@ -9,7 +9,7 @@ from param.parameterized import bothmethod
 
 from ...core import HoloMap
 from ...core.options import Store
-from ..renderer import HTML_TAGS, MIME_TYPES, Renderer
+from ..renderer import HTML_TAGS, MIME_TYPES, Renderer, SaveContext
 from .callbacks import callbacks
 from .util import (
     PLOTLY_GE_6_0_0,
@@ -74,6 +74,41 @@ class PlotlyRenderer(Renderer):
     _loaded = False
 
     _render_with_panel = True
+
+    @bothmethod
+    def _save_from_context(self_or_cls, ctx: SaveContext):
+        """Plotly-specific save consuming a normalized SaveContext.
+
+        Handles:
+          * Extracting and preserving the Plotly figure ``config`` so
+            it survives the round-trip through Panel/HoloViewsPane
+          * Viewable (Panel widget) vs direct figure rendering dispatch
+        """
+        try:
+            fig_dict = self_or_cls.get_plot_state(ctx.obj)
+            ctx.plotly_config = dict(fig_dict.get("config", {}))
+        except Exception:
+            ctx.plotly_config = {}
+
+        self_or_cls._build_plot(ctx)
+
+        if ctx.is_viewable:
+            ctx.plot.layout.save(
+                ctx.target, embed=True, resources=ctx.resources, title=ctx.title
+            )
+            return
+
+        rendered = self_or_cls(ctx.plot, ctx.fmt)
+        if rendered is None:
+            return
+        (_data, info) = rendered
+        encoded = self_or_cls.encode(rendered)
+        prefix = self_or_cls._save_prefix(info["file-ext"])
+        if prefix:
+            encoded = prefix + encoded
+        if ctx.file_ext is None:
+            ctx.file_ext = info["file-ext"]
+        self_or_cls._write_output(ctx, encoded)
 
     @bothmethod
     def get_plot_state(self_or_cls, obj, doc=None, renderer=None, numpy_convert=False, **kwargs):
