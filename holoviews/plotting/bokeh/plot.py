@@ -162,7 +162,7 @@ class BokehPlot(DimensionedPlot, CallbackPlot):
 
         Priority:
         1. link_selections explicit index_cols (if set via streams)
-        2. pandas DataFrame original index (if available)
+        2. pandas DataFrame index, if NOT the default RangeIndex(0..n-1)
         3. np.arange(nrows) as fallback integer identity
 
         Returns a 1D array-like of hashable values that uniquely identify each row.
@@ -184,10 +184,20 @@ class BokehPlot(DimensionedPlot, CallbackPlot):
 
             if isinstance(element.data, pd.DataFrame):
                 idx = element.data.index
-                if idx.nlevels == 1:
-                    return list(idx.values)
-                else:
-                    return [tuple(v) for v in idx.values]
+
+                def _is_default_index(i, n):
+                    if isinstance(i, pd.RangeIndex):
+                        return i.start == 0 and i.step == 1 and i.stop == n
+                    try:
+                        return list(i) == list(range(n))
+                    except Exception:
+                        return False
+
+                if not _is_default_index(idx, nrows):
+                    if idx.nlevels == 1:
+                        return list(idx.values)
+                    else:
+                        return [tuple(v) for v in idx.values]
         except Exception:
             pass
 

@@ -34,7 +34,7 @@ class SelectionIndexExpr:
 
         Priority matches BokehPlot._get_identity_values:
         1. explicit index_cols parameter
-        2. pandas DataFrame original index
+        2. pandas DataFrame index (if NOT default RangeIndex 0..n-1)
         3. element kdims
         4. all dimensions
         """
@@ -44,9 +44,19 @@ class SelectionIndexExpr:
             import pandas as pd
 
             if isinstance(self.data, pd.DataFrame):
-                idx_names = list(self.data.index.names)
-                if idx_names and idx_names != [None]:
-                    return idx_names
+                idx = self.data.index
+                n = len(self.data)
+
+                def _is_default(i, nrows):
+                    if isinstance(i, pd.RangeIndex):
+                        return i.start == 0 and i.step == 1 and i.stop == nrows
+                    try:
+                        return list(i) == list(range(nrows))
+                    except Exception:
+                        return False
+
+                if not _is_default(idx, n):
+                    return list(idx.names)
         except Exception:
             pass
         kdim_names = [d.name for d in self.kdims]
