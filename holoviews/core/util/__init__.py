@@ -2234,7 +2234,10 @@ def bound_range(vals, density, time_unit="us"):
             )
             full_precision_density = compute_density(low, high, len(vals) - 1)
             with np.errstate(over="ignore"):
-                density = round(full_precision_density, sys.float_info.dig)
+                if full_precision_density == 0:
+                    density = 0
+                else:
+                    density = float(f"{full_precision_density:.{sys.float_info.dig}g}")
         if density in (0, np.inf):
             density = full_precision_density
     if density == 0:

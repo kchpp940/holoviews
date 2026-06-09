@@ -1047,6 +1047,17 @@ class regrid(AggregationOperation):
         else:
             coord_dict = {x.name: coords[0], y.name: coords[1]}
 
+        def _convert_dt_to_int(arr, time_unit="ns"):
+            arr = np.asarray(arr)
+            if arr.dtype.kind == "M":
+                return arr.astype(f"datetime64[{time_unit}]").astype("int64")
+            else:
+                result = np.empty(arr.shape, dtype="int64")
+                flat = arr.ravel()
+                for i, v in enumerate(flat):
+                    result[i] = dt_to_int(v, time_unit)
+                return result.reshape(arr.shape)
+
         arrays = {}
         for i, vd in enumerate(element.vdims):
             if element.interface is XArrayInterface:
@@ -1065,9 +1076,9 @@ class regrid(AggregationOperation):
                 arr = element.dimension_values(vd, flat=False)
                 xarr = xr.DataArray(arr, coords=coord_dict, dims=dims)
             if xtype == "datetime":
-                xarr[x.name] = [dt_to_int(v, "ns") for v in xarr[x.name].values]
+                xarr[x.name] = _convert_dt_to_int(xarr[x.name].values)
             if ytype == "datetime":
-                xarr[y.name] = [dt_to_int(v, "ns") for v in xarr[y.name].values]
+                xarr[y.name] = _convert_dt_to_int(xarr[y.name].values)
             arrays[vd.name] = xarr
         return arrays
 

@@ -403,9 +403,15 @@ class Image(Selection2DExpr, Dataset, Raster, SheetCoordinateSystem):
             (x0, x1), (y0, y1) = (self.interface.range(self, kd.name) for kd in self.kdims)
             xstep = (1.0 / self.xdensity) / 2.0
             ystep = (1.0 / self.ydensity) / 2.0
-            if not isinstance(x0, util.datetime_types):
+            if isinstance(x0, util.datetime_types):
+                xstep_td = np.timedelta64(int(round(xstep)), self._time_unit)
+                x0, x1 = (x0 - xstep_td, x1 + xstep_td)
+            else:
                 x0, x1 = (x0 - xstep, x1 + xstep)
-            if not isinstance(y0, util.datetime_types):
+            if isinstance(y0, util.datetime_types):
+                ystep_td = np.timedelta64(int(round(ystep)), self._time_unit)
+                y0, y1 = (y0 - ystep_td, y1 + ystep_td)
+            else:
                 y0, y1 = (y0 - ystep, y1 + ystep)
             bounds = (x0, y0, x1, y1)
         else:

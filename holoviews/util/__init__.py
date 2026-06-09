@@ -841,11 +841,41 @@ def save(
     """
     backend = backend or Store.current_backend
     renderer_obj = renderer(backend)
+    if backend == "bokeh":
+        if toolbar is not None:
+            if toolbar:
+                toolbar_location = obj.opts.get().kwargs.get("toolbar", "right")
+                obj = obj.opts(
+                    toolbar=toolbar_location, autohide_toolbar=False, backend="bokeh", clone=True
+                )
+            else:
+                obj = obj.opts(toolbar=None, backend="bokeh", clone=True)
+        elif not toolbar and (
+            fmt == "png" or (isinstance(filename, str) and filename.endswith("png"))
+        ):
+            obj = obj.opts(toolbar=None, backend="bokeh", clone=True)
     if kwargs:
         renderer_obj = renderer_obj.instance(**kwargs)
-    return renderer_obj.save(
-        obj, filename, fmt=fmt, resources=resources, toolbar=toolbar, title=title
-    )
+    if isinstance(filename, Path):
+        filename = str(filename.absolute())
+    if isinstance(filename, str):
+        supported = [mfmt for tformats in renderer_obj.mode_formats.values() for mfmt in tformats]
+        formats = filename.split(".")
+        if fmt == "auto" and formats and formats[-1] != "html":
+            fmt = formats[-1]
+        if formats[-1] in supported:
+            filename = ".".join(formats[:-1])
+    if backend == "bokeh":
+        # Suppress only the specific validator that warns when `sizing_mode='fixed'`
+        # but width/height are not both set on a Bokeh Plot, this happens in HoloViews
+        # when `.opts(fixed_{width,height}=...)` are set,  which sets width/height to `None`.
+        from bokeh.core.validation.warnings import FIXED_SIZING_MODE
+
+        from ..plotting.bokeh.util import silence_warnings
+
+        with silence_warnings(FIXED_SIZING_MODE):
+            return renderer_obj.save(obj, filename, fmt=fmt, resources=resources, title=title)
+    return renderer_obj.save(obj, filename, fmt=fmt, resources=resources, title=title)
 
 
 def render(obj, backend: _BackendT | None = None, **kwargs):

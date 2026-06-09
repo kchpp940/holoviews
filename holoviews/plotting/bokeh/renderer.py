@@ -16,7 +16,7 @@ from param.parameterized import bothmethod
 
 from ...core import HoloMap, Store
 from ..plot import Plot
-from ..renderer import HTML_TAGS, MIME_TYPES, Renderer, SaveContext
+from ..renderer import HTML_TAGS, MIME_TYPES, Renderer
 from .util import compute_plot_size
 
 default_theme = Theme(json={"attrs": {"Title": {"text_color": "black", "text_font_size": "12pt"}}})
@@ -66,67 +66,6 @@ class BokehRenderer(Renderer):
     def _save_prefix(self_or_cls, ext):
         """Hook to prefix content for instance JS when saving HTML"""
         return
-
-    @bothmethod
-    def _save_from_context(self_or_cls, ctx: SaveContext):
-        """Bokeh-specific save consuming a normalized SaveContext.
-
-        Handles:
-          * FIXED_SIZING_MODE warning suppression
-          * Toolbar mode application (hide / show / default-for-png)
-            — applied as opts BEFORE plot construction so the change
-            actually takes effect
-          * Viewable (Panel widget) vs direct figure rendering dispatch
-        """
-        from bokeh.core.validation.warnings import FIXED_SIZING_MODE
-
-        from .util import silence_warnings
-
-        toolbar_mode = ctx.toolbar_mode
-        is_png = ctx.file_ext == "png"
-        if toolbar_mode == "hide" or (toolbar_mode == "default" and is_png):
-            try:
-                ctx.obj = ctx.obj.opts(toolbar=None, backend="bokeh", clone=True)
-            except Exception:
-                pass
-        elif toolbar_mode == "show":
-            try:
-                opts_kwargs = ctx.obj.opts.get().kwargs
-                toolbar_location = (
-                    opts_kwargs.get("toolbar_location")
-                    or opts_kwargs.get("toolbar")
-                    or "right"
-                )
-                ctx.obj = ctx.obj.opts(
-                    toolbar=toolbar_location,
-                    autohide_toolbar=False,
-                    backend="bokeh",
-                    clone=True,
-                )
-            except Exception:
-                pass
-
-        self_or_cls._build_plot(ctx)
-
-        if ctx.is_viewable:
-            with silence_warnings(FIXED_SIZING_MODE):
-                ctx.plot.layout.save(
-                    ctx.target, embed=True, resources=ctx.resources, title=ctx.title
-                )
-            return
-
-        with silence_warnings(FIXED_SIZING_MODE):
-            rendered = self_or_cls(ctx.plot, ctx.fmt)
-        if rendered is None:
-            return
-        (_data, info) = rendered
-        encoded = self_or_cls.encode(rendered)
-        prefix = self_or_cls._save_prefix(info["file-ext"])
-        if prefix:
-            encoded = prefix + encoded
-        if ctx.file_ext is None:
-            ctx.file_ext = info["file-ext"]
-        self_or_cls._write_output(ctx, encoded)
 
     @bothmethod
     def get_plot(self_or_cls, obj, doc=None, renderer=None, **kwargs):
