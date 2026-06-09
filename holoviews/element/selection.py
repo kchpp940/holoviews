@@ -77,7 +77,7 @@ class SelectionIndexExpr:
                         return [tuple(v) for v in self.data.index.to_flat_index().values]
         except Exception:
             pass
-        vals = [self.dimension_values(c, expanded=False) for c in cols]
+        vals = [self.dimension_values(c, expanded=True) for c in cols]
         if len(vals) == 1:
             return list(vals[0])
         return list(zip(*vals))

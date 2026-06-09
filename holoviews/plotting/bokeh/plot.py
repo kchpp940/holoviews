@@ -161,12 +161,24 @@ class BokehPlot(DimensionedPlot, CallbackPlot):
         """Generate unique identity values for rows of element data.
 
         Priority:
-        1. pandas DataFrame original index (if available)
-        2. link_selections index_cols (if set via streams)
+        1. link_selections explicit index_cols (if set via streams)
+        2. pandas DataFrame original index (if available)
         3. np.arange(nrows) as fallback integer identity
 
         Returns a 1D array-like of hashable values that uniquely identify each row.
         """
+        for stream in getattr(self, "streams", []):
+            ic = getattr(stream, "_index_cols", None)
+            if ic:
+                try:
+                    vals = [element.dimension_values(c, expanded=True) for c in ic]
+                    if len(vals) == 1:
+                        return list(vals[0])
+                    else:
+                        return list(zip(*vals))
+                except Exception:
+                    pass
+
         try:
             import pandas as pd
 
@@ -179,18 +191,6 @@ class BokehPlot(DimensionedPlot, CallbackPlot):
         except Exception:
             pass
 
-        for stream in getattr(self, "streams", []):
-            ic = getattr(stream, "_index_cols", None)
-            if ic:
-                try:
-                    vals = [element.dimension_values(c, expanded=False) for c in ic]
-                    if len(vals) == 1:
-                        return list(vals[0])
-                    else:
-                        return list(zip(*vals))
-                except Exception:
-                    pass
-
         return list(range(nrows))
 
     def _update_selected(self, cds):
@@ -200,6 +200,7 @@ class BokehPlot(DimensionedPlot, CallbackPlot):
             return
         if len(self.selected) == 0:
             cds.selected.indices = []
+            self._hv_selected_ids = []
             for cb in self.callbacks:
                 if isinstance(cb, Selection1DCallback):
                     for s in cb.streams:
@@ -208,21 +209,39 @@ class BokehPlot(DimensionedPlot, CallbackPlot):
 
         ids = cds.data.get("_hv_id")
         if ids is not None:
-            sel_ids = []
-            sel_indices = []
-            for i in self.selected:
-                if isinstance(i, (int, np.integer)) and 0 <= i < len(ids):
-                    sel_indices.append(int(i))
-                    sel_ids.append(ids[i])
+            all_are_ints = all(isinstance(i, (int, np.integer)) for i in self.selected)
+            all_in_range = all_are_ints and all(0 <= int(i) < len(ids) for i in self.selected)
+            if all_in_range:
+                sampled = set(ids[int(i)] for i in self.selected)
+                as_int_set = set(int(i) for i in self.selected)
+                if sampled != as_int_set:
+                    sel_indices = [int(i) for i in self.selected]
+                    sel_ids = [ids[i] for i in sel_indices]
                 else:
-                    sel_ids.append(i)
+                    id_to_idx = {v: i for i, v in enumerate(ids)}
+                    sel_indices = []
+                    sel_ids = []
+                    for v in self.selected:
+                        if v in id_to_idx:
+                            sel_indices.append(id_to_idx[v])
+                            sel_ids.append(v)
+            else:
+                id_to_idx = {v: i for i, v in enumerate(ids)}
+                sel_indices = []
+                sel_ids = []
+                for v in self.selected:
+                    if v in id_to_idx:
+                        sel_indices.append(id_to_idx[v])
+                        sel_ids.append(v)
             cds.selected.indices = sel_indices
+            self._hv_selected_ids = sel_ids
             for cb in self.callbacks:
                 if isinstance(cb, Selection1DCallback):
                     for s in cb.streams:
-                        s.update(index=sel_ids)
+                        s.update(index=sel_indices)
         else:
             cds.selected.indices = self.selected
+            self._hv_selected_ids = list(self.selected)
             for cb in self.callbacks:
                 if isinstance(cb, Selection1DCallback):
                     for s in cb.streams:
