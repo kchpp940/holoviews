@@ -115,7 +115,6 @@ class TestScatterPlot(TestPlotlyPlot):
         assert cd[1][0] == 2.0
         assert np.isnan(cd[2][0])
         assert cd[3][0] == 4.0
-        assert "hovertemplate" in trace
 
     def test_scatter_datetime_resolution(self):
         import pandas as pd
@@ -154,6 +153,13 @@ class TestScatterPlot(TestPlotlyPlot):
         assert cd[0][0] == "a"
         assert cd[1][0] == "b"
         assert cd[2][0] is None
+
+    def test_scatter_no_extra_vdims_no_customdata(self):
+        scatter = hv.Scatter([1, 2, 3])
+        state = self._get_plot_state(scatter)
+        trace = state["data"][0]
+        assert "customdata" not in trace
+        assert "hovertemplate" not in trace
 
 
 class TestMapboxScatterPlot(TestPlotlyPlot):

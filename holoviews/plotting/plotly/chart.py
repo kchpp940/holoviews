@@ -16,8 +16,18 @@ class ChartPlot(ElementPlot):
     def trace_kwargs(cls, is_geo=False, **kwargs):
         return {"type": "scatter"}
 
+    def _hover_coord_indices(self, is_geo=False):
+        """Indices into ``element.dimensions()`` used as plot coordinates.
+
+        These dims are already exposed via the trace's ``x``/``y`` (or
+        ``lon``/``lat``) arrays and are excluded from auto-generated
+        customdata.  Subclasses may override to exclude additional
+        dimensions with special non-hover semantics (e.g. error bars).
+        """
+        return {0, 1}
+
     def get_data(self, element, ranges, style, is_geo=False, **kwargs):
-        dims = element.dimensions()
+        skip = self._hover_coord_indices(is_geo=is_geo)
         if is_geo:
             if self.invert_axes:
                 x = element.dimension_values(1)
@@ -28,42 +38,16 @@ class ChartPlot(ElementPlot):
 
             lon, lat = Tiles.easting_northing_to_lon_lat(x, y)
             datum = {"lon": lon, "lat": lat}
-            extra_vals = []
-            hover_labels = []
-            for i, d in enumerate(dims):
-                if i >= 2:
-                    extra_vals.append(element.dimension_values(i))
-                    hover_labels.append(d.pprint_label)
-            if extra_vals:
-                if len(extra_vals) == 1:
-                    datum["customdata"] = [[v] for v in extra_vals[0]]
-                else:
-                    datum["customdata"] = list(zip(*extra_vals))
-                ht_parts = [
-                    f"<b>{lbl}:</b> %{{customdata[{i}]}}<br>"
-                    for i, lbl in enumerate(hover_labels)
-                ]
-                datum["hovertemplate"] = "".join(ht_parts) + "<extra></extra>"
+            customdata, _labels = self._get_customdata(element, skip_indices=skip)
+            if customdata is not None:
+                datum["customdata"] = customdata
             return [datum]
         else:
             x, y = ("y", "x") if self.invert_axes else ("x", "y")
             datum = {x: element.dimension_values(0), y: element.dimension_values(1)}
-            extra_vals = []
-            hover_labels = []
-            for i, d in enumerate(dims):
-                if i >= 2:
-                    extra_vals.append(element.dimension_values(i))
-                    hover_labels.append(d.pprint_label)
-            if extra_vals:
-                if len(extra_vals) == 1:
-                    datum["customdata"] = [[v] for v in extra_vals[0]]
-                else:
-                    datum["customdata"] = list(zip(*extra_vals))
-                ht_parts = [
-                    f"<b>{lbl}:</b> %{{customdata[{i}]}}<br>"
-                    for i, lbl in enumerate(hover_labels)
-                ]
-                datum["hovertemplate"] = "".join(ht_parts) + "<extra></extra>"
+            customdata, _labels = self._get_customdata(element, skip_indices=skip)
+            if customdata is not None:
+                datum["customdata"] = customdata
             return [datum]
 
 
