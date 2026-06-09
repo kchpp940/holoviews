@@ -41,7 +41,6 @@ from ...core.util import (
     wrap_tuple_streams,
 )
 from ...selection import NoOpSelectionDisplay
-from ...element.selection import get_identity_values
 from ..links import Link
 from ..plot import (
     CallbackPlot,
@@ -158,84 +157,14 @@ class BokehPlot(DimensionedPlot, CallbackPlot):
         """
         raise NotImplementedError
 
-    def _get_identity_values(self, element, nrows):
-        """Generate unique identity values for rows of element data.
-
-        Delegates to the shared :func:`get_identity_values` helper in
-        ``holoviews.element.selection`` so that CDS injection, selection
-        expressions and table reverse-lookup all follow exactly the same
-        priority rules:
-
-        1. link_selections explicit ``index_cols`` (set via streams)
-        2. pandas DataFrame index, if NOT the default RangeIndex(0..n-1)
-        3. element kdims
-        4. ``list(range(nrows))`` as integer fallback
-
-        The streams ``_index_cols`` attribute is resolved here because only
-        the plotting layer has access to its attached streams; the shared
-        helper is backend-agnostic.
-        """
-        resolved_index_cols = None
-        for stream in getattr(self, "streams", []):
-            ic = getattr(stream, "_index_cols", None)
-            if ic:
-                resolved_index_cols = list(ic)
-                break
-        return get_identity_values(element, resolved_index_cols, nrows)
-
     def _update_selected(self, cds):
         from .callbacks import Selection1DCallback
 
-        if self.selected is None:
-            return
-        if len(self.selected) == 0:
-            cds.selected.indices = []
-            self._hv_selected_ids = []
-            for cb in self.callbacks:
-                if isinstance(cb, Selection1DCallback):
-                    for s in cb.streams:
-                        s.update(index=[])
-            return
-
-        ids = cds.data.get("_hv_id")
-        if ids is not None:
-            all_are_ints = all(isinstance(i, (int, np.integer)) for i in self.selected)
-            all_in_range = all_are_ints and all(0 <= int(i) < len(ids) for i in self.selected)
-            if all_in_range:
-                sampled = set(ids[int(i)] for i in self.selected)
-                as_int_set = set(int(i) for i in self.selected)
-                if sampled != as_int_set:
-                    sel_indices = [int(i) for i in self.selected]
-                    sel_ids = [ids[i] for i in sel_indices]
-                else:
-                    id_to_idx = {v: i for i, v in enumerate(ids)}
-                    sel_indices = []
-                    sel_ids = []
-                    for v in self.selected:
-                        if v in id_to_idx:
-                            sel_indices.append(id_to_idx[v])
-                            sel_ids.append(v)
-            else:
-                id_to_idx = {v: i for i, v in enumerate(ids)}
-                sel_indices = []
-                sel_ids = []
-                for v in self.selected:
-                    if v in id_to_idx:
-                        sel_indices.append(id_to_idx[v])
-                        sel_ids.append(v)
-            cds.selected.indices = sel_indices
-            self._hv_selected_ids = sel_ids
-            for cb in self.callbacks:
-                if isinstance(cb, Selection1DCallback):
-                    for s in cb.streams:
-                        s.update(index=sel_indices)
-        else:
-            cds.selected.indices = self.selected
-            self._hv_selected_ids = list(self.selected)
-            for cb in self.callbacks:
-                if isinstance(cb, Selection1DCallback):
-                    for s in cb.streams:
-                        s.update(index=self.selected)
+        cds.selected.indices = self.selected
+        for cb in self.callbacks:
+            if isinstance(cb, Selection1DCallback):
+                for s in cb.streams:
+                    s.update(index=self.selected)
 
     def _init_datasource(self, data):
         """Initializes a data source to be passed into the bokeh glyph."""
@@ -247,13 +176,13 @@ class BokehPlot(DimensionedPlot, CallbackPlot):
 
     def _postprocess_data(self, data):
         """Applies necessary type transformation to the data before
-        it is set on a ColumnDataSource. Injects the hidden _hv_id
-        identity column so selections are mapped by identity, not
-        rendered row number.
+        it is set on a ColumnDataSource.
+
         """
         new_data = {}
         for k, values in data.items():
-            values = decode_bytes(values)
+            values = decode_bytes(values)  # Bytes need decoding to strings
+            # Certain datetime types need to be converted
             if len(values) and isinstance(values[0], cftime_types):
                 if any(v.calendar not in _STANDARD_CALENDARS for v in values):
                     self.param.warning(
@@ -265,22 +194,6 @@ class BokehPlot(DimensionedPlot, CallbackPlot):
                     )
                 values = cftime_to_timestamp(values, "ms")
             new_data[k] = values
-
-        nrows = 0
-        for v in new_data.values():
-            try:
-                nrows = len(v)
-                if nrows > 0:
-                    break
-            except Exception:
-                pass
-        if nrows > 0 and "_hv_id" not in new_data:
-            element = getattr(self, "current_frame", None)
-            if element is None:
-                new_data["_hv_id"] = list(range(nrows))
-            else:
-                new_data["_hv_id"] = self._get_identity_values(element, nrows)
-
         return new_data
 
     def _update_datasource(self, source, data):

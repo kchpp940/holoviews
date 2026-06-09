@@ -17,107 +17,6 @@ from ..util.transform import dim
 from .annotation import HSpan, VSpan
 
 
-def _is_default_dataframe_index(idx, nrows):
-    """Return True if idx is the default RangeIndex(0, nrows, 1) or equivalent.
-
-    Works for any pandas Index type. A non-default index carries usable row
-    identity information and should be preferred over kdims/range(n).
-    """
-    if isinstance(idx, pd.RangeIndex):
-        return idx.start == 0 and idx.step == 1 and idx.stop == nrows
-    try:
-        return list(idx) == list(range(nrows))
-    except Exception:
-        return False
-
-
-def get_identity_columns(element_or_data, index_cols=None, kdim_names=None, all_dim_names=None):
-    """Determine which columns/fields uniquely identify each row.
-
-    Priority matches get_identity_values:
-    1. explicit ``index_cols`` (list of column/index names; may contain ``None``
-       to refer to an unnamed pandas Index level)
-    2. pandas DataFrame index, if NOT the default 0..n-1 range
-    3. ``kdim_names`` (element key dimensions), if provided and non-empty
-    4. ``all_dim_names`` (all element dimensions), as final fallback
-
-    ``element_or_data`` may be any object with a ``.data`` attribute (a HoloViews
-    Dataset) or a raw pandas DataFrame.
-    """
-    if index_cols:
-        return list(index_cols)
-
-    data = getattr(element_or_data, "data", element_or_data)
-    nrows = None
-    try:
-        if isinstance(data, pd.DataFrame):
-            idx = data.index
-            nrows = len(data)
-            if not _is_default_dataframe_index(idx, nrows):
-                return list(idx.names)
-    except Exception:
-        pass
-
-    if kdim_names:
-        return list(kdim_names)
-    if all_dim_names:
-        return list(all_dim_names)
-    return []
-
-
-def get_identity_values(element, index_cols=None, nrows=None):
-    """Return a list of identity values, one per row of ``element``.
-
-    Priority:
-    1. explicit ``index_cols`` resolved via ``element.dimension_values`` or the
-       pandas DataFrame index
-    2. pandas DataFrame index, if NOT the default 0..n-1 range
-    3. element kdims
-    4. ``list(range(nrows))`` as integer fallback
-
-    ``element`` must be a HoloViews Dataset (provide ``.data``, ``.kdims``,
-    ``.dimensions`` and ``.dimension_values``).
-    """
-    kdim_names = [d.name for d in getattr(element, "kdims", [])]
-    dims_attr = getattr(element, "dimensions", None)
-    if callable(dims_attr):
-        all_dim_names = [d.name for d in dims_attr()]
-    else:
-        all_dim_names = [d.name for d in (dims_attr or [])]
-    cols = get_identity_columns(element, index_cols, kdim_names, all_dim_names)
-
-    if cols:
-        data = getattr(element, "data", None)
-        try:
-            if isinstance(data, pd.DataFrame):
-                all_in_index = all(c in data.index.names for c in cols)
-                all_in_cols = all(c is not None and c in data.columns for c in cols)
-                if all_in_index and not all_in_cols:
-                    if len(cols) == 1:
-                        return list(data.index.get_level_values(cols[0]).values)
-                    return [tuple(v) for v in data.index.to_flat_index().values]
-        except Exception:
-            pass
-
-        try:
-            real_cols = [c for c in cols if c is not None]
-            if real_cols:
-                vals = [element.dimension_values(c, expanded=True) for c in real_cols]
-                if len(vals) == 1:
-                    return list(vals[0])
-                if len(vals) > 1:
-                    return list(zip(*vals))
-        except Exception:
-            pass
-
-    if nrows is None:
-        try:
-            nrows = len(getattr(element, "data", element))
-        except Exception:
-            nrows = 0
-    return list(range(nrows))
-
-
 class SelectionIndexExpr:
     _selection_dims = None
 
@@ -130,128 +29,33 @@ class SelectionIndexExpr:
     def _empty_region(self):
         return None
 
-    def _get_identity_columns(self, index_cols=None):
-        """Determine which columns to use as row identity.
-
-        Thin wrapper around the shared module-level ``get_identity_columns``
-        helper so that CDS injection, selection expressions and table
-        reverse-lookup all consult exactly the same priority rules.
-        """
-        kdim_names = [d.name for d in self.kdims]
-        all_dim_names = [d.name for d in self.dimensions()]
-        return get_identity_columns(self, index_cols, kdim_names, all_dim_names)
-
-    def _get_identity_values(self, index_cols=None):
-        """Return identity values for all rows, one value per row.
-
-        Delegates to the shared module-level ``get_identity_values`` helper.
-        """
-        return get_identity_values(self, index_cols)
-
     def _get_index_selection(self, index, index_cols):
         self._index_skip = True
         if not index:
             return None, None, None
-        identity_cols = self._get_identity_columns(index_cols)
-        all_identities = self._get_identity_values(index_cols)
-        nrows = len(all_identities)
-
-        all_are_ints = all(isinstance(i, (int, np.integer)) for i in index)
-        all_in_range = all_are_ints and all(0 <= int(i) < nrows for i in index)
-        if all_in_range:
-            sample_ids = set(all_identities[i] for i in index)
-            index_as_ids = set(int(i) for i in index) if all_are_ints else set()
-            if sample_ids != index_as_ids:
-                indices = [int(i) for i in index]
-            else:
-                indices = None
+        clone_vdims = [vdim.name for vdim in self.vdims if vdim.name not in index_cols]
+        cols = clone_vdims + index_cols
+        ds = self.clone(kdims=index_cols, vdims=clone_vdims, new_type=Dataset)
+        if len(index_cols) == 1:
+            index_dim = index_cols[0]
+            vals = dim(index_dim).apply(ds.iloc[index, cols], expanded=False)
+            if dtype_kind(vals) == "O" and all(isinstance(v, np.ndarray) for v in vals):
+                vals = [v for arr in vals for v in util.unique_iterator(arr)]
+            expr = dim(index_dim).isin(list(util.unique_iterator(vals)))
         else:
-            indices = None
-
-        if indices is None:
-            sel_ids = list(index)
-        else:
-            sel_ids = [all_identities[i] for i in indices]
-
-        try:
-            import pandas as pd
-
-            if isinstance(self.data, pd.DataFrame) and all(
-                c in self.data.index.names and c not in self.data.columns
-                for c in identity_cols
-            ):
-                def _make_mask_from_index(df_or_data, id_cols=identity_cols, ids=sel_ids):
-                    if not isinstance(df_or_data, pd.DataFrame):
-                        return np.array([False] * len(df_or_data))
-                    if len(id_cols) == 1:
-                        return np.asarray(
-                            df_or_data.index.get_level_values(id_cols[0]).isin(ids)
-                        )
-                    else:
-                        idx_tuples = list(df_or_data.index.to_flat_index())
-                        id_set = set(ids)
-                        return np.array([t in id_set for t in idx_tuples])
-
-                from ..util.transform import dim as _dim
-                return _dim.pipe(_make_mask_from_index, '*'), None, None
-        except Exception:
-            pass
-
-        all_in_dims = all(
-            self.get_dimension(c) is not None for c in identity_cols
-        )
-
-        if not all_in_dims:
-            try:
-                import pandas as pd
-
-                if isinstance(self.data, pd.DataFrame):
-                    id_set = set(sel_ids)
-                    row_ids = self._get_identity_values(identity_cols)
-                    id_to_keep = {rid for rid in row_ids if rid in id_set}
-
-                    def _mask_by_identity(ds_or_data, id_cols=identity_cols, keep_ids=id_to_keep):
-                        from ..element import Dataset as _DS
-                        if isinstance(ds_or_data, pd.DataFrame):
-                            df = ds_or_data
-                            if all(
-                                c in df.index.names and c not in df.columns
-                                for c in id_cols
-                            ):
-                                if len(id_cols) == 1:
-                                    return np.asarray(
-                                        df.index.get_level_values(id_cols[0]).isin(keep_ids)
-                                    )
-                                else:
-                                    ds_tuples = list(df.index.to_flat_index())
-                                    return np.array([t in keep_ids for t in ds_tuples])
-                            else:
-                                return np.array([False] * len(df))
-                        elif hasattr(ds_or_data, "_get_identity_values"):
-                            ds_ids = ds_or_data._get_identity_values(id_cols)
-                            return np.array([rid in keep_ids for rid in ds_ids])
-                        else:
-                            return np.array([False] * len(ds_or_data))
-
-                    from ..util.transform import dim as _dim
-                    return _dim.pipe(_mask_by_identity, '*'), None, None
-            except Exception:
-                pass
-
-        if len(identity_cols) == 1:
-            expr = dim(identity_cols[0]).isin(list(util.unique_iterator(sel_ids)))
-        else:
-            get_shape = dim(self.dataset.get_dimension(identity_cols[0]), np.shape)
-            ic_dims = [dim(self.dataset.get_dimension(c), np.ravel) for c in identity_cols]
-            sel_vals_set = set(sel_ids)
-            contains = dim(ic_dims[0], util.lzip, *ic_dims[1:]).isin(list(sel_vals_set), object=True)
+            get_shape = dim(self.dataset.get_dimension(index_cols[0]), np.shape)
+            index_cols = [dim(self.dataset.get_dimension(c), np.ravel) for c in index_cols]
+            vals = dim(index_cols[0], util.unique_zip, *index_cols[1:]).apply(
+                ds.iloc[index, cols], expanded=True, flat=True
+            )
+            contains = dim(index_cols[0], util.lzip, *index_cols[1:]).isin(vals, object=True)
             expr = dim(contains, np.reshape, get_shape)
         return expr, None, None
 
     def _get_selection_expr_for_stream_value(self, **kwargs):
         index = kwargs.get("index")
         index_cols = kwargs.get("index_cols")
-        if index is None:
+        if index is None or index_cols is None:
             return None, None, None
         return self._get_index_selection(index, index_cols)
 
@@ -467,7 +271,7 @@ class Selection2DExpr(SelectionIndexExpr):
             vals = dim(index_dim).apply(sel, expanded=False, flat=True)
             expr = dim(index_dim).isin(list(util.unique_iterator(vals)))
         else:
-            get_shape = dim(self.dataset.get_dimension(index_cols[0]), np.shape)
+            get_shape = dim(self.dataset.get_dimension(), np.shape)
             index_cols = [dim(self.dataset.get_dimension(c), np.ravel) for c in index_cols]
             vals = dim(index_cols[0], util.unique_zip, *index_cols[1:]).apply(
                 sel, expanded=True, flat=True
@@ -780,10 +584,17 @@ class SelectionBarsExpr(Selection1DExpr):
 
     def _get_selection_expr_for_stream_value(self, **kwargs):
         index = kwargs.get("index")
+        index_cols = kwargs.get("index_cols")
 
-        if "index" in kwargs:
+        if "index" in kwargs and index_cols is None:
             if not index:
                 return None, None, None
-            return self._get_index_selection(index, kwargs.get("index_cols"))
+            kdim = self.kdims[0]
+            cat_vals = self.dimension_values(kdim, expanded=False)
+            clicked = [cat_vals[i] for i in index if 0 <= i < len(cat_vals)]
+            if clicked:
+                expr = dim(kdim).isin(list(util.unique_iterator(clicked)))
+                return expr, None, None
+            return None, None, None
 
         return super()._get_selection_expr_for_stream_value(**kwargs)

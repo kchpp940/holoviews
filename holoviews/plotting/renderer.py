@@ -662,20 +662,33 @@ class Renderer(Exporter):
         with StoreOptions.options(obj, options, **kwargs):
             plot, fmt = self_or_cls._validate(obj, fmt)
 
+        if isinstance(resources, str):
+            resources = resources.lower()
+
+        is_path_str = isinstance(basename, str)
+        is_file_obj = isinstance(basename, (BytesIO, StringIO))
+
+        if is_path_str:
+            if title is None:
+                title = os.path.basename(basename) or "HoloViews Plot"
+        elif title is None:
+            title = "HoloViews Plot"
+
         if isinstance(plot, Viewable):
             from bokeh.resources import CDN, INLINE, Resources
 
-            if isinstance(resources, Resources):
-                pass
-            elif resources.lower() == "cdn":
-                resources = CDN
-            elif resources.lower() == "inline":
+            if isinstance(resources, str):
+                if resources == "cdn":
+                    resources = CDN
+                elif resources == "inline":
+                    resources = INLINE
+            elif not isinstance(resources, Resources):
                 resources = INLINE
-            if isinstance(basename, str):
-                if title is None:
-                    title = os.path.basename(basename)
-                if fmt in MIME_TYPES:
-                    basename = f"{basename}.{fmt}"
+
+            if is_path_str and fmt in MIME_TYPES:
+                ext = "." + fmt
+                if not basename.endswith(ext):
+                    basename = f"{basename}{ext}"
             plot.layout.save(basename, embed=True, resources=resources, title=title)
             return
 
@@ -687,12 +700,16 @@ class Renderer(Exporter):
         prefix = self_or_cls._save_prefix(info["file-ext"])
         if prefix:
             encoded = prefix + encoded
-        if isinstance(basename, (BytesIO, StringIO)):
+        if is_file_obj:
             basename.write(encoded)
             basename.seek(0)
         else:
-            filename = f"{basename}.{info['file-ext']}"
-            with open(filename, "wb") as f:
+            ext = info["file-ext"]
+            if is_path_str:
+                full_ext = "." + ext
+                if not basename.endswith(full_ext):
+                    basename = f"{basename}{full_ext}"
+            with open(basename, "wb") as f:
                 f.write(encoded)
 
     @bothmethod
