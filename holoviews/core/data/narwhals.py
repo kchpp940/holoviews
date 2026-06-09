@@ -284,11 +284,43 @@ class NarwhalsInterface(Interface):
             org_data = org_data.collect()
 
         group_by = [d.name for d in index_dims]
+        has_maintain_order = True
+        try:
+            group_iter = org_data.group_by(group_by, maintain_order=True)
+        except TypeError:
+            has_maintain_order = False
+            group_iter = org_data.group_by(group_by)
         data = []
-        for k, v in org_data.group_by(group_by):
+        for k, v in group_iter:
             if len(group_by) == 1:
                 k = (k,)
             data.append((k, group_type(v, **group_kwargs)))
+
+        if not has_maintain_order and len(data) > 1:
+            try:
+                first_occurrence = {}
+                counter = 0
+                select_cols = org_data.select(group_by)
+                if isinstance(select_cols, nw.LazyFrame):
+                    select_cols = select_cols.collect()
+                native_rows = select_cols.to_native()
+                if hasattr(native_rows, 'itertuples'):
+                    for row in native_rows.itertuples(index=False, name=None):
+                        key = row if len(group_by) > 1 else (row[0],)
+                        if key not in first_occurrence:
+                            first_occurrence[key] = counter
+                            counter += 1
+                else:
+                    for row in native_rows.iter_rows():
+                        key = tuple(row) if len(group_by) > 1 else (row[0],)
+                        if key not in first_occurrence:
+                            first_occurrence[key] = counter
+                            counter += 1
+                def sort_key(item):
+                    return first_occurrence.get(item[0], len(first_occurrence))
+                data.sort(key=sort_key)
+            except Exception:
+                pass
 
         if issubclass(container_type, NdMapping):
             with item_check(False), sorted_context(False):
@@ -313,7 +345,10 @@ class NarwhalsInterface(Interface):
                     k for k, v in columns.items() if isinstance(v, nw.dtypes.NumericType)
                 ]
             all_cols = list(set(numeric_cols) | set(cols))
-            grouped = reindexed.select(all_cols).group_by(cols)
+            try:
+                grouped = reindexed.select(all_cols).group_by(cols, maintain_order=True)
+            except TypeError:
+                grouped = reindexed.select(all_cols).group_by(cols)
             df = grouped.agg(expr, **kwargs)
         else:
             df = reindexed.select(expr, **kwargs)
@@ -384,7 +419,14 @@ class NarwhalsInterface(Interface):
         if by is None:
             by = []
         cols = [dataset.get_dimension(d, strict=True).name for d in by]
-        return dataset.data.sort(by=cols, descending=reverse)
+        if not cols:
+            return dataset.data
+        descending = reverse if isinstance(reverse, (list, tuple)) else [reverse] * len(cols)
+        nulls_last = [True] * len(cols)
+        try:
+            return dataset.data.sort(by=cols, descending=descending, nulls_last=nulls_last)
+        except TypeError:
+            return dataset.data.sort(by=cols, descending=descending)
 
     @classmethod
     def select(cls, dataset, selection_mask=None, **selection):
@@ -417,6 +459,23 @@ class NarwhalsInterface(Interface):
         return df
 
     @classmethod
+    def _coerce_comparison_value(cls, val, dtype):
+        if isinstance(val, np.datetime64):
+            try:
+                import datetime as dt
+                ts = pd.Timestamp(val)
+                if ts.tzinfo is not None:
+                    ts = ts.tz_localize(None)
+                return ts.to_pydatetime()
+            except Exception:
+                return val
+        if isinstance(val, (np.integer,)):
+            return int(val)
+        if isinstance(val, (np.floating,)):
+            return float(val)
+        return val
+
+    @classmethod
     def select_mask(cls, dataset, selection):
         """Given a Dataset object and a dictionary with dimension keys and
         selection keys (i.e. tuple ranges, slices, sets, lists. or literals)
@@ -430,7 +489,8 @@ class NarwhalsInterface(Interface):
                 k = slice(*k)
             name = dataset.get_dimension(dim).name
             dtype = cls.dtype(dataset, name)
-            if util.dtype_kind(dtype) == "M":
+            kind = util.dtype_kind(dtype)
+            if kind == "M":
                 try:
                     k = util.parse_datetime_selection(k)
                 except Exception:
@@ -438,13 +498,16 @@ class NarwhalsInterface(Interface):
             masks = []
             if isinstance(k, slice):
                 if k.start is not None:
-                    masks.append(k.start <= nw.col(name))
+                    start = cls._coerce_comparison_value(k.start, dtype)
+                    masks.append(nw.col(name) >= start)
                 if k.stop is not None:
-                    masks.append(nw.col(name) < k.stop)
+                    stop = cls._coerce_comparison_value(k.stop, dtype)
+                    masks.append(nw.col(name) < stop)
             elif isinstance(k, (set, list)):
                 iter_slc = None
                 for ik in k:
-                    mask = nw.col(name) == ik
+                    cv = cls._coerce_comparison_value(ik, dtype)
+                    mask = nw.col(name) == cv
                     if iter_slc is None:
                         iter_slc = mask
                     else:
@@ -453,7 +516,8 @@ class NarwhalsInterface(Interface):
             elif callable(k):
                 masks.append(nw.col(name).pipe(k))
             else:
-                masks.append(nw.col(name) == k)
+                cv = cls._coerce_comparison_value(k, dtype)
+                masks.append(nw.col(name) == cv)
 
             for mask in masks:
                 if select_mask is not None:
@@ -490,19 +554,26 @@ class NarwhalsInterface(Interface):
         dim = dataset.get_dimension(dim, strict=True)
         data = dataset.data.select(dim.name)
         is_lazy = isinstance(data, nw.LazyFrame)
+        kind = None
+        dtype = None
+
         if not expanded:
             data = data.unique(**({} if is_lazy else {"maintain_order": True}))
+
         if is_lazy:
-            if compute:
-                result = data.collect()[dim.name]
-            else:
+            if not compute:
                 return data
+            data = data.collect()
+            result = data[dim.name]
         else:
             result = data[dim.name]
+
         if keep_index:
             return result
+
         dtype = cls.dtype(dataset, dim)
-        if util.dtype_kind(dtype) == "M":
+        kind = util.dtype_kind(dtype)
+        if kind == "M":
             try:
                 result_nw = result
                 if hasattr(result_nw, "dt") and hasattr(result_nw.dt, "replace_time_zone"):
@@ -521,6 +592,22 @@ class NarwhalsInterface(Interface):
                             values=[_strip_tz(v) for v in result.to_list()],
                             backend=result.implementation if hasattr(result, "implementation") else None,
                         )
+            except Exception:
+                pass
+
+        if hasattr(result, "to_numpy"):
+            try:
+                result = result.to_numpy()
+            except Exception:
+                pass
+        elif hasattr(result, "to_list"):
+            try:
+                result = np.array(result.to_list())
+            except Exception:
+                pass
+        if isinstance(result, np.ndarray) and util.dtype_kind(result) == "M":
+            try:
+                result = result.astype("datetime64[ns]")
             except Exception:
                 pass
         return result
