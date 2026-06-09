@@ -61,7 +61,39 @@ class NarwhalsDtype:
 
     @property
     def type(self):
-        return type(self.dtype)
+        dtype = self.dtype
+        if isinstance(dtype, nw.dtypes.Int64):
+            return np.int64
+        elif isinstance(dtype, nw.dtypes.Int32):
+            return np.int32
+        elif isinstance(dtype, nw.dtypes.Int16):
+            return np.int16
+        elif isinstance(dtype, nw.dtypes.Int8):
+            return np.int8
+        elif isinstance(dtype, nw.dtypes.UInt64):
+            return np.uint64
+        elif isinstance(dtype, nw.dtypes.UInt32):
+            return np.uint32
+        elif isinstance(dtype, nw.dtypes.UInt16):
+            return np.uint16
+        elif isinstance(dtype, nw.dtypes.UInt8):
+            return np.uint8
+        elif isinstance(dtype, nw.dtypes.Float64):
+            return np.float64
+        elif isinstance(dtype, nw.dtypes.Float32):
+            return np.float32
+        elif isinstance(dtype, nw.dtypes.Boolean):
+            return np.bool_
+        elif isinstance(dtype, nw.dtypes.String):
+            return np.str_
+        elif isinstance(dtype, nw.dtypes.Datetime):
+            return np.datetime64
+        elif isinstance(dtype, nw.dtypes.Duration):
+            return np.timedelta64
+        elif isinstance(dtype, nw.dtypes.Categorical):
+            return object
+        else:
+            return type(dtype)
 
 
 class NarwhalsInterface(Interface):
@@ -83,7 +115,7 @@ class NarwhalsInterface(Interface):
 
     @classmethod
     def dimension_type(cls, dataset, dim):
-        return cls.dtype(dataset, dim)
+        return cls.dtype(dataset, dim).type
 
     @classmethod
     def init(cls, eltype, data, kdims, vdims):
@@ -175,29 +207,50 @@ class NarwhalsInterface(Interface):
         dtype = cls.dtype(dataset, dimension)
         name = dimension.name
         is_lazy = isinstance(dataset.data, nw.LazyFrame)
-        df_column = dataset.data.select(name)
-        if util.dtype_kind(dtype) == "O":
-            df_column = df_column.sort(by=name)
-            cmin, cmax = df_column.head(0), df_column.tail(0)
+        kind = util.dtype_kind(dtype)
+        df = dataset.data
+
+        if kind == "O":
+            col = nw.col(name)
+            df_sorted = df.select(col).drop_nulls().sort(name)
             if is_lazy:
-                cmin, cmax = cmin.collect(), cmax.collect()
-            if not len(cmin):
+                df_sorted = df_sorted.collect()
+            if len(df_sorted) == 0:
                 return np.nan, np.nan
-            return cmin.item(), cmax.item()
+            return df_sorted.item(0, name), df_sorted.item(len(df_sorted) - 1, name)
         else:
             col = nw.col(name)
             if dimension.nodata is not None:
-                df_column = df_column.select(nw.when(col != dimension.nodata).then(col))
-            if dataset.data.implementation not in _NO_DROP_NULL:
-                col = nw.col(name).drop_nulls()
-            # NOTE: Some narwhals backends (duckdb) will return nan as
-            # the max value
-            df_column = df_column.select(cmin=col.min(), cmax=col.max())
+                col = nw.when(col != dimension.nodata).then(col)
+            if df.implementation not in _NO_DROP_NULL:
+                col = col.drop_nulls()
+            agg = df.select(cmin=col.min(), cmax=col.max())
             if is_lazy:
-                df_column = df_column.collect()
-            if not len(df_column):
+                agg = agg.collect()
+            if len(agg) == 0:
                 return np.nan, np.nan
-            return df_column.item(0, "cmin"), df_column.item(0, "cmax")
+            cmin = agg.item(0, "cmin")
+            cmax = agg.item(0, "cmax")
+            if cmin is None or cmax is None:
+                return np.nan, np.nan
+            if kind == "M":
+                from ..util.dependencies import pd
+
+                try:
+                    import datetime as dt
+
+                    if hasattr(cmin, "to_pydatetime"):
+                        cmin_py = cmin.to_pydatetime()
+                        cmax_py = cmax.to_pydatetime()
+                        if getattr(cmin_py, "tzinfo", None) is not None:
+                            cmin = cmin_py.replace(tzinfo=None)
+                            cmax = cmax_py.replace(tzinfo=None)
+                    elif isinstance(cmin, dt.datetime) and getattr(cmin, "tzinfo", None) is not None:
+                        cmin = cmin.replace(tzinfo=None)
+                        cmax = cmax.replace(tzinfo=None)
+                except Exception:
+                    pass
+            return cmin, cmax
 
     @classmethod
     def concat_fn(cls, dataframes, **kwargs):
@@ -228,11 +281,14 @@ class NarwhalsInterface(Interface):
 
         org_data = dataset.data
         if isinstance(org_data, nw.LazyFrame):
-            # NOTE(LazyFrame): forced conversion
             org_data = org_data.collect()
 
         group_by = [d.name for d in index_dims]
-        data = [(k, group_type(v, **group_kwargs)) for k, v in org_data.group_by(group_by)]
+        data = []
+        for k, v in org_data.group_by(group_by):
+            if len(group_by) == 1:
+                k = (k,)
+            data.append((k, group_type(v, **group_kwargs)))
 
         if issubclass(container_type, NdMapping):
             with item_check(False), sorted_context(False):
@@ -372,8 +428,14 @@ class NarwhalsInterface(Interface):
         for dim, k in selection.items():
             if isinstance(k, tuple):
                 k = slice(*k)
-            masks = []
             name = dataset.get_dimension(dim).name
+            dtype = cls.dtype(dataset, name)
+            if util.dtype_kind(dtype) == "M":
+                try:
+                    k = util.parse_datetime_selection(k)
+                except Exception:
+                    pass
+            masks = []
             if isinstance(k, slice):
                 if k.start is not None:
                     masks.append(k.start <= nw.col(name))
@@ -429,16 +491,39 @@ class NarwhalsInterface(Interface):
         data = dataset.data.select(dim.name)
         is_lazy = isinstance(data, nw.LazyFrame)
         if not expanded:
-            # LazyFrame does not support maintain_order, it can therefore for some
-            # backends return non-deterministic results even for the same data.
-            # It looks like polars.LazyFrame support it, but not duckdb
             data = data.unique(**({} if is_lazy else {"maintain_order": True}))
         if is_lazy:
             if compute:
-                return data.collect()[dim.name]
+                result = data.collect()[dim.name]
             else:
-                return data  # Cannot slice LazyFrame
-        return data[dim.name]
+                return data
+        else:
+            result = data[dim.name]
+        if keep_index:
+            return result
+        dtype = cls.dtype(dataset, dim)
+        if util.dtype_kind(dtype) == "M":
+            try:
+                result_nw = result
+                if hasattr(result_nw, "dt") and hasattr(result_nw.dt, "replace_time_zone"):
+                    result = result_nw.dt.replace_time_zone(None)
+                else:
+                    import datetime as dt
+
+                    def _strip_tz(v):
+                        if v is not None and isinstance(v, dt.datetime) and getattr(v, "tzinfo", None) is not None:
+                            return v.replace(tzinfo=None)
+                        return v
+
+                    if hasattr(result, "to_list"):
+                        result = nw.new_series(
+                            name=dim.name,
+                            values=[_strip_tz(v) for v in result.to_list()],
+                            backend=result.implementation if hasattr(result, "implementation") else None,
+                        )
+            except Exception:
+                pass
+        return result
 
     @classmethod
     def sample(cls, dataset, samples=None):

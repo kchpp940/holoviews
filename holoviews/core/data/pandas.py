@@ -234,15 +234,20 @@ class PandasInterface(Interface, PandasAPI):
             column = cls.index_values(dataset, dimension)
         else:
             column = dataset.data[dimension.name]
-        if dtype_kind(column) == "O":
+        kind = dtype_kind(column)
+        if kind == "O":
             if not isinstance(dataset.data, pd.DataFrame):
                 column = column.sort(inplace=False)
             else:
                 column = column.sort_values()
             try:
-                column = column[~column.isin([None, pd.NA])]
+                null_mask = column.isna()
+                column = column[~null_mask]
             except Exception:
-                pass
+                try:
+                    column = column[~column.isin([None, pd.NA, np.nan])]
+                except Exception:
+                    pass
             if not len(column):
                 return np.nan, np.nan
             if isinstance(column, pd.Index):
@@ -251,12 +256,22 @@ class PandasInterface(Interface, PandasAPI):
         else:
             if dimension.nodata is not None:
                 column = cls.replace_value(column, dimension.nodata)
-            cmin, cmax = finite_range(column, column.min(), column.max())
-            if dtype_kind(column) == "M" and getattr(column.dtype, "tz", None):
+            if hasattr(column, "dropna"):
+                col_clean = column.dropna()
+            else:
+                col_clean = column
+            if len(col_clean) == 0:
+                return np.nan, np.nan
+            cmin, cmax = finite_range(col_clean, col_clean.min(), col_clean.max())
+            if kind == "M" and getattr(getattr(column, "dtype", None), "tz", None):
+                if pd.isna(cmin) or pd.isna(cmax):
+                    return np.nan, np.nan
                 return (
                     cmin.to_pydatetime().replace(tzinfo=None),
                     cmax.to_pydatetime().replace(tzinfo=None),
                 )
+            if kind == "M" and (pd.isna(cmin) or pd.isna(cmax)):
+                return np.nan, np.nan
             return cmin, cmax
 
     @classmethod
