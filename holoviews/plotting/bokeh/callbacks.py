@@ -1327,13 +1327,24 @@ class Selection1DCallback(PopupMixin, Callback):
     def _process_msg(self, msg):
         el = self.plot.current_frame
         if "index" in msg:
-            msg = {"index": [int(v) for v in msg["index"]]}
+            indices = [int(v) for v in msg["index"]]
+            source = self.plot.handles.get("source")
+            if source is not None and "_hv_id" in source.data:
+                hv_ids = source.data["_hv_id"]
+                sel_ids = [hv_ids[i] for i in indices if 0 <= i < len(hv_ids)]
+                msg = {"index": sel_ids}
+            else:
+                msg = {"index": indices}
             if isinstance(el, Table):
-                # Ensure that explicitly applied selection does not
-                # trigger new events
                 sel = el.opts.get("plot").kwargs.get("selected")
-                if sel is not None and list(sel) == msg["index"]:
-                    return {}
+                if sel is not None:
+                    if source is not None and "_hv_id" in source.data:
+                        hv_ids = source.data["_hv_id"]
+                        sel_ids = [hv_ids[i] for i in sel if 0 <= i < len(hv_ids)]
+                        if list(sel_ids) == list(msg["index"]):
+                            return {}
+                    elif list(sel) == msg["index"]:
+                        return {}
             return self._transform(msg)
         else:
             return {}

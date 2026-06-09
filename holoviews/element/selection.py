@@ -29,26 +29,156 @@ class SelectionIndexExpr:
     def _empty_region(self):
         return None
 
+    def _get_identity_columns(self, index_cols=None):
+        """Determine which columns to use as row identity.
+
+        Priority matches BokehPlot._get_identity_values:
+        1. explicit index_cols parameter
+        2. pandas DataFrame original index
+        3. element kdims
+        4. all dimensions
+        """
+        if index_cols:
+            return list(index_cols)
+        try:
+            import pandas as pd
+
+            if isinstance(self.data, pd.DataFrame):
+                idx_names = list(self.data.index.names)
+                if idx_names and idx_names != [None]:
+                    return idx_names
+        except Exception:
+            pass
+        kdim_names = [d.name for d in self.kdims]
+        if kdim_names:
+            return kdim_names
+        return [d.name for d in self.dimensions()]
+
+    def _get_identity_values(self, index_cols=None):
+        """Return identity values for all rows, one value per row.
+
+        For single column identity: 1D list of values.
+        For multi-column identity: list of tuples.
+        """
+        cols = self._get_identity_columns(index_cols)
+        if not cols:
+            n = len(self) if hasattr(self, "__len__") else 0
+            return list(range(n))
+        try:
+            import pandas as pd
+
+            if isinstance(self.data, pd.DataFrame):
+                all_in_index = all(c in self.data.index.names for c in cols)
+                all_in_cols = all(c in self.data.columns for c in cols)
+                if all_in_index and not all_in_cols:
+                    if len(cols) == 1:
+                        return list(self.data.index.get_level_values(cols[0]).values)
+                    else:
+                        return [tuple(v) for v in self.data.index.to_flat_index().values]
+        except Exception:
+            pass
+        vals = [self.dimension_values(c, expanded=False) for c in cols]
+        if len(vals) == 1:
+            return list(vals[0])
+        return list(zip(*vals))
+
     def _get_index_selection(self, index, index_cols):
         self._index_skip = True
         if not index:
             return None, None, None
-        clone_vdims = [vdim.name for vdim in self.vdims if vdim.name not in index_cols]
-        cols = clone_vdims + index_cols
-        ds = self.clone(kdims=index_cols, vdims=clone_vdims, new_type=Dataset)
-        if len(index_cols) == 1:
-            index_dim = index_cols[0]
-            vals = dim(index_dim).apply(ds.iloc[index, cols], expanded=False)
-            if dtype_kind(vals) == "O" and all(isinstance(v, np.ndarray) for v in vals):
-                vals = [v for arr in vals for v in util.unique_iterator(arr)]
-            expr = dim(index_dim).isin(list(util.unique_iterator(vals)))
+        identity_cols = self._get_identity_columns(index_cols)
+        all_identities = self._get_identity_values(index_cols)
+        nrows = len(all_identities)
+
+        all_are_ints = all(isinstance(i, (int, np.integer)) for i in index)
+        all_in_range = all_are_ints and all(0 <= int(i) < nrows for i in index)
+        if all_in_range:
+            sample_ids = set(all_identities[i] for i in index)
+            index_as_ids = set(int(i) for i in index) if all_are_ints else set()
+            if sample_ids != index_as_ids:
+                indices = [int(i) for i in index]
+            else:
+                indices = None
         else:
-            get_shape = dim(self.dataset.get_dimension(index_cols[0]), np.shape)
-            index_cols = [dim(self.dataset.get_dimension(c), np.ravel) for c in index_cols]
-            vals = dim(index_cols[0], util.unique_zip, *index_cols[1:]).apply(
-                ds.iloc[index, cols], expanded=True, flat=True
-            )
-            contains = dim(index_cols[0], util.lzip, *index_cols[1:]).isin(vals, object=True)
+            indices = None
+
+        if indices is None:
+            sel_ids = list(index)
+        else:
+            sel_ids = [all_identities[i] for i in indices]
+
+        try:
+            import pandas as pd
+
+            if isinstance(self.data, pd.DataFrame) and all(
+                c in self.data.index.names and c not in self.data.columns
+                for c in identity_cols
+            ):
+                def _make_mask_from_index(df_or_data, id_cols=identity_cols, ids=sel_ids):
+                    if not isinstance(df_or_data, pd.DataFrame):
+                        return np.array([False] * len(df_or_data))
+                    if len(id_cols) == 1:
+                        return np.asarray(
+                            df_or_data.index.get_level_values(id_cols[0]).isin(ids)
+                        )
+                    else:
+                        idx_tuples = list(df_or_data.index.to_flat_index())
+                        id_set = set(ids)
+                        return np.array([t in id_set for t in idx_tuples])
+
+                from ..util.transform import dim as _dim
+                return _dim.pipe(_make_mask_from_index, '*'), None, None
+        except Exception:
+            pass
+
+        all_in_dims = all(
+            self.get_dimension(c) is not None for c in identity_cols
+        )
+
+        if not all_in_dims:
+            try:
+                import pandas as pd
+
+                if isinstance(self.data, pd.DataFrame):
+                    id_set = set(sel_ids)
+                    row_ids = self._get_identity_values(identity_cols)
+                    id_to_keep = {rid for rid in row_ids if rid in id_set}
+
+                    def _mask_by_identity(ds_or_data, id_cols=identity_cols, keep_ids=id_to_keep):
+                        from ..element import Dataset as _DS
+                        if isinstance(ds_or_data, pd.DataFrame):
+                            df = ds_or_data
+                            if all(
+                                c in df.index.names and c not in df.columns
+                                for c in id_cols
+                            ):
+                                if len(id_cols) == 1:
+                                    return np.asarray(
+                                        df.index.get_level_values(id_cols[0]).isin(keep_ids)
+                                    )
+                                else:
+                                    ds_tuples = list(df.index.to_flat_index())
+                                    return np.array([t in keep_ids for t in ds_tuples])
+                            else:
+                                return np.array([False] * len(df))
+                        elif hasattr(ds_or_data, "_get_identity_values"):
+                            ds_ids = ds_or_data._get_identity_values(id_cols)
+                            return np.array([rid in keep_ids for rid in ds_ids])
+                        else:
+                            return np.array([False] * len(ds_or_data))
+
+                    from ..util.transform import dim as _dim
+                    return _dim.pipe(_mask_by_identity, '*'), None, None
+            except Exception:
+                pass
+
+        if len(identity_cols) == 1:
+            expr = dim(identity_cols[0]).isin(list(util.unique_iterator(sel_ids)))
+        else:
+            get_shape = dim(self.dataset.get_dimension(identity_cols[0]), np.shape)
+            ic_dims = [dim(self.dataset.get_dimension(c), np.ravel) for c in identity_cols]
+            sel_vals_set = set(sel_ids)
+            contains = dim(ic_dims[0], util.lzip, *ic_dims[1:]).isin(list(sel_vals_set), object=True)
             expr = dim(contains, np.reshape, get_shape)
         return expr, None, None
 
@@ -56,12 +186,6 @@ class SelectionIndexExpr:
         index = kwargs.get("index")
         index_cols = kwargs.get("index_cols")
         if index is None:
-            return None, None, None
-        if index_cols is None:
-            index_cols = [d.name for d in self.kdims]
-            if not index_cols:
-                index_cols = [d.name for d in self.dimensions()]
-        if not index_cols:
             return None, None, None
         return self._get_index_selection(index, index_cols)
 
@@ -590,36 +714,10 @@ class SelectionBarsExpr(Selection1DExpr):
 
     def _get_selection_expr_for_stream_value(self, **kwargs):
         index = kwargs.get("index")
-        index_cols = kwargs.get("index_cols")
 
         if "index" in kwargs:
             if not index:
                 return None, None, None
-            if index_cols is None:
-                index_cols = [d.name for d in self.kdims]
-                if not index_cols:
-                    index_cols = [d.name for d in self.dimensions()]
-            if not index_cols:
-                return None, None, None
-            clone_vdims = [vdim.name for vdim in self.vdims if vdim.name not in index_cols]
-            cols = clone_vdims + index_cols
-            ds = self.clone(kdims=index_cols, vdims=clone_vdims, new_type=Dataset)
-            if len(index_cols) == 1:
-                index_dim = index_cols[0]
-                vals = dim(index_dim).apply(ds.iloc[index, cols], expanded=False)
-                if dtype_kind(vals) == "O" and all(isinstance(v, np.ndarray) for v in vals):
-                    vals = [v for arr in vals for v in util.unique_iterator(arr)]
-                expr = dim(index_dim).isin(list(util.unique_iterator(vals)))
-            else:
-                get_shape = dim(self.dataset.get_dimension(index_cols[0]), np.shape)
-                index_cols_dim = [dim(self.dataset.get_dimension(c), np.ravel) for c in index_cols]
-                vals = dim(index_cols_dim[0], util.unique_zip, *index_cols_dim[1:]).apply(
-                    ds.iloc[index, cols], expanded=True, flat=True
-                )
-                contains = dim(index_cols_dim[0], util.lzip, *index_cols_dim[1:]).isin(
-                    vals, object=True
-                )
-                expr = dim(contains, np.reshape, get_shape)
-            return expr, None, None
+            return self._get_index_selection(index, kwargs.get("index_cols"))
 
         return super()._get_selection_expr_for_stream_value(**kwargs)

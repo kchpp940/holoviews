@@ -157,14 +157,76 @@ class BokehPlot(DimensionedPlot, CallbackPlot):
         """
         raise NotImplementedError
 
+    def _get_identity_values(self, element, nrows):
+        """Generate unique identity values for rows of element data.
+
+        Priority:
+        1. pandas DataFrame original index (if available)
+        2. link_selections index_cols (if set via streams)
+        3. np.arange(nrows) as fallback integer identity
+
+        Returns a 1D array-like of hashable values that uniquely identify each row.
+        """
+        try:
+            import pandas as pd
+
+            if isinstance(element.data, pd.DataFrame):
+                idx = element.data.index
+                if idx.nlevels == 1:
+                    return list(idx.values)
+                else:
+                    return [tuple(v) for v in idx.values]
+        except Exception:
+            pass
+
+        for stream in getattr(self, "streams", []):
+            ic = getattr(stream, "_index_cols", None)
+            if ic:
+                try:
+                    vals = [element.dimension_values(c, expanded=False) for c in ic]
+                    if len(vals) == 1:
+                        return list(vals[0])
+                    else:
+                        return list(zip(*vals))
+                except Exception:
+                    pass
+
+        return list(range(nrows))
+
     def _update_selected(self, cds):
         from .callbacks import Selection1DCallback
 
-        cds.selected.indices = self.selected
-        for cb in self.callbacks:
-            if isinstance(cb, Selection1DCallback):
-                for s in cb.streams:
-                    s.update(index=self.selected)
+        if self.selected is None:
+            return
+        if len(self.selected) == 0:
+            cds.selected.indices = []
+            for cb in self.callbacks:
+                if isinstance(cb, Selection1DCallback):
+                    for s in cb.streams:
+                        s.update(index=[])
+            return
+
+        ids = cds.data.get("_hv_id")
+        if ids is not None:
+            sel_ids = []
+            sel_indices = []
+            for i in self.selected:
+                if isinstance(i, (int, np.integer)) and 0 <= i < len(ids):
+                    sel_indices.append(int(i))
+                    sel_ids.append(ids[i])
+                else:
+                    sel_ids.append(i)
+            cds.selected.indices = sel_indices
+            for cb in self.callbacks:
+                if isinstance(cb, Selection1DCallback):
+                    for s in cb.streams:
+                        s.update(index=sel_ids)
+        else:
+            cds.selected.indices = self.selected
+            for cb in self.callbacks:
+                if isinstance(cb, Selection1DCallback):
+                    for s in cb.streams:
+                        s.update(index=self.selected)
 
     def _init_datasource(self, data):
         """Initializes a data source to be passed into the bokeh glyph."""
@@ -176,13 +238,13 @@ class BokehPlot(DimensionedPlot, CallbackPlot):
 
     def _postprocess_data(self, data):
         """Applies necessary type transformation to the data before
-        it is set on a ColumnDataSource.
-
+        it is set on a ColumnDataSource. Injects the hidden _hv_id
+        identity column so selections are mapped by identity, not
+        rendered row number.
         """
         new_data = {}
         for k, values in data.items():
-            values = decode_bytes(values)  # Bytes need decoding to strings
-            # Certain datetime types need to be converted
+            values = decode_bytes(values)
             if len(values) and isinstance(values[0], cftime_types):
                 if any(v.calendar not in _STANDARD_CALENDARS for v in values):
                     self.param.warning(
@@ -194,6 +256,22 @@ class BokehPlot(DimensionedPlot, CallbackPlot):
                     )
                 values = cftime_to_timestamp(values, "ms")
             new_data[k] = values
+
+        nrows = 0
+        for v in new_data.values():
+            try:
+                nrows = len(v)
+                if nrows > 0:
+                    break
+            except Exception:
+                pass
+        if nrows > 0 and "_hv_id" not in new_data:
+            element = getattr(self, "current_frame", None)
+            if element is None:
+                new_data["_hv_id"] = list(range(nrows))
+            else:
+                new_data["_hv_id"] = self._get_identity_values(element, nrows)
+
         return new_data
 
     def _update_datasource(self, source, data):
