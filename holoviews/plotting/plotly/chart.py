@@ -17,6 +17,7 @@ class ChartPlot(ElementPlot):
         return {"type": "scatter"}
 
     def get_data(self, element, ranges, style, is_geo=False, **kwargs):
+        dims = element.dimensions()
         if is_geo:
             if self.invert_axes:
                 x = element.dimension_values(1)
@@ -26,10 +27,44 @@ class ChartPlot(ElementPlot):
                 y = element.dimension_values(1)
 
             lon, lat = Tiles.easting_northing_to_lon_lat(x, y)
-            return [{"lon": lon, "lat": lat}]
+            datum = {"lon": lon, "lat": lat}
+            extra_vals = []
+            hover_labels = []
+            for i, d in enumerate(dims):
+                if i >= 2:
+                    extra_vals.append(element.dimension_values(i))
+                    hover_labels.append(d.pprint_label)
+            if extra_vals:
+                if len(extra_vals) == 1:
+                    datum["customdata"] = [[v] for v in extra_vals[0]]
+                else:
+                    datum["customdata"] = list(zip(*extra_vals))
+                ht_parts = [
+                    f"<b>{lbl}:</b> %{{customdata[{i}]}}<br>"
+                    for i, lbl in enumerate(hover_labels)
+                ]
+                datum["hovertemplate"] = "".join(ht_parts) + "<extra></extra>"
+            return [datum]
         else:
             x, y = ("y", "x") if self.invert_axes else ("x", "y")
-            return [{x: element.dimension_values(0), y: element.dimension_values(1)}]
+            datum = {x: element.dimension_values(0), y: element.dimension_values(1)}
+            extra_vals = []
+            hover_labels = []
+            for i, d in enumerate(dims):
+                if i >= 2:
+                    extra_vals.append(element.dimension_values(i))
+                    hover_labels.append(d.pprint_label)
+            if extra_vals:
+                if len(extra_vals) == 1:
+                    datum["customdata"] = [[v] for v in extra_vals[0]]
+                else:
+                    datum["customdata"] = list(zip(*extra_vals))
+                ht_parts = [
+                    f"<b>{lbl}:</b> %{{customdata[{i}]}}<br>"
+                    for i, lbl in enumerate(hover_labels)
+                ]
+                datum["hovertemplate"] = "".join(ht_parts) + "<extra></extra>"
+            return [datum]
 
 
 class ScatterPlot(ChartPlot, ColorbarPlot):

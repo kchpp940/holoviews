@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 import holoviews as hv
 from holoviews.plotting.plotly.util import PLOTLY_MAP, PLOTLY_SCATTERMAP
@@ -93,6 +94,67 @@ class TestScatterPlot(TestPlotlyPlot):
         state = self._get_plot_state(element)
         assert state["data"][0]["visible"] is False
 
+    def test_scatter_vdims_in_customdata(self):
+        import pandas as pd
+
+        scatter = hv.Scatter(
+            pd.DataFrame({
+                "x": [1.0, 2.0, 3.0, 4.0],
+                "y": [10.0, 20.0, 30.0, 40.0],
+                "val": pd.array([1, 2, None, 4], dtype="Int64"),
+            }),
+            kdims=["x"],
+            vdims=["y", "val"],
+        )
+        state = self._get_plot_state(scatter)
+        trace = state["data"][0]
+        assert "customdata" in trace
+        cd = trace["customdata"]
+        assert len(cd) == 4
+        assert cd[0][0] == 1.0
+        assert cd[1][0] == 2.0
+        assert np.isnan(cd[2][0])
+        assert cd[3][0] == 4.0
+        assert "hovertemplate" in trace
+
+    def test_scatter_datetime_resolution(self):
+        import pandas as pd
+
+        scatter = hv.Scatter(
+            pd.DataFrame({
+                "t": pd.date_range("2020-01-01", periods=3, freq="D"),
+                "y": [1.0, 2.0, 3.0],
+            }),
+            kdims=["t"],
+            vdims=["y"],
+        )
+        state = self._get_plot_state(scatter)
+        trace = state["data"][0]
+        tvals = np.asarray(trace["x"])
+        assert tvals.dtype == np.dtype("datetime64[ns]")
+
+    def test_scatter_string_dtype_vdim_customdata_nulls(self):
+        import pandas as pd
+
+        try:
+            df = pd.DataFrame({
+                "x": [1.0, 2.0, 3.0],
+                "y": [10.0, 20.0, 30.0],
+                "label": pd.array(["a", "b", None], dtype="string"),
+            })
+        except (ImportError, TypeError):
+            pytest.skip("pandas StringDtype not available")
+            return
+        scatter = hv.Scatter(df, kdims=["x"], vdims=["y", "label"])
+        state = self._get_plot_state(scatter)
+        trace = state["data"][0]
+        assert "customdata" in trace
+        cd = trace["customdata"]
+        assert len(cd) == 3
+        assert cd[0][0] == "a"
+        assert cd[1][0] == "b"
+        assert cd[2][0] is None
+
 
 class TestMapboxScatterPlot(TestPlotlyPlot):
     def test_scatter_state(self):
@@ -183,3 +245,4 @@ class TestMapboxScatterPlot(TestPlotlyPlot):
         element = hv.Tiles("") * hv.Scatter([3, 2, 1]).opts(visible=False)
         state = self._get_plot_state(element)
         assert state["data"][1]["visible"] is False
+

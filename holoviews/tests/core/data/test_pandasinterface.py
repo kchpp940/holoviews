@@ -291,6 +291,9 @@ class PandasInterfaceTests(BasePandasInterfaceTests):
         ds = hv.Dataset(df, kdims=["x"], vdims=["y"])
         vals = ds.dimension_values("x")
         assert isinstance(vals, np.ndarray)
+        assert vals.dtype == object
+        assert vals[0] == "a" and vals[1] == "b"
+        assert vals[2] is None
 
 
 class PandasInterfaceMultiIndexTests(HeterogeneousColumnTests, InterfaceTests):

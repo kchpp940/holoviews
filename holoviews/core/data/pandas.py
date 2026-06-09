@@ -496,13 +496,23 @@ class PandasInterface(Interface, PandasAPI):
             return data
         if dtype_kind(data) == "M" and getattr(data.dtype, "tz", None):
             data = (data if isindex else data.dt).tz_localize(None)
+
+        kind = dtype_kind(data)
+        if kind in "SUO":
+            na_value = None
+        else:
+            na_value = np.nan
+
         if not expanded:
             result = pd.unique(data)
             if hasattr(result, "to_numpy"):
                 try:
-                    result = result.to_numpy()
+                    result = result.to_numpy(na_value=na_value)
                 except Exception:
-                    pass
+                    try:
+                        result = result.to_numpy()
+                    except Exception:
+                        pass
             elif not isinstance(result, np.ndarray) and hasattr(result, "__array__"):
                 try:
                     result = np.asarray(result)
@@ -511,10 +521,10 @@ class PandasInterface(Interface, PandasAPI):
             return result
         if hasattr(data, "to_numpy"):
             try:
-                data = data.to_numpy()
+                data = data.to_numpy(na_value=na_value)
             except Exception:
                 try:
-                    data = data.to_numpy(na_value=np.nan)
+                    data = data.to_numpy()
                 except Exception:
                     if hasattr(data, "values"):
                         data = data.values
