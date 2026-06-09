@@ -593,56 +593,18 @@ class Interface(param.Parameterized):
             Tuple of (min, max) values
         """
         column = dataset.dimension_values(dimension)
-        kind = dtype_kind(column)
-        if kind == "M":
-            col_clean = column
-            try:
-                if hasattr(column, "dropna"):
-                    col_clean = column.dropna()
-                elif hasattr(column, "isna"):
-                    col_clean = column[~column.isna()]
-                else:
-                    col_clean = np.array([v for v in column if not (v is None or (isinstance(v, float) and np.isnan(v)))])
-            except Exception:
-                pass
-            if len(col_clean) == 0:
-                return np.nan, np.nan
-            cmin, cmax = col_clean.min(), col_clean.max()
-            try:
-                if getattr(getattr(column, "dtype", None), "tz", None):
-                    cmin = cmin.to_pydatetime().replace(tzinfo=None)
-                    cmax = cmax.to_pydatetime().replace(tzinfo=None)
-            except Exception:
-                try:
-                    import datetime as dt
-
-                    if isinstance(cmin, dt.datetime) and getattr(cmin, "tzinfo", None) is not None:
-                        cmin = cmin.replace(tzinfo=None)
-                        cmax = cmax.replace(tzinfo=None)
-                except Exception:
-                    pass
-            return cmin, cmax
+        if dtype_kind(column) == "M":
+            return column.min(), column.max()
         elif len(column) == 0:
             return np.nan, np.nan
         else:
             try:
-                assert kind not in "SUO"
+                assert dtype_kind(column) not in "SUO"
                 with warnings.catch_warnings():
                     warnings.filterwarnings("ignore", r"All-NaN (slice|axis) encountered")
-                    col_clean = column
-                    try:
-                        if hasattr(column, "dropna"):
-                            col_clean = column.dropna()
-                        else:
-                            mask = ~np.isnan(column)
-                            col_clean = column[mask]
-                    except Exception:
-                        pass
-                    if len(col_clean) == 0:
-                        return np.nan, np.nan
-                    return finite_range(col_clean, np.nanmin(col_clean), np.nanmax(col_clean))
+                    return finite_range(column, np.nanmin(column), np.nanmax(column))
             except (AssertionError, TypeError):
-                column = [v for v in util.python2sort(column) if v is not None and not (isinstance(v, float) and np.isnan(v))]
+                column = [v for v in util.python2sort(column) if v is not None]
                 if not column:
                     return np.nan, np.nan
                 return column[0], column[-1]

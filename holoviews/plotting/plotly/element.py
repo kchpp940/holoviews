@@ -354,66 +354,6 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
     def get_data(self, element, ranges, style, is_geo=False):
         return []
 
-    def _get_customdata(self, element, skip_indices=None):
-        """Extract extra vdim values as Plotly customdata and labels.
-
-        Collects values from dimensions that are not already used as
-        coordinate axes, returning them in a format suitable for Plotly
-        ``customdata`` along with the corresponding dimension labels.
-        Subclasses (e.g. ErrorBars, Spread) may override this to exclude
-        dimensions that have special semantics beyond simple hover display.
-
-        Parameters
-        ----------
-        element : Element
-            The HoloViews element to extract dimension values from.
-        skip_indices : set of int, optional
-            Indices into ``element.dimensions()`` that should *not* be
-            included in customdata (e.g. x/y coordinate dims).  When
-            ``None`` a subclass decides which dims to skip.
-
-        Returns
-        -------
-        tuple of (customdata or None, labels or None)
-            ``customdata`` is a list of per-row tuples/lists suitable for
-            Plotly trace ``customdata``, or ``None`` if there are no
-            extra dims.  ``labels`` is a list of pretty-printed
-            dimension labels matching the customdata columns, or ``None``.
-        """
-        dims = element.dimensions()
-        if skip_indices is None:
-            skip_indices = set()
-        extra_vals = []
-        labels = []
-        for i, d in enumerate(dims):
-            if i in skip_indices:
-                continue
-            extra_vals.append(element.dimension_values(i))
-            labels.append(d.pprint_label)
-        if not extra_vals:
-            return None, None
-        if len(extra_vals) == 1:
-            customdata = [[v] for v in extra_vals[0]]
-        else:
-            customdata = list(zip(*extra_vals))
-        return customdata, labels
-
-    def _default_hovertemplate(self, labels, x_label=None, y_label=None):
-        """Build a Plotly hovertemplate string from dimension labels.
-
-        Each label maps to ``%{customdata[i]}`` in order.  Axes labels
-        (x/y) are not referenced via customdata because Plotly shows
-        them by default from the trace's ``x``/``y`` arrays.  Returns
-        ``None`` when ``labels`` is empty so the caller can avoid
-        overriding any user-supplied hover configuration.
-        """
-        if not labels:
-            return None
-        parts = [
-            f"<b>{lbl}:</b> %{{customdata[{i}]}}<br>" for i, lbl in enumerate(labels)
-        ]
-        return "".join(parts) + "<extra></extra>"
-
     def get_aspect(self, xspan, yspan):
         """Computes the aspect ratio of the plot"""
         if self.aspect == "equal" and (

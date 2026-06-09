@@ -55,7 +55,13 @@ class SelectionIndexExpr:
     def _get_selection_expr_for_stream_value(self, **kwargs):
         index = kwargs.get("index")
         index_cols = kwargs.get("index_cols")
-        if index is None or index_cols is None:
+        if index is None:
+            return None, None, None
+        if index_cols is None:
+            index_cols = [d.name for d in self.kdims]
+            if not index_cols:
+                index_cols = [d.name for d in self.dimensions()]
+        if not index_cols:
             return None, None, None
         return self._get_index_selection(index, index_cols)
 
@@ -271,7 +277,7 @@ class Selection2DExpr(SelectionIndexExpr):
             vals = dim(index_dim).apply(sel, expanded=False, flat=True)
             expr = dim(index_dim).isin(list(util.unique_iterator(vals)))
         else:
-            get_shape = dim(self.dataset.get_dimension(), np.shape)
+            get_shape = dim(self.dataset.get_dimension(index_cols[0]), np.shape)
             index_cols = [dim(self.dataset.get_dimension(c), np.ravel) for c in index_cols]
             vals = dim(index_cols[0], util.unique_zip, *index_cols[1:]).apply(
                 sel, expanded=True, flat=True
@@ -586,15 +592,34 @@ class SelectionBarsExpr(Selection1DExpr):
         index = kwargs.get("index")
         index_cols = kwargs.get("index_cols")
 
-        if "index" in kwargs and index_cols is None:
+        if "index" in kwargs:
             if not index:
                 return None, None, None
-            kdim = self.kdims[0]
-            cat_vals = self.dimension_values(kdim, expanded=False)
-            clicked = [cat_vals[i] for i in index if 0 <= i < len(cat_vals)]
-            if clicked:
-                expr = dim(kdim).isin(list(util.unique_iterator(clicked)))
-                return expr, None, None
-            return None, None, None
+            if index_cols is None:
+                index_cols = [d.name for d in self.kdims]
+                if not index_cols:
+                    index_cols = [d.name for d in self.dimensions()]
+            if not index_cols:
+                return None, None, None
+            clone_vdims = [vdim.name for vdim in self.vdims if vdim.name not in index_cols]
+            cols = clone_vdims + index_cols
+            ds = self.clone(kdims=index_cols, vdims=clone_vdims, new_type=Dataset)
+            if len(index_cols) == 1:
+                index_dim = index_cols[0]
+                vals = dim(index_dim).apply(ds.iloc[index, cols], expanded=False)
+                if dtype_kind(vals) == "O" and all(isinstance(v, np.ndarray) for v in vals):
+                    vals = [v for arr in vals for v in util.unique_iterator(arr)]
+                expr = dim(index_dim).isin(list(util.unique_iterator(vals)))
+            else:
+                get_shape = dim(self.dataset.get_dimension(index_cols[0]), np.shape)
+                index_cols_dim = [dim(self.dataset.get_dimension(c), np.ravel) for c in index_cols]
+                vals = dim(index_cols_dim[0], util.unique_zip, *index_cols_dim[1:]).apply(
+                    ds.iloc[index, cols], expanded=True, flat=True
+                )
+                contains = dim(index_cols_dim[0], util.lzip, *index_cols_dim[1:]).isin(
+                    vals, object=True
+                )
+                expr = dim(contains, np.reshape, get_shape)
+            return expr, None, None
 
         return super()._get_selection_expr_for_stream_value(**kwargs)

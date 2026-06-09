@@ -16,18 +16,7 @@ class ChartPlot(ElementPlot):
     def trace_kwargs(cls, is_geo=False, **kwargs):
         return {"type": "scatter"}
 
-    def _hover_coord_indices(self, is_geo=False):
-        """Indices into ``element.dimensions()`` used as plot coordinates.
-
-        These dims are already exposed via the trace's ``x``/``y`` (or
-        ``lon``/``lat``) arrays and are excluded from auto-generated
-        customdata.  Subclasses may override to exclude additional
-        dimensions with special non-hover semantics (e.g. error bars).
-        """
-        return {0, 1}
-
     def get_data(self, element, ranges, style, is_geo=False, **kwargs):
-        skip = self._hover_coord_indices(is_geo=is_geo)
         if is_geo:
             if self.invert_axes:
                 x = element.dimension_values(1)
@@ -37,18 +26,10 @@ class ChartPlot(ElementPlot):
                 y = element.dimension_values(1)
 
             lon, lat = Tiles.easting_northing_to_lon_lat(x, y)
-            datum = {"lon": lon, "lat": lat}
-            customdata, _labels = self._get_customdata(element, skip_indices=skip)
-            if customdata is not None:
-                datum["customdata"] = customdata
-            return [datum]
+            return [{"lon": lon, "lat": lat}]
         else:
             x, y = ("y", "x") if self.invert_axes else ("x", "y")
-            datum = {x: element.dimension_values(0), y: element.dimension_values(1)}
-            customdata, _labels = self._get_customdata(element, skip_indices=skip)
-            if customdata is not None:
-                datum["customdata"] = customdata
-            return [datum]
+            return [{x: element.dimension_values(0), y: element.dimension_values(1)}]
 
 
 class ScatterPlot(ChartPlot, ColorbarPlot):

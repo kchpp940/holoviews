@@ -234,20 +234,15 @@ class PandasInterface(Interface, PandasAPI):
             column = cls.index_values(dataset, dimension)
         else:
             column = dataset.data[dimension.name]
-        kind = dtype_kind(column)
-        if kind == "O":
+        if dtype_kind(column) == "O":
             if not isinstance(dataset.data, pd.DataFrame):
                 column = column.sort(inplace=False)
             else:
                 column = column.sort_values()
             try:
-                null_mask = column.isna()
-                column = column[~null_mask]
+                column = column[~column.isin([None, pd.NA])]
             except Exception:
-                try:
-                    column = column[~column.isin([None, pd.NA, np.nan])]
-                except Exception:
-                    pass
+                pass
             if not len(column):
                 return np.nan, np.nan
             if isinstance(column, pd.Index):
@@ -256,22 +251,12 @@ class PandasInterface(Interface, PandasAPI):
         else:
             if dimension.nodata is not None:
                 column = cls.replace_value(column, dimension.nodata)
-            if hasattr(column, "dropna"):
-                col_clean = column.dropna()
-            else:
-                col_clean = column
-            if len(col_clean) == 0:
-                return np.nan, np.nan
-            cmin, cmax = finite_range(col_clean, col_clean.min(), col_clean.max())
-            if kind == "M" and getattr(getattr(column, "dtype", None), "tz", None):
-                if pd.isna(cmin) or pd.isna(cmax):
-                    return np.nan, np.nan
+            cmin, cmax = finite_range(column, column.min(), column.max())
+            if dtype_kind(column) == "M" and getattr(column.dtype, "tz", None):
                 return (
                     cmin.to_pydatetime().replace(tzinfo=None),
                     cmax.to_pydatetime().replace(tzinfo=None),
                 )
-            if kind == "M" and (pd.isna(cmin) or pd.isna(cmax)):
-                return np.nan, np.nan
             return cmin, cmax
 
     @classmethod
@@ -400,12 +385,9 @@ class PandasInterface(Interface, PandasAPI):
             by = []
         cols = [dataset.get_dimension(d, strict=True).name for d in by]
 
-        if not cols:
-            return dataset.data
-        ascending = [not reverse] * len(cols) if not isinstance(reverse, (list, tuple)) else [not r for r in reverse]
         if not isinstance(dataset.data, pd.DataFrame):
-            return dataset.data.sort(columns=cols, ascending=ascending, na_position="last")
-        return dataset.data.sort_values(by=cols, ascending=ascending, na_position="last")
+            return dataset.data.sort(columns=cols, ascending=not reverse)
+        return dataset.data.sort_values(by=cols, ascending=not reverse)
 
     @classmethod
     def sorted_index(cls, df):
@@ -496,101 +478,14 @@ class PandasInterface(Interface, PandasAPI):
             return data
         if dtype_kind(data) == "M" and getattr(data.dtype, "tz", None):
             data = (data if isindex else data.dt).tz_localize(None)
-
-        kind = dtype_kind(data)
-        if kind in "SUO":
-            na_value = None
-        else:
-            na_value = np.nan
-
         if not expanded:
-            result = pd.unique(data)
-            if hasattr(result, "to_numpy"):
-                try:
-                    result = result.to_numpy(na_value=na_value)
-                except Exception:
-                    try:
-                        result = result.to_numpy()
-                    except Exception:
-                        pass
-            elif not isinstance(result, np.ndarray) and hasattr(result, "__array__"):
-                try:
-                    result = np.asarray(result)
-                except Exception:
-                    pass
-            return result
-        if hasattr(data, "to_numpy"):
-            try:
-                data = data.to_numpy(na_value=na_value)
-            except Exception:
-                try:
-                    data = data.to_numpy()
-                except Exception:
-                    if hasattr(data, "values"):
-                        data = data.values
-        elif hasattr(data, "values"):
+            return pd.unique(data)
+        if hasattr(data, "values"):
             data = data.values
-        if isinstance(data, np.ndarray):
+            # https://pandas.pydata.org/docs/dev/user_guide/copy_on_write.html#read-only-numpy-arrays
             if hasattr(data, "flags") and not data.flags.writeable:
                 data = data.copy()
-            if dtype_kind(data) == "M":
-                try:
-                    data = data.astype("datetime64[ns]")
-                except Exception:
-                    pass
-        elif hasattr(data, "__array__"):
-            try:
-                data = np.asarray(data)
-                if dtype_kind(data) == "M":
-                    try:
-                        data = data.astype("datetime64[ns]")
-                    except Exception:
-                        pass
-            except Exception:
-                pass
         return data
-
-    @classmethod
-    def select_mask(cls, dataset, selection):
-        mask = pd.Series(np.ones(len(dataset), dtype=np.bool_), index=dataset.data.index)
-        for dim, sel in selection.items():
-            if isinstance(sel, tuple):
-                sel = slice(*sel)
-            name = dataset.get_dimension(dim).name
-            arr = dataset.data[name]
-            if util.isdatetime(arr):
-                try:
-                    sel = util.parse_datetime_selection(sel)
-                except Exception:
-                    pass
-            if isinstance(sel, slice):
-                submask = pd.Series(np.ones(len(arr), dtype=np.bool_), index=arr.index)
-                if sel.start is not None:
-                    try:
-                        if pd.isna(sel.start):
-                            pass
-                        else:
-                            submask &= arr >= sel.start
-                    except Exception:
-                        submask &= arr >= sel.start
-                if sel.stop is not None:
-                    try:
-                        if pd.isna(sel.stop):
-                            pass
-                        else:
-                            submask &= arr < sel.stop
-                    except Exception:
-                        submask &= arr < sel.stop
-                mask &= submask.fillna(False).to_numpy(dtype=np.bool_) if hasattr(submask, 'fillna') else submask
-            elif isinstance(sel, (set, list)):
-                submask = arr.isin(sel).fillna(False)
-                mask &= submask.to_numpy(dtype=np.bool_) if hasattr(submask, 'to_numpy') else np.asarray(submask, dtype=np.bool_)
-            elif callable(sel):
-                mask &= np.asarray(sel(arr), dtype=np.bool_)
-            else:
-                submask = (arr == sel).fillna(False)
-                mask &= submask.to_numpy(dtype=np.bool_) if hasattr(submask, 'to_numpy') else np.asarray(submask, dtype=np.bool_)
-        return mask.to_numpy(dtype=np.bool_) if hasattr(mask, 'to_numpy') else np.asarray(mask, dtype=np.bool_)
 
     @classmethod
     def sample(cls, dataset, samples=None):

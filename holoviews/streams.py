@@ -1399,13 +1399,26 @@ class CrossFilterSet(Derived):
 
         index_cols = constants["index_cols"]
 
-        # Get non-none selection expressions
         selection_exprs = [sv["selection_expr"] for sv in stream_values]
         selection_exprs = [expr for expr in selection_exprs if expr is not None]
         selection_expr = None
         if len(selection_exprs) > 0:
-            if index_cols:
-                if len(selection_exprs) > 1:
+            if len(selection_exprs) == 1:
+                selection_expr = selection_exprs[0]
+            elif index_cols:
+                def _is_simple_isin(expr):
+                    return (
+                        len(expr.ops) >= 3
+                        and expr.ops[0].get("fn") == "index"
+                        and expr.ops[1].get("fn") == "isel"
+                        and expr.ops[2].get("fn") == "isin"
+                        and "args" in expr.ops[2]
+                        and isinstance(expr.ops[2]["args"], tuple)
+                        and len(expr.ops[2]["args"]) >= 1
+                        and isinstance(expr.ops[2]["args"][0], (list, tuple, set, np.ndarray))
+                    )
+
+                if all(_is_simple_isin(expr) for expr in selection_exprs):
                     vals = set.intersection(
                         *(set(expr.ops[2]["args"][0]) for expr in selection_exprs)
                     )
@@ -1414,6 +1427,10 @@ class CrossFilterSet(Derived):
                     selection_expr.dimension = old.dimension
                     selection_expr.ops = list(old.ops)
                     selection_expr.ops[2] = {**selection_expr.ops[2], "args": (list(vals),)}
+                else:
+                    selection_expr = selection_exprs[0]
+                    for expr in selection_exprs[1:]:
+                        selection_expr = selection_expr & expr
             else:
                 selection_expr = selection_exprs[0]
                 for expr in selection_exprs[1:]:

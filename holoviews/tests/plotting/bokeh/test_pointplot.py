@@ -560,49 +560,6 @@ class TestPointPlot(TestBokehPlot):
         glyph = handles["glyph"]
         assert isinstance(glyph, Circle)
 
-    def test_points_nullable_integer_vdim_hover(self):
-        df = pd.DataFrame({
-            "x": [1.0, 2.0, 3.0, 4.0],
-            "y": [10.0, 20.0, 30.0, 40.0],
-            "val": pd.array([1, 2, None, 4], dtype="Int64"),
-        })
-        points = hv.Points(df, kdims=["x", "y"], vdims=["val"]).opts(tools=["hover"])
-        plot = bokeh_renderer.get_plot(points)
-        source = plot.handles["source"]
-        assert "val" in source.data
-        vals = np.asarray(source.data["val"])
-        assert vals.dtype == np.float64
-        assert np.isnan(vals[2])
-        assert vals[0] == 1.0 and vals[1] == 2.0 and vals[3] == 4.0
-
-    def test_points_datetime_kdim_resolution(self):
-        df = pd.DataFrame({
-            "t": pd.date_range("2020-01-01", periods=3, freq="D"),
-            "y": [1.0, 2.0, 3.0],
-        })
-        points = hv.Points(df, kdims=["t", "y"])
-        plot = bokeh_renderer.get_plot(points)
-        source = plot.handles["source"]
-        tvals = np.asarray(source.data["t"])
-        assert tvals.dtype == np.dtype("datetime64[ns]")
-
-    def test_points_string_dtype_vdim_hover_nulls(self):
-        try:
-            df = pd.DataFrame({
-                "x": [1.0, 2.0, 3.0],
-                "y": [10.0, 20.0, 30.0],
-                "label": pd.array(["a", "b", None], dtype="string"),
-            })
-        except (ImportError, TypeError):
-            pytest.skip("pandas StringDtype not available")
-        points = hv.Points(df, kdims=["x", "y"], vdims=["label"]).opts(tools=["hover"])
-        plot = bokeh_renderer.get_plot(points)
-        source = plot.handles["source"]
-        assert "label" in source.data
-        labels = np.asarray(source.data["label"])
-        assert labels[0] == "a" and labels[1] == "b"
-        assert labels[2] is None
-
 
 @pytest.mark.skipif(not BOKEH_GE_3_8_0, reason="Needs Bokeh 3.8")
 class TestSizeBar:

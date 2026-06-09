@@ -2550,75 +2550,28 @@ def dtype_kind(obj) -> str:
     dtype_kind : str
     The kind of the dtype as a single character string.
     """
-    from .dependencies import pd
-
     dtype = getattr(obj, "dtype", obj)
-
-    if pd is not None and isinstance(dtype, pd.api.extensions.ExtensionDtype):
-        if isinstance(dtype, pd.CategoricalDtype):
-            return "O"
-        elif isinstance(dtype, pd.DatetimeTZDtype):
-            return "M"
-        elif isinstance(
-            dtype,
-            (
-                pd.Int8Dtype,
-                pd.Int16Dtype,
-                pd.Int32Dtype,
-                pd.Int64Dtype,
-            ),
-        ):
-            return "i"
-        elif isinstance(
-            dtype,
-            (
-                pd.UInt8Dtype,
-                pd.UInt16Dtype,
-                pd.UInt32Dtype,
-                pd.UInt64Dtype,
-            ),
-        ):
-            return "u"
-        elif isinstance(
-            dtype,
-            (
-                pd.Float32Dtype,
-                pd.Float64Dtype,
-            ),
-        ):
-            return "f"
-        elif isinstance(dtype, pd.BooleanDtype):
-            return "b"
-        elif isinstance(dtype, pd.StringDtype):
-            return "U"
-        return "O"
-
-    if isinstance(dtype, nw.dtypes.DType):
-        if isinstance(dtype, nw.dtypes.Categorical):
-            return "O"
-        elif dtype.is_signed_integer():
-            return "i"
-        elif dtype.is_unsigned_integer():
-            return "u"
-        elif dtype.is_numeric():
-            return "f"
-        elif isinstance(dtype, nw.dtypes.Duration):
-            return "m"
-        elif dtype.is_temporal():
-            return "M"
-        elif isinstance(dtype, nw.dtypes.Boolean):
-            return "b"
-        elif isinstance(dtype, nw.dtypes.String):
-            return "U"
-        elif isinstance(dtype, (nw.dtypes.Object, nw.dtypes.Unknown)):
-            return "O"
-        else:
-            return "O"
-
     if hasattr(dtype, "kind"):
         return dtype.kind
 
-    raise TypeError(f"Not supported dtype: {dtype}")
+    if not isinstance(dtype, nw.dtypes.DType):
+        raise TypeError(f"Not supported dtype: {dtype}")
+    if dtype.is_signed_integer():
+        return "i"
+    elif dtype.is_unsigned_integer():
+        return "u"
+    elif dtype.is_numeric():
+        return "f"
+    elif isinstance(dtype, nw.dtypes.Duration):
+        return "m"
+    elif dtype.is_temporal():
+        return "M"
+    elif isinstance(dtype, nw.dtypes.Boolean):
+        return "b"
+    elif isinstance(dtype, nw.dtypes.String):
+        return "U"
+    else:
+        return "O"
 
 
 def _is_deep_indexable(obj) -> TypeIs[ViewableTree | UniformNdMapping | AdjointLayout]:
