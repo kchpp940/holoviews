@@ -325,9 +325,10 @@ class Image(Selection2DExpr, Dataset, Raster, SheetCoordinateSystem):
         dim2, dim1 = self.interface.shape(self, gridded=True)[:2]
         if bounds is None:
             xvals = self.dimension_values(0, False)
-            l, r, xdensity, _ = util.bound_range(xvals, xdensity, self._time_unit)
             yvals = self.dimension_values(1, False)
-            b, t, ydensity, _ = util.bound_range(yvals, ydensity, self._time_unit)
+            (l, b, r, t), (xdensity, ydensity) = util.coords_to_bounds_2d(
+                xvals, yvals, xdensity, ydensity, self._time_unit, self._time_unit
+            )
             bounds = BoundingBox(points=((l, b), (r, t)))
         elif np.isscalar(bounds):
             bounds = BoundingBox(radius=bounds)
@@ -400,19 +401,8 @@ class Image(Selection2DExpr, Dataset, Raster, SheetCoordinateSystem):
             return
 
         if data_bounds is None:
-            (x0, x1), (y0, y1) = (self.interface.range(self, kd.name) for kd in self.kdims)
-            xstep = (1.0 / self.xdensity) / 2.0
-            ystep = (1.0 / self.ydensity) / 2.0
-            if isinstance(x0, util.datetime_types):
-                xstep_td = np.timedelta64(int(round(xstep)), self._time_unit)
-                x0, x1 = (x0 - xstep_td, x1 + xstep_td)
-            else:
-                x0, x1 = (x0 - xstep, x1 + xstep)
-            if isinstance(y0, util.datetime_types):
-                ystep_td = np.timedelta64(int(round(ystep)), self._time_unit)
-                y0, y1 = (y0 - ystep_td, y1 + ystep_td)
-            else:
-                y0, y1 = (y0 - ystep, y1 + ystep)
+            x0, x1, _, _ = util.centers_to_range_1d(xvals, self.xdensity, self._time_unit)
+            y0, y1, _, _ = util.centers_to_range_1d(yvals, self.ydensity, self._time_unit)
             bounds = (x0, y0, x1, y1)
         else:
             bounds = data_bounds

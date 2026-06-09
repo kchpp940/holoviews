@@ -39,6 +39,7 @@ from ..core.util import (
     datetime_types,
     dt_to_int,
     dtype_kind,
+    edges_to_pixel_centers,
     get_param_values,
 )
 from ..core.util.dependencies import PANDAS_GE_3_0_0, _no_import_version, dd
@@ -1119,10 +1120,8 @@ class regrid(AggregationOperation):
                 height = 0
             xunit = float(xspan) / width if width else 0
             yunit = float(yspan) / height if height else 0
-            xs, ys = (
-                np.linspace(xstart + xunit / 2.0, xend - xunit / 2.0, width),
-                np.linspace(ystart + yunit / 2.0, yend - yunit / 2.0, height),
-            )
+            xs = edges_to_pixel_centers(xstart, xend, width)
+            ys = edges_to_pixel_centers(ystart, yend, height)
 
         # Compute bounds (converting datetimes)
         ((x0, x1), (y0, y1)), (xs, ys) = self._dt_transform(x_range, y_range, xs, ys, xtype, ytype)

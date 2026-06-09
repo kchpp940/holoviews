@@ -256,17 +256,7 @@ class GridInterface(DictInterface):
         >>> GridInterface._infer_interval_breaks([[0, 1], [3, 4]], axis=1)
         array([[-0.5,  0.5,  1.5], [ 2.5,  3.5,  4.5]])
         """
-        coord = np.asarray(coord)
-        if coord.shape[axis] == 0:
-            return np.array([], dtype=coord.dtype)
-        if coord.shape[axis] > 1:
-            deltas = 0.5 * np.diff(coord, axis=axis)
-        else:
-            deltas = np.array([0.5])
-        first = np.take(coord, [0], axis=axis) - np.take(deltas, [0], axis=axis)
-        last = np.take(coord, [-1], axis=axis) + np.take(deltas, [-1], axis=axis)
-        trim_last = tuple(slice(None, -1) if n == axis else slice(None) for n in range(coord.ndim))
-        return np.concatenate([first, coord[trim_last] + deltas, last], axis=axis)
+        return util.infer_interval_breaks(coord, axis=axis)
 
     @classmethod
     def coords(cls, dataset, dim, ordered=False, expanded=False, edges=False):
@@ -303,7 +293,7 @@ class GridInterface(DictInterface):
         if edges and not isedges:
             data = cls._infer_interval_breaks(data)
         elif not edges and isedges:
-            data = data[:-1] + np.diff(data) / 2.0
+            data = util.edges_to_centers_1d(data)
         return data
 
     @classmethod

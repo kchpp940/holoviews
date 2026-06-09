@@ -35,6 +35,7 @@ from ..core.util import (
     datetime_types,
     dt_to_int,
     dtype_kind,
+    edges_to_centers_2d,
     group_sanitizer,
     is_cupy_array,
     is_dask_array,
@@ -673,15 +674,8 @@ class contours(Operation):
         ys = element.dimension_values(1, True, flat=False)
         zs = element.dimension_values(2, flat=False)
 
-        # Ensure that coordinate arrays specify bin centers
-        if xs.shape[0] != zs.shape[0]:
-            xs = xs[:-1] + np.diff(xs, axis=0) / 2.0
-        if xs.shape[1] != zs.shape[1]:
-            xs = xs[:, :-1] + (np.diff(xs, axis=1) / 2.0)
-        if ys.shape[0] != zs.shape[0]:
-            ys = ys[:-1] + np.diff(ys, axis=0) / 2.0
-        if ys.shape[1] != zs.shape[1]:
-            ys = ys[:, :-1] + (np.diff(ys, axis=1) / 2.0)
+        if xs.shape != zs.shape or ys.shape != zs.shape:
+            xs, ys = edges_to_centers_2d(xs, ys)
         data = (xs, ys, zs)
 
         # if any data is a datetime, transform to matplotlib's numerical format

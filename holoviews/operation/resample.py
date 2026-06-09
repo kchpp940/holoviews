@@ -5,7 +5,7 @@ import param
 from param.parameterized import bothmethod
 
 from ..core import Dataset, Operation
-from ..core.util import datetime_types, dt_to_int, isfinite, max_range
+from ..core.util import datetime_types, dt_to_int, edges_to_pixel_centers, isfinite, max_range
 from ..element import Image
 from ..streams import PlotSize, RangeX, RangeXY
 
@@ -250,10 +250,8 @@ class ResampleOperation2D(ResampleOperation1D):
         else:
             yunit = float(yspan) / height
 
-        xs, ys = (
-            np.linspace(xstart + xunit / 2.0, xend - xunit / 2.0, width),
-            np.linspace(ystart + yunit / 2.0, yend - yunit / 2.0, height),
-        )
+        xs = edges_to_pixel_centers(xstart, xend, width)
+        ys = edges_to_pixel_centers(ystart, yend, height)
         return ((xstart, xend), (ystart, yend)), (xs, ys), (width, height), (xtype, ytype)
 
     def _get_pixel_ratio(self):

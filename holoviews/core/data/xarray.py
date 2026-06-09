@@ -427,7 +427,7 @@ class XArrayInterface(GridInterface):
         if edges and not isedges:
             data = cls._infer_interval_breaks(data)
         elif not edges and isedges:
-            data = np.convolve(data, [0.5, 0.5], "valid")
+            data = util.edges_to_centers_1d(data)
 
         return data.values if isinstance(data, xr.DataArray) else data
 
