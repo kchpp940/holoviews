@@ -17,6 +17,107 @@ from ..util.transform import dim
 from .annotation import HSpan, VSpan
 
 
+def _is_default_dataframe_index(idx, nrows):
+    """Return True if idx is the default RangeIndex(0, nrows, 1) or equivalent.
+
+    Works for any pandas Index type. A non-default index carries usable row
+    identity information and should be preferred over kdims/range(n).
+    """
+    if isinstance(idx, pd.RangeIndex):
+        return idx.start == 0 and idx.step == 1 and idx.stop == nrows
+    try:
+        return list(idx) == list(range(nrows))
+    except Exception:
+        return False
+
+
+def get_identity_columns(element_or_data, index_cols=None, kdim_names=None, all_dim_names=None):
+    """Determine which columns/fields uniquely identify each row.
+
+    Priority matches get_identity_values:
+    1. explicit ``index_cols`` (list of column/index names; may contain ``None``
+       to refer to an unnamed pandas Index level)
+    2. pandas DataFrame index, if NOT the default 0..n-1 range
+    3. ``kdim_names`` (element key dimensions), if provided and non-empty
+    4. ``all_dim_names`` (all element dimensions), as final fallback
+
+    ``element_or_data`` may be any object with a ``.data`` attribute (a HoloViews
+    Dataset) or a raw pandas DataFrame.
+    """
+    if index_cols:
+        return list(index_cols)
+
+    data = getattr(element_or_data, "data", element_or_data)
+    nrows = None
+    try:
+        if isinstance(data, pd.DataFrame):
+            idx = data.index
+            nrows = len(data)
+            if not _is_default_dataframe_index(idx, nrows):
+                return list(idx.names)
+    except Exception:
+        pass
+
+    if kdim_names:
+        return list(kdim_names)
+    if all_dim_names:
+        return list(all_dim_names)
+    return []
+
+
+def get_identity_values(element, index_cols=None, nrows=None):
+    """Return a list of identity values, one per row of ``element``.
+
+    Priority:
+    1. explicit ``index_cols`` resolved via ``element.dimension_values`` or the
+       pandas DataFrame index
+    2. pandas DataFrame index, if NOT the default 0..n-1 range
+    3. element kdims
+    4. ``list(range(nrows))`` as integer fallback
+
+    ``element`` must be a HoloViews Dataset (provide ``.data``, ``.kdims``,
+    ``.dimensions`` and ``.dimension_values``).
+    """
+    kdim_names = [d.name for d in getattr(element, "kdims", [])]
+    dims_attr = getattr(element, "dimensions", None)
+    if callable(dims_attr):
+        all_dim_names = [d.name for d in dims_attr()]
+    else:
+        all_dim_names = [d.name for d in (dims_attr or [])]
+    cols = get_identity_columns(element, index_cols, kdim_names, all_dim_names)
+
+    if cols:
+        data = getattr(element, "data", None)
+        try:
+            if isinstance(data, pd.DataFrame):
+                all_in_index = all(c in data.index.names for c in cols)
+                all_in_cols = all(c is not None and c in data.columns for c in cols)
+                if all_in_index and not all_in_cols:
+                    if len(cols) == 1:
+                        return list(data.index.get_level_values(cols[0]).values)
+                    return [tuple(v) for v in data.index.to_flat_index().values]
+        except Exception:
+            pass
+
+        try:
+            real_cols = [c for c in cols if c is not None]
+            if real_cols:
+                vals = [element.dimension_values(c, expanded=True) for c in real_cols]
+                if len(vals) == 1:
+                    return list(vals[0])
+                if len(vals) > 1:
+                    return list(zip(*vals))
+        except Exception:
+            pass
+
+    if nrows is None:
+        try:
+            nrows = len(getattr(element, "data", element))
+        except Exception:
+            nrows = 0
+    return list(range(nrows))
+
+
 class SelectionIndexExpr:
     _selection_dims = None
 
@@ -32,65 +133,20 @@ class SelectionIndexExpr:
     def _get_identity_columns(self, index_cols=None):
         """Determine which columns to use as row identity.
 
-        Priority matches BokehPlot._get_identity_values:
-        1. explicit index_cols parameter
-        2. pandas DataFrame index (if NOT default RangeIndex 0..n-1)
-        3. element kdims
-        4. all dimensions
+        Thin wrapper around the shared module-level ``get_identity_columns``
+        helper so that CDS injection, selection expressions and table
+        reverse-lookup all consult exactly the same priority rules.
         """
-        if index_cols:
-            return list(index_cols)
-        try:
-            import pandas as pd
-
-            if isinstance(self.data, pd.DataFrame):
-                idx = self.data.index
-                n = len(self.data)
-
-                def _is_default(i, nrows):
-                    if isinstance(i, pd.RangeIndex):
-                        return i.start == 0 and i.step == 1 and i.stop == nrows
-                    try:
-                        return list(i) == list(range(nrows))
-                    except Exception:
-                        return False
-
-                if not _is_default(idx, n):
-                    return list(idx.names)
-        except Exception:
-            pass
         kdim_names = [d.name for d in self.kdims]
-        if kdim_names:
-            return kdim_names
-        return [d.name for d in self.dimensions()]
+        all_dim_names = [d.name for d in self.dimensions()]
+        return get_identity_columns(self, index_cols, kdim_names, all_dim_names)
 
     def _get_identity_values(self, index_cols=None):
         """Return identity values for all rows, one value per row.
 
-        For single column identity: 1D list of values.
-        For multi-column identity: list of tuples.
+        Delegates to the shared module-level ``get_identity_values`` helper.
         """
-        cols = self._get_identity_columns(index_cols)
-        if not cols:
-            n = len(self) if hasattr(self, "__len__") else 0
-            return list(range(n))
-        try:
-            import pandas as pd
-
-            if isinstance(self.data, pd.DataFrame):
-                all_in_index = all(c in self.data.index.names for c in cols)
-                all_in_cols = all(c in self.data.columns for c in cols)
-                if all_in_index and not all_in_cols:
-                    if len(cols) == 1:
-                        return list(self.data.index.get_level_values(cols[0]).values)
-                    else:
-                        return [tuple(v) for v in self.data.index.to_flat_index().values]
-        except Exception:
-            pass
-        vals = [self.dimension_values(c, expanded=True) for c in cols]
-        if len(vals) == 1:
-            return list(vals[0])
-        return list(zip(*vals))
+        return get_identity_values(self, index_cols)
 
     def _get_index_selection(self, index, index_cols):
         self._index_skip = True

@@ -41,6 +41,7 @@ from ...core.util import (
     wrap_tuple_streams,
 )
 from ...selection import NoOpSelectionDisplay
+from ...element.selection import get_identity_values
 from ..links import Link
 from ..plot import (
     CallbackPlot,
@@ -160,48 +161,27 @@ class BokehPlot(DimensionedPlot, CallbackPlot):
     def _get_identity_values(self, element, nrows):
         """Generate unique identity values for rows of element data.
 
-        Priority:
-        1. link_selections explicit index_cols (if set via streams)
-        2. pandas DataFrame index, if NOT the default RangeIndex(0..n-1)
-        3. np.arange(nrows) as fallback integer identity
+        Delegates to the shared :func:`get_identity_values` helper in
+        ``holoviews.element.selection`` so that CDS injection, selection
+        expressions and table reverse-lookup all follow exactly the same
+        priority rules:
 
-        Returns a 1D array-like of hashable values that uniquely identify each row.
+        1. link_selections explicit ``index_cols`` (set via streams)
+        2. pandas DataFrame index, if NOT the default RangeIndex(0..n-1)
+        3. element kdims
+        4. ``list(range(nrows))`` as integer fallback
+
+        The streams ``_index_cols`` attribute is resolved here because only
+        the plotting layer has access to its attached streams; the shared
+        helper is backend-agnostic.
         """
+        resolved_index_cols = None
         for stream in getattr(self, "streams", []):
             ic = getattr(stream, "_index_cols", None)
             if ic:
-                try:
-                    vals = [element.dimension_values(c, expanded=True) for c in ic]
-                    if len(vals) == 1:
-                        return list(vals[0])
-                    else:
-                        return list(zip(*vals))
-                except Exception:
-                    pass
-
-        try:
-            import pandas as pd
-
-            if isinstance(element.data, pd.DataFrame):
-                idx = element.data.index
-
-                def _is_default_index(i, n):
-                    if isinstance(i, pd.RangeIndex):
-                        return i.start == 0 and i.step == 1 and i.stop == n
-                    try:
-                        return list(i) == list(range(n))
-                    except Exception:
-                        return False
-
-                if not _is_default_index(idx, nrows):
-                    if idx.nlevels == 1:
-                        return list(idx.values)
-                    else:
-                        return [tuple(v) for v in idx.values]
-        except Exception:
-            pass
-
-        return list(range(nrows))
+                resolved_index_cols = list(ic)
+                break
+        return get_identity_values(element, resolved_index_cols, nrows)
 
     def _update_selected(self, cds):
         from .callbacks import Selection1DCallback
