@@ -227,6 +227,71 @@ class PandasInterfaceTests(BasePandasInterfaceTests):
         df = ds.interface.reindex(ds, ["y"])
         assert df.index.names == ["y"]
 
+    def test_pandas_nullable_integer_select(self):
+        df = pd.DataFrame({"x": pd.array([1, 2, None, 4, 5], dtype="Int64"), "y": [10, 20, 30, 40, 50]})
+        ds = hv.Dataset(df, kdims=["x"], vdims=["y"])
+        selected = ds.select(x=(2, 5))
+        assert len(selected) == 2
+        assert 2 in list(selected.dimension_values("x"))
+        assert 4 in list(selected.dimension_values("x"))
+
+    def test_pandas_nullable_integer_range(self):
+        df = pd.DataFrame({"x": pd.array([1, 2, None, 4, 5], dtype="Int64")})
+        ds = hv.Dataset(df, kdims=["x"], vdims=[])
+        assert ds.range("x") == (1, 5)
+
+    def test_pandas_nullable_integer_values(self):
+        df = pd.DataFrame({"x": pd.array([1, 2, None, 4, 5], dtype="Int64"), "y": [10, 20, 30, 40, 50]})
+        ds = hv.Dataset(df, kdims=["x"], vdims=["y"])
+        vals = ds.dimension_values("x")
+        assert isinstance(vals, np.ndarray)
+        assert np.isnan(vals[2])
+
+    def test_pandas_tz_aware_datetime_values(self):
+        dates = pd.date_range("2020-01-01", periods=3, freq="D", tz="UTC")
+        df = pd.DataFrame({"x": dates, "y": [1, 2, 3]})
+        ds = hv.Dataset(df, kdims=["x"], vdims=["y"])
+        vals = ds.dimension_values("x")
+        assert vals.dtype == np.dtype("datetime64[ns]")
+
+    def test_pandas_tz_aware_datetime_range(self):
+        dates = pd.date_range("2020-01-01", periods=3, freq="D", tz="UTC")
+        df = pd.DataFrame({"x": dates})
+        ds = hv.Dataset(df, kdims=["x"], vdims=[])
+        rng = ds.range("x")
+        assert rng[0] == pd.Timestamp("2020-01-01")
+        assert rng[1] == pd.Timestamp("2020-01-03")
+
+    def test_pandas_categorical_groupby_unobserved_observed_false(self):
+        df = pd.DataFrame({
+            "cat": pd.Categorical(["b", "a", "b", "a"], categories=["a", "b", "c", "d"]),
+            "val": [10, 20, 30, 40],
+        })
+        ds = hv.Dataset(df, kdims=["cat"], vdims=["val"])
+        grouped = ds.groupby("cat")
+        keys = list(grouped.keys())
+        assert "b" in keys and "a" in keys and "c" in keys and "d" in keys
+        assert keys.index("b") < keys.index("a") < keys.index("c") < keys.index("d")
+
+    def test_pandas_categorical_aggregate_unobserved_observed_false(self):
+        df = pd.DataFrame({
+            "cat": pd.Categorical(["b", "a", "b", "a"], categories=["a", "b", "c", "d"]),
+            "val": [10, 20, 30, 40],
+        })
+        ds = hv.Dataset(df, kdims=["cat"], vdims=["val"])
+        agg = ds.aggregate("cat", function=np.mean)
+        cat_vals = list(agg.dimension_values("cat"))
+        assert "b" in cat_vals and "a" in cat_vals and "c" in cat_vals and "d" in cat_vals
+        assert cat_vals.index("b") < cat_vals.index("a") < cat_vals.index("c") < cat_vals.index("d")
+
+    def test_pandas_string_dtype_values(self):
+        if not PANDAS_GE_3_0_0:
+            pytest.skip("pandas >= 3.0.0 required")
+        df = pd.DataFrame({"x": pd.array(["a", "b", None], dtype="string"), "y": [1, 2, 3]})
+        ds = hv.Dataset(df, kdims=["x"], vdims=["y"])
+        vals = ds.dimension_values("x")
+        assert isinstance(vals, np.ndarray)
+
 
 class PandasInterfaceMultiIndexTests(HeterogeneousColumnTests, InterfaceTests):
     datatype = "dataframe"

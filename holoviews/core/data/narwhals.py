@@ -4,6 +4,7 @@ import builtins
 
 import narwhals.stable.v2 as nw
 import numpy as np
+import pandas as pd
 
 from .. import util
 from ..dimension import Dimension, dimension_name
@@ -269,6 +270,58 @@ class NarwhalsInterface(Interface):
         return cls.concat_fn(dataframes)
 
     @classmethod
+    def _get_categorical_info(cls, dataset, group_by_cols):
+        cat_info = {}
+        data = dataset.data
+        if isinstance(data, nw.LazyFrame):
+            data = data.collect()
+        for col in group_by_cols:
+            dtype = cls.dtype(dataset, col)
+            is_categorical = False
+            inner_dtype = getattr(dtype, "dtype", dtype)
+            if isinstance(inner_dtype, nw.Categorical):
+                is_categorical = True
+            if "categorical" in str(type(dtype)).lower():
+                is_categorical = True
+            if "categorical" in str(type(inner_dtype)).lower():
+                is_categorical = True
+            if is_categorical:
+                try:
+                    series = data[col]
+                    native = series.to_native()
+                    if hasattr(native, "cat"):
+                        cats = native.cat.get_categories()
+                        if hasattr(cats, "to_list"):
+                            cat_info[col] = cats.to_list()
+                        elif hasattr(cats, "tolist"):
+                            cat_info[col] = cats.tolist()
+                except Exception:
+                    pass
+        return cat_info
+
+    @classmethod
+    def _get_first_occurrence_order(cls, data, group_by):
+        order = {}
+        counter = 0
+        select_cols = data.select(group_by)
+        if isinstance(select_cols, nw.LazyFrame):
+            select_cols = select_cols.collect()
+        native_rows = select_cols.to_native()
+        if hasattr(native_rows, 'itertuples'):
+            for row in native_rows.itertuples(index=False, name=None):
+                key = row if len(group_by) > 1 else (row[0],)
+                if key not in order:
+                    order[key] = counter
+                    counter += 1
+        else:
+            for row in native_rows.iter_rows():
+                key = tuple(row) if len(group_by) > 1 else (row[0],)
+                if key not in order:
+                    order[key] = counter
+                    counter += 1
+        return order
+
+    @classmethod
     def groupby(cls, dataset, dimensions, container_type, group_type, **kwargs):
         index_dims = [dataset.get_dimension(d, strict=True) for d in dimensions]
         element_dims = [kdim for kdim in dataset.kdims if kdim not in index_dims]
@@ -284,43 +337,59 @@ class NarwhalsInterface(Interface):
             org_data = org_data.collect()
 
         group_by = [d.name for d in index_dims]
-        has_maintain_order = True
+        cat_info = cls._get_categorical_info(dataset, group_by)
+
         try:
             group_iter = org_data.group_by(group_by, maintain_order=True)
         except TypeError:
-            has_maintain_order = False
             group_iter = org_data.group_by(group_by)
-        data = []
-        for k, v in group_iter:
-            if len(group_by) == 1:
-                k = (k,)
-            data.append((k, group_type(v, **group_kwargs)))
 
-        if not has_maintain_order and len(data) > 1:
-            try:
-                first_occurrence = {}
-                counter = 0
-                select_cols = org_data.select(group_by)
-                if isinstance(select_cols, nw.LazyFrame):
-                    select_cols = select_cols.collect()
-                native_rows = select_cols.to_native()
-                if hasattr(native_rows, 'itertuples'):
-                    for row in native_rows.itertuples(index=False, name=None):
-                        key = row if len(group_by) > 1 else (row[0],)
-                        if key not in first_occurrence:
-                            first_occurrence[key] = counter
-                            counter += 1
-                else:
-                    for row in native_rows.iter_rows():
-                        key = tuple(row) if len(group_by) > 1 else (row[0],)
-                        if key not in first_occurrence:
-                            first_occurrence[key] = counter
-                            counter += 1
-                def sort_key(item):
-                    return first_occurrence.get(item[0], len(first_occurrence))
-                data.sort(key=sort_key)
-            except Exception:
-                pass
+        data_map = {}
+        for k, v in group_iter:
+            if not isinstance(k, tuple):
+                k = (k,)
+            data_map[k] = group_type(v, **group_kwargs)
+
+        first_occurrence = cls._get_first_occurrence_order(org_data, group_by)
+
+        data = list(data_map.items())
+
+        if cat_info and len(group_by) == 1:
+            cat_col = group_by[0]
+            declared_cats = cat_info.get(cat_col, [])
+            existing_keys = {str(k[0]) for k, _ in data}
+            for cat in declared_cats:
+                if str(cat) not in existing_keys:
+                    empty_df = org_data.filter(nw.lit(False))
+                    data.append(((cat,), group_type(empty_df, **group_kwargs)))
+
+        def sort_key(item):
+            key = item[0]
+            if key in first_occurrence:
+                return (0, first_occurrence[key])
+            if cat_info:
+                positions = []
+                for i, col in enumerate(group_by):
+                    declared = cat_info.get(col)
+                    if declared is not None:
+                        key_str = str(key[i])
+                        found = False
+                        for j, d in enumerate(declared):
+                            if str(d) == key_str:
+                                positions.append(j)
+                                found = True
+                                break
+                        if not found:
+                            positions.append(len(declared) + 10000)
+                    else:
+                        positions.append(0)
+                return (1, tuple(positions))
+            return (2, 0)
+
+        data.sort(key=sort_key)
+
+        if len(group_by) == 1:
+            data = [(k[0], v) for k, v in data]
 
         if issubclass(container_type, NdMapping):
             with item_check(False), sorted_context(False):
@@ -334,8 +403,10 @@ class NarwhalsInterface(Interface):
         vdims = dataset.dimensions("value", label="name")
         reindexed = cls.dframe(dataset, dimensions=cols + vdims)
         function = _AGG_FUNC_LOOKUP.get(function, function)
+        cat_info = cls._get_categorical_info(dataset, cols) if cols else {}
         expr = getattr(nw.all(), function)
         expr = expr(ddof=0) if function == "var" else expr()
+
         if len(dimensions):
             columns = reindexed.collect_schema()
             if function in ["len"]:
@@ -350,6 +421,73 @@ class NarwhalsInterface(Interface):
             except TypeError:
                 grouped = reindexed.select(all_cols).group_by(cols)
             df = grouped.agg(expr, **kwargs)
+
+            if cat_info and len(cols) == 1:
+                cat_col = cols[0]
+                declared_cats = cat_info.get(cat_col, [])
+                if declared_cats:
+                    if isinstance(df, nw.LazyFrame):
+                        df = df.collect()
+                    try:
+                        original_order = cls._get_first_occurrence_order(reindexed, cols)
+                        first_occur = {}
+                        for key_tuple, idx in original_order.items():
+                            if len(key_tuple) > 0:
+                                first_occur[str(key_tuple[0])] = idx
+
+                        native_df = df.to_native()
+                        existing_vals = []
+                        for i in range(len(native_df)):
+                            if hasattr(native_df, "item"):
+                                existing_vals.append(native_df.item(i, cat_col))
+                            else:
+                                existing_vals.append(native_df[cat_col][i])
+
+                        missing_cats = []
+                        existing_strs = {str(v) for v in existing_vals}
+                        for cat in declared_cats:
+                            if str(cat) not in existing_strs:
+                                missing_cats.append(cat)
+
+                        if missing_cats:
+                            df_schema = df.collect_schema()
+                            null_row = {}
+                            for c in df_schema:
+                                if c == cat_col:
+                                    continue
+                                null_row[c] = [None] * len(missing_cats)
+                            null_row[cat_col] = list(missing_cats)
+                            try:
+                                backend = df.implementation if hasattr(df, "implementation") else None
+                                append_df = nw.new_df(null_row, backend=backend)
+                                df = nw.concat([df, append_df])
+                            except Exception:
+                                pass
+
+                        sort_idx = []
+                        native_full = df.to_native()
+                        for i in range(len(native_full)):
+                            if hasattr(native_full, "item"):
+                                val = native_full.item(i, cat_col)
+                            else:
+                                val = native_full[cat_col][i]
+                            vs = str(val)
+                            if vs in first_occur:
+                                sort_idx.append((0, first_occur[vs]))
+                            else:
+                                found = False
+                                for j, d in enumerate(declared_cats):
+                                    if str(d) == vs:
+                                        sort_idx.append((1, j))
+                                        found = True
+                                        break
+                                if not found:
+                                    sort_idx.append((2, 99999))
+                        order = sorted(range(len(sort_idx)), key=lambda i: sort_idx[i])
+                        native_sorted = native_full[order]
+                        df = nw.from_native(native_sorted)
+                    except Exception:
+                        pass
         else:
             df = reindexed.select(expr, **kwargs)
 

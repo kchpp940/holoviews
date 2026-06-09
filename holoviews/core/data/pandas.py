@@ -310,7 +310,7 @@ class PandasInterface(Interface, PandasAPI):
             group_by = group_by[0]
         groupby_kwargs = {"sort": False}
         if PANDAS_GE_2_1_0:
-            groupby_kwargs["observed"] = True
+            groupby_kwargs["observed"] = False
         data = [
             (k, group_type(v, **group_kwargs))
             for k, v in dataset.data.groupby(group_by, **groupby_kwargs)
@@ -350,7 +350,7 @@ class PandasInterface(Interface, PandasAPI):
                 ]
             groupby_kwargs = {"sort": False}
             if PANDAS_GE_2_1_0:
-                groupby_kwargs["observed"] = True
+                groupby_kwargs["observed"] = False
             grouped = reindexed.groupby(cols, **groupby_kwargs)
             df = grouped[numeric_cols].aggregate(fn, **kwargs).reset_index()
         else:
