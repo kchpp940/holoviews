@@ -78,10 +78,14 @@ class PlotlyRenderer(Renderer):
     @bothmethod
     def _collect_plotly_config(self_or_cls, obj, seen=None):
         """Recursively walk a HoloViews object tree and collect every
-        Plotly ``config`` from leaf elements via ``get_plot_state``.
+        Plotly ``config`` from non-dynamic leaf elements.
 
-        Handles nested Layout, AdjointLayout, HoloMap frames, and
-        DynamicMap so that widgets / animated views don't lose config.
+        Walks Layout, AdjointLayout, NdOverlay children and samples
+        HoloMap (pre-computed) frames.  Deliberately **does not**
+        sample DynamicMap — dynamic frames carry their own config in
+        ``fig_dict`` when rendered, and the per-instance constructor
+        wrapper guarantees that per-frame config is merged with the
+        collected top-level config.
         """
         if seen is None:
             seen = set()
@@ -93,10 +97,14 @@ class PlotlyRenderer(Renderer):
         merged = {}
 
         try:
-            from ...core import Layout, AdjointLayout, DynamicMap, HoloMap
+            from ...core import Layout, AdjointLayout, DynamicMap, HoloMap, NdOverlay
             from ...core.element import Element
 
             if isinstance(obj, (Layout, AdjointLayout)):
+                for child in obj:
+                    child_cfg = self_or_cls._collect_plotly_config(child, seen)
+                    merged.update(child_cfg)
+            elif isinstance(obj, NdOverlay):
                 for child in obj:
                     child_cfg = self_or_cls._collect_plotly_config(child, seen)
                     merged.update(child_cfg)
@@ -106,13 +114,7 @@ class PlotlyRenderer(Renderer):
                     child_cfg = self_or_cls._collect_plotly_config(sample, seen)
                     merged.update(child_cfg)
             elif isinstance(obj, DynamicMap):
-                try:
-                    sample = obj[obj.dimensions[0].range[0]] if obj.dimensions else None
-                    if sample is not None:
-                        child_cfg = self_or_cls._collect_plotly_config(sample, seen)
-                        merged.update(child_cfg)
-                except Exception:
-                    pass
+                pass
             elif isinstance(obj, Element):
                 try:
                     fig_dict = self_or_cls.get_plot_state(obj)
@@ -122,38 +124,39 @@ class PlotlyRenderer(Renderer):
                 except Exception:
                     pass
 
-            try:
-                fig_dict = self_or_cls.get_plot_state(obj)
-                cfg = fig_dict.get("config", {})
-                if cfg:
-                    merged.update(dict(cfg))
-            except Exception:
-                pass
+            if not isinstance(obj, DynamicMap):
+                try:
+                    fig_dict = self_or_cls.get_plot_state(obj)
+                    cfg = fig_dict.get("config", {})
+                    if cfg:
+                        merged.update(dict(cfg))
+                except Exception:
+                    pass
         except Exception:
             pass
 
         return merged
 
     @bothmethod
-    def _save_from_context(self_or_cls, ctx: SaveContext):
-        """Plotly-specific save consuming a normalized SaveContext.
+    def _wrap_plotly_panes(self_or_cls, container, ctx: SaveContext):
+        """Recursively walk a Panel layout tree and install an
+        instance-level ``_panes["plotly"]`` wrapper on every
+        ``pn.pane.HoloViews`` found.
 
-        Config flow (unified, context-driven):
-          1. ``_collect_plotly_config``  walks ctx.obj recursively and
-             merges every figure's config into ctx.plotly_config.
-          2. For **Viewable** (Panel widget) saves: temporarily wraps
-             ``_PlotlyHoloviewsPane`` so that every lazily-created
-             Plotly pane inherits the merged ctx.plotly_config.
-          3. For **non-Viewable** (png/svg/gif) saves: merges
-             ctx.plotly_config into the rendered figure dict before
-             image encoding.
+        The wrapper merges ``ctx.plotly_config`` into the ``config``
+        of every ``fig_dict`` before constructing the Plotly pane.
+        Unlike replacing the class-level registry, this only affects
+        the specific HoloViewsPane instances in the layout being
+        saved — no global state is touched.
         """
-        ctx.plotly_config = self_or_cls._collect_plotly_config(ctx.obj)
+        import panel as pn
 
-        self_or_cls._build_plot(ctx)
-
-        if ctx.is_viewable:
-            original_constructor = pn.pane.HoloViews._panes.get("plotly")
+        if isinstance(container, pn.pane.HoloViews):
+            try:
+                instance_panes = dict(container._panes)
+            except Exception:
+                return
+            original_constructor = instance_panes.get("plotly")
 
             def _wrapped_constructor(fig_dict, **kwargs):
                 existing_cfg = dict(fig_dict.get("config", {}))
@@ -165,14 +168,44 @@ class PlotlyRenderer(Renderer):
                     fig_dict, viewport_update_policy="mouseup", config=existing_cfg, **kwargs
                 )
 
-            pn.pane.HoloViews._panes["plotly"] = _wrapped_constructor
-            try:
-                ctx.plot.layout.save(
-                    ctx.target, embed=True, resources=ctx.resources, title=ctx.title
-                )
-            finally:
-                if original_constructor is not None:
-                    pn.pane.HoloViews._panes["plotly"] = original_constructor
+            instance_panes["plotly"] = _wrapped_constructor
+            container._panes = instance_panes
+
+        children = getattr(container, "objects", None)
+        if children:
+            for child in children:
+                self_or_cls._wrap_plotly_panes(child, ctx)
+
+    @bothmethod
+    def _save_from_context(self_or_cls, ctx: SaveContext):
+        """Plotly-specific save consuming a normalized SaveContext.
+
+        Config flow (context-driven, no global state mutation):
+          1. ``_collect_plotly_config`` walks ctx.obj (skipping
+             DynamicMap) to produce a merged ``ctx.plotly_config``.
+          2. ``_build_plot`` constructs the plot (DynamicMap frames
+             are built here as part of the normal pipeline — no extra
+             sampling).
+          3. **Viewable** path: ``_wrap_plotly_panes`` recursively
+             installs an instance-level constructor wrapper on every
+             HoloViewsPane in the Panel layout.  Each Plotly pane,
+             when lazily created, inherits the merged config.  No
+             global ``pn.pane.HoloViews._panes`` mutation.
+          4. **Non-Viewable** path: merges ctx.plotly_config into the
+             rendered figure dict before image encoding.
+        """
+        ctx.plotly_config = self_or_cls._collect_plotly_config(ctx.obj)
+
+        self_or_cls._build_plot(ctx)
+
+        if ctx.is_viewable:
+            layout = ctx.plot.layout if hasattr(ctx.plot, "layout") else ctx.plot
+            self_or_cls._wrap_plotly_panes(layout, ctx)
+            self_or_cls._wrap_plotly_panes(ctx.plot, ctx)
+
+            ctx.plot.layout.save(
+                ctx.target, embed=True, resources=ctx.resources, title=ctx.title
+            )
             return
 
         rendered = self_or_cls(ctx.plot, ctx.fmt)
