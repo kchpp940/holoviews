@@ -76,46 +76,126 @@ class PlotlyRenderer(Renderer):
     _render_with_panel = True
 
     @bothmethod
+    def _collect_plotly_config(self_or_cls, obj, seen=None):
+        """Recursively walk a HoloViews object tree and collect every
+        Plotly ``config`` from leaf elements via ``get_plot_state``.
+
+        Handles nested Layout, AdjointLayout, HoloMap frames, and
+        DynamicMap so that widgets / animated views don't lose config.
+        """
+        if seen is None:
+            seen = set()
+        oid = id(obj)
+        if oid in seen:
+            return {}
+        seen.add(oid)
+
+        merged = {}
+
+        try:
+            from ...core import Layout, AdjointLayout, DynamicMap, HoloMap
+            from ...core.element import Element
+
+            if isinstance(obj, (Layout, AdjointLayout)):
+                for child in obj:
+                    child_cfg = self_or_cls._collect_plotly_config(child, seen)
+                    merged.update(child_cfg)
+            elif isinstance(obj, HoloMap):
+                if len(obj) > 0:
+                    sample = obj.last if obj.last is not None else list(obj.values())[0]
+                    child_cfg = self_or_cls._collect_plotly_config(sample, seen)
+                    merged.update(child_cfg)
+            elif isinstance(obj, DynamicMap):
+                try:
+                    sample = obj[obj.dimensions[0].range[0]] if obj.dimensions else None
+                    if sample is not None:
+                        child_cfg = self_or_cls._collect_plotly_config(sample, seen)
+                        merged.update(child_cfg)
+                except Exception:
+                    pass
+            elif isinstance(obj, Element):
+                try:
+                    fig_dict = self_or_cls.get_plot_state(obj)
+                    cfg = fig_dict.get("config", {})
+                    if cfg:
+                        merged.update(dict(cfg))
+                except Exception:
+                    pass
+
+            try:
+                fig_dict = self_or_cls.get_plot_state(obj)
+                cfg = fig_dict.get("config", {})
+                if cfg:
+                    merged.update(dict(cfg))
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        return merged
+
+    @bothmethod
     def _save_from_context(self_or_cls, ctx: SaveContext):
         """Plotly-specific save consuming a normalized SaveContext.
 
-        Extracts the Plotly figure ``config`` from the *already-built*
-        plot (``ctx.plot``) — never from the raw ``ctx.obj`` — so that
-        DynamicMap / widgets construction happens exactly once inside
-        ``_build_plot``. Config preservation for the final output is
-        already guaranteed by ``get_plot_state`` (non-Viewable path)
-        and ``_PlotlyHoloviewsPane`` (Viewable path); the copy on the
-        context is kept for introspection / downstream hooks.
+        Config flow (unified, context-driven):
+          1. ``_collect_plotly_config``  walks ctx.obj recursively and
+             merges every figure's config into ctx.plotly_config.
+          2. For **Viewable** (Panel widget) saves: temporarily wraps
+             ``_PlotlyHoloviewsPane`` so that every lazily-created
+             Plotly pane inherits the merged ctx.plotly_config.
+          3. For **non-Viewable** (png/svg/gif) saves: merges
+             ctx.plotly_config into the rendered figure dict before
+             image encoding.
         """
+        ctx.plotly_config = self_or_cls._collect_plotly_config(ctx.obj)
+
         self_or_cls._build_plot(ctx)
 
-        try:
-            if ctx.is_viewable:
-                config = {}
-                layout = ctx.plot.layout if hasattr(ctx.plot, "layout") else ctx.plot
-                for pane in getattr(layout, "_panes", []):
-                    if hasattr(pane, "config"):
-                        config.update(dict(pane.config))
-                    obj = getattr(pane, "object", None)
-                    if isinstance(obj, dict) and "config" in obj:
-                        config.update(dict(obj["config"]))
-                ctx.plotly_config = config
-            else:
-                fig_dict = self_or_cls.get_plot_state(ctx.plot)
-                ctx.plotly_config = dict(fig_dict.get("config", {}))
-        except Exception:
-            ctx.plotly_config = {}
-
         if ctx.is_viewable:
-            ctx.plot.layout.save(
-                ctx.target, embed=True, resources=ctx.resources, title=ctx.title
-            )
+            original_constructor = pn.pane.HoloViews._panes.get("plotly")
+
+            def _wrapped_constructor(fig_dict, **kwargs):
+                existing_cfg = dict(fig_dict.get("config", {}))
+                existing_cfg.update(ctx.plotly_config)
+                fig_dict["config"] = existing_cfg
+                if original_constructor is not None:
+                    return original_constructor(fig_dict, **kwargs)
+                return pn.pane.Plotly(
+                    fig_dict, viewport_update_policy="mouseup", config=existing_cfg, **kwargs
+                )
+
+            pn.pane.HoloViews._panes["plotly"] = _wrapped_constructor
+            try:
+                ctx.plot.layout.save(
+                    ctx.target, embed=True, resources=ctx.resources, title=ctx.title
+                )
+            finally:
+                if original_constructor is not None:
+                    pn.pane.HoloViews._panes["plotly"] = original_constructor
             return
 
         rendered = self_or_cls(ctx.plot, ctx.fmt)
         if rendered is None:
             return
         (_data, info) = rendered
+
+        if ctx.plotly_config and ctx.fmt in ("png", "svg", "gif"):
+            try:
+                fig_dict = self_or_cls.get_plot_state(ctx.plot)
+                existing_cfg = dict(fig_dict.get("config", {}))
+                existing_cfg.update(ctx.plotly_config)
+                fig_dict["config"] = existing_cfg
+                figure = go.Figure(fig_dict)
+                import plotly.io as pio
+                if ctx.fmt == "svg":
+                    _data = pio.to_image(figure, ctx.fmt).decode("utf-8")
+                else:
+                    _data = pio.to_image(figure, ctx.fmt, validate=False)
+                rendered = (_data, info)
+            except Exception:
+                pass
+
         encoded = self_or_cls.encode(rendered)
         prefix = self_or_cls._save_prefix(info["file-ext"])
         if prefix:

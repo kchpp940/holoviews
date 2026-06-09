@@ -691,9 +691,9 @@ class Renderer(Exporter):
 
         if ctx.is_path_str:
             parts = basename.split(".")
-            if fmt == "auto" and parts and parts[-1] != "html":
+            if fmt == "auto" and len(parts) > 1 and parts[-1] in supported:
                 fmt = parts[-1]
-            if parts[-1] in supported:
+            if len(parts) > 1 and parts[-1] in supported:
                 basename = ".".join(parts[:-1])
                 ctx.target = basename
             ctx.path_base = os.path.basename(basename)
