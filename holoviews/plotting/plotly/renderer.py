@@ -79,18 +79,32 @@ class PlotlyRenderer(Renderer):
     def _save_from_context(self_or_cls, ctx: SaveContext):
         """Plotly-specific save consuming a normalized SaveContext.
 
-        Handles:
-          * Extracting and preserving the Plotly figure ``config`` so
-            it survives the round-trip through Panel/HoloViewsPane
-          * Viewable (Panel widget) vs direct figure rendering dispatch
+        Extracts the Plotly figure ``config`` from the *already-built*
+        plot (``ctx.plot``) — never from the raw ``ctx.obj`` — so that
+        DynamicMap / widgets construction happens exactly once inside
+        ``_build_plot``. Config preservation for the final output is
+        already guaranteed by ``get_plot_state`` (non-Viewable path)
+        and ``_PlotlyHoloviewsPane`` (Viewable path); the copy on the
+        context is kept for introspection / downstream hooks.
         """
+        self_or_cls._build_plot(ctx)
+
         try:
-            fig_dict = self_or_cls.get_plot_state(ctx.obj)
-            ctx.plotly_config = dict(fig_dict.get("config", {}))
+            if ctx.is_viewable:
+                config = {}
+                layout = ctx.plot.layout if hasattr(ctx.plot, "layout") else ctx.plot
+                for pane in getattr(layout, "_panes", []):
+                    if hasattr(pane, "config"):
+                        config.update(dict(pane.config))
+                    obj = getattr(pane, "object", None)
+                    if isinstance(obj, dict) and "config" in obj:
+                        config.update(dict(obj["config"]))
+                ctx.plotly_config = config
+            else:
+                fig_dict = self_or_cls.get_plot_state(ctx.plot)
+                ctx.plotly_config = dict(fig_dict.get("config", {}))
         except Exception:
             ctx.plotly_config = {}
-
-        self_or_cls._build_plot(ctx)
 
         if ctx.is_viewable:
             ctx.plot.layout.save(
