@@ -15,6 +15,69 @@ from ..util.dependencies import cp, da
 from .util import finite_range
 
 
+def _is_nullable_dtype(dt) -> bool:
+    """Infer structural nullability from a dtype-like object.
+
+    - Native numpy integer / boolean dtypes are non-nullable.
+    - Native numpy float / complex / datetime64 / timedelta64 / object are nullable.
+    - Pandas ExtensionDtype (Int64, Float64, boolean, StringDtype, …) is
+      structurally nullable by design.
+    - Narwhals / Polars dtypes are nullable by design (Polars has no
+      native non-nullable primitive at the column/Series level).
+    """
+    # -- Narwhals / Polars
+    if hasattr(dt, "is_numeric") and hasattr(dt, "is_temporal"):
+        return True
+
+    # -- Pandas ExtensionDtype: has _is_numeric or the NA_value sentinel
+    if hasattr(dt, "na_value") and not isinstance(dt, np.dtype):
+        return True
+
+    # -- numpy dtype
+    kind = dtype_kind(dt)
+    return kind in "fcOmM"
+
+
+def _count_missing(arr) -> int:
+    """Count missing values in an array-like robustly.
+
+    Tries the most general detection (pandas ``isna``) first, then falls back
+    to numpy-based detection by dtype kind.  This ensures correct counts for
+    pandas extension arrays (Int64 / Float64 with ``pd.NA``), masked arrays,
+    narwhals series, and plain numpy arrays alike.
+    """
+    # Try pandas isna first — it handles pd.NA, np.nan, NaT, None, masked arrays
+    try:
+        import pandas as pd
+        return int(pd.isna(np.asarray(arr) if not hasattr(arr, "__len__") else arr).sum())
+    except Exception:
+        pass
+
+    kind = dtype_kind(arr)
+    if kind in "fc":
+        try:
+            return int(np.count_nonzero(np.isnan(arr)))
+        except Exception:
+            return 0
+    if kind in "Mm":
+        try:
+            return int(np.count_nonzero(np.isnat(arr)))
+        except Exception:
+            return 0
+    if kind in "iub":
+        # Numpy native int/uint/bool cannot carry NaN.  Extension ints would
+        # have been caught by the pandas.isna path above.
+        return 0
+    # Object / string / anything else
+    n = 0
+    for v in arr:
+        if v is None:
+            n += 1
+        elif isinstance(v, float) and np.isnan(v):
+            n += 1
+    return n
+
+
 class DataError(ValueError):
     """DataError is raised when the data cannot be interpreted"""
 
@@ -707,29 +770,96 @@ class Interface(param.Parameterized):
             return count
 
     @classmethod
+    def _empty_stats(cls, value=None):
+        return {
+            "value": value,
+            "computed": False,
+            "estimated": False,
+            "sample_size": None,
+            "total_count": None,
+        }
+
+    @classmethod
+    def _stats(cls, value, total_count, estimated=False, sample_size=None):
+        return {
+            "value": value,
+            "computed": True,
+            "estimated": estimated,
+            "sample_size": sample_size if estimated else None,
+            "total_count": total_count,
+        }
+
+    @classmethod
     def dimension_schema(cls, dataset, dimension, sample_size=None, compute=True):
         """Returns a structured schema dictionary for a single dimension.
 
         Unified schema builder that assembles the dimension summary from
         three core interface primitives: ``dtype``, ``range``, and
-        ``values``.  The statistical logic (unique count, missing count,
-        categorical/datetime detection, nullability inference) lives here
-        in the base class and is shared across all backends (pandas,
-        dask, xarray, narwhals, etc.).  No per-backend override is
+        ``values``.  The statistical logic lives here in the base class
+        and is shared across all backends.  No per-backend override is
         needed for schema assembly.
 
-        **Lazy mode** (``compute=False``):  Only dtype-inferable fields
-        are populated (``name``, ``dtype``, ``is_categorical``,
-        ``is_datetime``, ``is_nullable``).  Fields that require data
-        materialization (``range``, ``unique_count``,
-        ``missing_count``, ``total_count``) are set to ``None``.
-        This avoids accidentally triggering a full ``.compute()`` on
-        dask DataFrames or narwhals LazyFrames.
+        **Output structure**
+
+        Every dimension entry is split into *stable base info* (always
+        available, inferred from dtype alone) and per-statistic stats
+        objects.  Each stats object carries its own provenance flags so
+        consumers can tell per-field whether a value is exact,
+        estimated, or unavailable::
+
+            {
+                # Base info — always populated
+                "name": "x",
+                "dtype": "int64",
+                "is_categorical": False,  # dtype kind inference
+                "is_datetime":    False,
+                "is_nullable":    False,  # structural nullability from dtype
+
+                # Per-statistic stats — each with independent provenance
+                "range":         {"value": (1,3),  "computed": True, ...},
+                "unique_count":  {"value": 3,      "computed": True, ...},
+                "missing_count": {"value": 0,      "computed": True, ...},
+                "total_count":   {"value": 3,      "computed": True, ...},
+            }
+
+        Each stats object has the shape ``{value, computed, estimated,
+        sample_size, total_count}``:
+
+        - ``value`` — the statistic itself, or ``None`` when
+          ``computed`` is ``False``
+        - ``computed`` — whether the backend actually materialized
+          the data needed for this statistic
+        - ``estimated`` — whether ``value`` is an estimate derived from
+          a random sample (only applies to ``unique_count`` /
+          ``missing_count``; ``range`` and ``total_count`` are always
+          exact when computed)
+        - ``sample_size`` — number of rows used for the estimate, or
+          ``None`` when exact or unavailable
+        - ``total_count`` — total population size used to scale
+          estimates, or ``None`` when unavailable
+
+        **Lazy mode** (``compute=False``):  Only the base-info fields
+        are populated.  Every stats object has ``computed=False`` and
+        ``value=None`` so that no data is materialized.
 
         **Sampling mode** (``sample_size`` set):  ``unique_count`` and
-        ``missing_count`` are estimated from a random sample and scaled
-        to the full population.  The ``estimated`` flag is set to
-        ``True`` and the actual ``sample_size`` used is recorded.
+        ``missing_count`` are estimated from a random sample (and
+        scaled up to the full population).  ``range`` and
+        ``total_count`` are always exact when computed (they reuse the
+        existing ``Interface.range`` primitive which has efficient
+        backend implementations).  If ``sample_size >= total_count``
+        the statistics fall back to exact computation and
+        ``estimated`` stays ``False``.
+
+        **Edge cases**
+
+        - Empty column (``total_count == 0``):  ``range.value`` is
+          ``(None, None)``; counts are ``0``.
+        - All-missing column:  ``missing_count.value == total_count.value``.
+        - ``is_nullable`` reflects *structural* nullability from the
+          dtype kind only; it does **not** depend on whether missing
+          values were actually observed, so it is stable across
+          ``compute`` / ``sample_size`` settings.
 
         Parameters
         ----------
@@ -738,121 +868,90 @@ class Interface(param.Parameterized):
         dimension : str or Dimension
             Dimension to return the schema for
         sample_size : int, optional
-            If provided, estimate unique/missing counts from this many
-            sampled values instead of scanning the full dataset
+            If provided, estimate ``unique_count`` and ``missing_count``
+            from a random sample of this many rows instead of scanning
+            the full dataset.  ``range`` and ``total_count`` remain
+            exact.  Ignored when ``compute=False``.
         compute : bool, default True
-            Whether to compute lazy data immediately.  When ``False``,
-            only dtype-inferable fields are filled; data-dependent
-            fields are ``None`` and ``computed`` is ``False``.
+            Whether to materialize data for statistics.  When
+            ``False`` only dtype-derived base fields are populated.
 
         Returns
         -------
         dict
-            Dictionary with keys:
-
-            - **name** (*str*): dimension name
-            - **dtype** (*str*): data type string
-            - **is_categorical** (*bool*): dtype is string/object/unicode
-            - **is_datetime** (*bool*): dtype is datetime
-            - **is_nullable** (*bool*): dtype can hold nulls or actual
-              missing values found
-            - **range** (*tuple* or *None*): ``(min, max)`` or ``None``
-              when compute=False
-            - **unique_count** (*int* or *None*): exact or estimated
-              count, ``None`` when compute=False
-            - **missing_count** (*int* or *None*): exact or estimated
-              count, ``None`` when compute=False
-            - **total_count** (*int* or *None*): total number of
-              values, ``None`` when compute=False
-            - **computed** (*bool*): whether data-dependent fields
-              were actually computed
-            - **estimated** (*bool*): whether unique/missing counts
-              are estimates from a sample
-            - **sample_size** (*int* or *None*): actual sample size
-              used for estimation
+            Dimension schema as described above.
         """
         dim = dataset.get_dimension(dimension, strict=True)
         dt = cls.dtype(dataset, dim)
         kind = dtype_kind(dt)
 
-        if not compute:
-            return {
-                "name": dim.name,
-                "dtype": str(dt),
-                "is_categorical": kind in "SUO",
-                "is_datetime": kind == "M",
-                "is_nullable": kind in "fcOmM",
-                "range": None,
-                "unique_count": None,
-                "missing_count": None,
-                "total_count": None,
-                "computed": False,
-                "estimated": False,
-                "sample_size": None,
-            }
-
-        dim_range = cls.range(dataset, dim)
-        values = cls.values(dataset, dim, compute=True)
-        total_count = len(values)
-
-        is_estimated = sample_size is not None and total_count > sample_size
-
-        if is_estimated:
-            rng = np.random.default_rng()
-            idx = rng.choice(total_count, size=sample_size, replace=False)
-            sample = values[idx]
-
-            unique_vals = cls.values(dataset, dim, expanded=False, compute=True)
-            if len(unique_vals) > sample_size:
-                unique_count = len(np.unique(sample))
-            else:
-                unique_count = len(unique_vals)
-
-            kind_s = dtype_kind(sample)
-            if kind_s in "iub":
-                sample_missing = 0
-            elif kind_s in "fc":
-                sample_missing = int(np.count_nonzero(np.isnan(sample)))
-            elif kind_s in "Mm":
-                sample_missing = int(np.count_nonzero(np.isnat(sample)))
-            else:
-                sample_missing = 0
-                for v in sample:
-                    if v is None:
-                        sample_missing += 1
-                    elif isinstance(v, float) and np.isnan(v):
-                        sample_missing += 1
-            missing_count = int(round(sample_missing * total_count / sample_size))
-        else:
-            unique_count = len(cls.values(dataset, dim, expanded=False, compute=True))
-            kind_v = dtype_kind(values)
-            if kind_v in "iub":
-                missing_count = 0
-            elif kind_v in "fc":
-                missing_count = int(np.count_nonzero(np.isnan(values)))
-            elif kind_v in "Mm":
-                missing_count = int(np.count_nonzero(np.isnat(values)))
-            else:
-                missing_count = 0
-                for v in values:
-                    if v is None:
-                        missing_count += 1
-                    elif isinstance(v, float) and np.isnan(v):
-                        missing_count += 1
-
-        return {
+        base_info = {
             "name": dim.name,
             "dtype": str(dt),
             "is_categorical": kind in "SUO",
             "is_datetime": kind == "M",
-            "is_nullable": kind in "fcOmM" or missing_count > 0,
-            "range": dim_range,
-            "unique_count": unique_count,
-            "missing_count": missing_count,
-            "total_count": total_count,
-            "computed": True,
-            "estimated": is_estimated,
-            "sample_size": sample_size if is_estimated else None,
+            "is_nullable": _is_nullable_dtype(dt),
+        }
+
+        if not compute:
+            return {
+                **base_info,
+                "range": cls._empty_stats(),
+                "unique_count": cls._empty_stats(),
+                "missing_count": cls._empty_stats(),
+                "total_count": cls._empty_stats(),
+            }
+
+        values = cls.values(dataset, dim, compute=True)
+        total_count = len(values)
+
+        total_count_stats = cls._stats(total_count, total_count)
+
+        if total_count == 0:
+            range_stats = cls._stats((None, None), total_count)
+            unique_stats = cls._stats(0, total_count)
+            missing_stats = cls._stats(0, total_count)
+        else:
+            dim_range = cls.range(dataset, dim)
+            range_stats = cls._stats(dim_range, total_count)
+
+            use_sampling = sample_size is not None and total_count > sample_size
+
+            if use_sampling:
+                rng = np.random.default_rng()
+                idx = rng.choice(total_count, size=sample_size, replace=False)
+                sample = values[idx]
+
+                unique_vals_full = cls.values(dataset, dim, expanded=False, compute=True)
+                if len(unique_vals_full) <= sample_size:
+                    unique_count = len(unique_vals_full)
+                    unique_stats = cls._stats(unique_count, total_count)
+                else:
+                    unique_count = len(np.unique(sample))
+                    unique_stats = cls._stats(
+                        unique_count, total_count,
+                        estimated=True, sample_size=sample_size,
+                    )
+
+                sample_missing = _count_missing(sample)
+                missing_count = int(round(sample_missing * total_count / sample_size))
+                missing_stats = cls._stats(
+                    missing_count, total_count,
+                    estimated=True, sample_size=sample_size,
+                )
+            else:
+                unique_count = len(cls.values(dataset, dim, expanded=False, compute=True))
+                unique_stats = cls._stats(unique_count, total_count)
+
+                missing_count = _count_missing(values)
+                missing_stats = cls._stats(missing_count, total_count)
+
+        return {
+            **base_info,
+            "range": range_stats,
+            "unique_count": unique_stats,
+            "missing_count": missing_stats,
+            "total_count": total_count_stats,
         }
 
     @classmethod

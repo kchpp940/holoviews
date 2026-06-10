@@ -568,68 +568,93 @@ class Dataset(Element, metaclass=PipelineMeta):
     def schema(self, sample_size=None, compute=True):
         """Returns a structured schema of all dimensions in the Dataset.
 
-        The schema contains metadata about each key and value dimension
-        including data type, categorical/datetime flags, nullability,
-        data range, unique count and missing count.  The computation
-        reuses three core interface primitives — ``dtype``, ``range``,
-        and ``values`` — so that every backend (pandas, dask, xarray,
-        narwhals, etc.) produces a consistent field set without any
-        per-backend schema logic.
+        Each dimension entry is split into *stable base info* (always
+        available, inferred from dtype alone) and per-statistic stats
+        objects.  Every stats object carries independent provenance
+        flags (``value``, ``computed``, ``estimated``,
+        ``sample_size``, ``total_count``) so callers can distinguish
+        per-field between exact values, sampled estimates, and
+        unavailable data.
 
-        Each dimension entry also carries provenance metadata
-        (``computed``, ``estimated``, ``sample_size``, ``total_count``)
-        so callers can tell whether a value is exact, estimated, or
-        unavailable.
+        The computation reuses three core interface primitives —
+        ``dtype``, ``range``, and ``values`` — so every backend
+        (pandas, dask, xarray, narwhals, etc.) produces a consistent
+        field set without any per-backend schema logic.
+
+        **Output structure**::
+
+            {
+                "kdims": [
+                    {
+                        # Base info — always populated, dtype-derived
+                        "name": "x",
+                        "dtype": "int64",
+                        "is_categorical": False,
+                        "is_datetime": False,
+                        "is_nullable": False,
+
+                        # Stats — each with independent provenance
+                        "range": {
+                            "value": (1, 3), "computed": True,
+                            "estimated": False,
+                            "sample_size": None, "total_count": 3,
+                        },
+                        "unique_count":  {"value": 3, "computed": True, ...},
+                        "missing_count": {"value": 0, "computed": True, ...},
+                        "total_count":   {"value": 3, "computed": True, ...},
+                    },
+                    ...
+                ],
+                "vdims": [...],
+            }
 
         Parameters
         ----------
         sample_size : int, optional
             If provided, estimate ``unique_count`` and ``missing_count``
-            from a random sample of this many values instead of scanning
-            the full dataset.  Useful for large lazy datasets where a
-            full scan would be expensive.  The missing count estimate
-            is scaled back up to the full population size.  When
-            sampling is active, ``estimated`` is ``True`` and the
-            actual ``sample_size`` is recorded.
+            from a random sample of this many rows instead of scanning
+            the full dataset.  ``range`` and ``total_count`` remain
+            exact because they reuse ``Interface.range`` which has
+            efficient backend implementations.  When ``sample_size >=
+            total_count`` the computation falls back to exact mode
+            (``estimated`` remains ``False``).  Ignored when
+            ``compute=False``.
         compute : bool, default True
-            Whether to compute lazy data immediately.  When ``False``,
-            only dtype-inferable fields are filled (``name``, ``dtype``,
-            ``is_categorical``, ``is_datetime``, ``is_nullable``); data-
-            dependent fields (``range``, ``unique_count``,
-            ``missing_count``, ``total_count``) are ``None`` and
-            ``computed`` is ``False``.  This prevents accidental full
+            Whether to materialize data for statistics.  When
+            ``False`` only dtype-derived base fields are populated;
+            all stats objects report ``computed=False`` with
+            ``value=None``.  This prevents accidental full
             materialization of dask DataFrames or narwhals LazyFrames.
 
         Returns
         -------
         dict
             Dictionary with ``'kdims'`` and ``'vdims'`` keys.  Each
-            value is a list of dimension-schema dictionaries containing:
+            value is a list of dimension-schema dictionaries.
 
-            - **name** (*str*): dimension name
-            - **dtype** (*str*): data type string
-            - **is_categorical** (*bool*): whether the dimension is
-              categorical (string / object / unicode dtype)
-            - **is_datetime** (*bool*): whether the dimension is
-              datetime
-            - **is_nullable** (*bool*): whether the dimension can
-              contain null / missing values
-            - **range** (*tuple* or *None*): ``(min, max)`` data range,
-              or ``None`` when compute=False
-            - **unique_count** (*int* or *None*): number of unique
-              values (exact or estimated), or ``None`` when
-              compute=False
-            - **missing_count** (*int* or *None*): number of missing
-              values (exact or estimated), or ``None`` when
-              compute=False
-            - **total_count** (*int* or *None*): total number of
-              values, or ``None`` when compute=False
-            - **computed** (*bool*): whether data-dependent fields
-              were actually computed
-            - **estimated** (*bool*): whether unique/missing counts
-              are estimates from a sample
-            - **sample_size** (*int* or *None*): actual sample size
-              used for estimation
+        **Stats provenance keys** (present on every stats object):
+
+        - **value** — the statistic itself, or ``None`` when
+          ``computed`` is ``False``
+        - **computed** — whether the backend actually materialized
+          the data needed for this statistic
+        - **estimated** — whether ``value`` is an estimate derived
+          from a random sample (only applies to ``unique_count``
+          and ``missing_count``)
+        - **sample_size** — number of rows used for the estimate,
+          or ``None`` when exact or unavailable
+        - **total_count** — total population size used to scale
+          estimates, or ``None`` when unavailable
+
+        **Edge-case semantics**
+
+        - Empty column (``total_count.value == 0``):  ``range.value``
+          is ``(None, None)``; all count stats are ``0``.
+        - All-missing column: ``missing_count.value == total_count.value``.
+        - ``is_nullable`` reflects *structural* nullability from the
+          dtype kind only; it does **not** depend on whether missing
+          values were actually observed, so it is stable across
+          ``compute`` / ``sample_size`` settings.
 
         Examples
         --------
@@ -638,16 +663,16 @@ class Dataset(Element, metaclass=PipelineMeta):
         >>> s = ds.schema()
         >>> s["kdims"][0]["name"]
         'x'
-        >>> s["kdims"][0]["computed"]
+        >>> s["kdims"][0]["range"]["computed"]
         True
-        >>> s["kdims"][0]["estimated"]
-        False
+        >>> s["vdims"][0]["missing_count"]["value"]
+        1
 
-        >>> # Lazy mode — no data materialization
+        >>> # Lazy mode — zero materialization
         >>> s_lazy = ds.schema(compute=False)
-        >>> s_lazy["kdims"][0]["range"] is None
+        >>> s_lazy["kdims"][0]["range"]["value"] is None
         True
-        >>> s_lazy["kdims"][0]["computed"]
+        >>> s_lazy["kdims"][0]["range"]["computed"]
         False
         """
         return {
