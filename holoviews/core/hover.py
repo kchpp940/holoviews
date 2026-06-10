@@ -564,33 +564,156 @@ class HoverResolver:
         """
         return self.get_export_spec()
 
-    def attach_metadata(self, backend: str, state: Any) -> Any:
+    def attach_metadata(self, backend: str, state: Any, extra: dict | None = None) -> Any:
         """Attach the resolved hover metadata to a backend figure ``state``.
 
+        Parameters
+        ----------
+        backend : {"bokeh", "plotly", "matplotlib"}
+        state
+            The backend-specific figure / state object.
+        extra : dict, optional
+            Additional data to merge into the metadata payload
+            (e.g. per-trace ``columns`` metadata for Plotly).
+
+        Returns
+        -------
+        state
+            The (possibly mutated) ``state``.
+
+        Writing locations
+        ------------------
         - **bokeh**: appends a dict tag to ``state.tags``
         - **plotly**: writes ``state['layout']['metadata'][METADATA_KEY]``
         - **matplotlib**: sets ``state._hv_hover_metadata`` attribute
-
-        Returns the (possibly mutated) ``state``.
         """
         spec = self.get_export_spec()
-        payload = {self.METADATA_KEY: spec}
+        if extra:
+            payload = {self.METADATA_KEY: {**spec, **extra}}
+        else:
+            payload = {self.METADATA_KEY: spec}
 
         if backend == "bokeh":
             if hasattr(state, "tags"):
-                state.tags = list(state.tags) + [payload]
+                existing = [
+                    t for t in state.tags
+                    if not (isinstance(t, dict) and self.METADATA_KEY in t)
+                ]
+                state.tags = existing + [payload]
         elif backend == "plotly":
             if isinstance(state, dict):
                 layout = state.setdefault("layout", {})
                 metadata = layout.setdefault("metadata", {})
                 if isinstance(metadata, dict):
-                    metadata.update(payload)
+                    if self.METADATA_KEY in metadata and isinstance(metadata[self.METADATA_KEY], dict):
+                        existing = metadata[self.METADATA_KEY]
+                        if "fields" not in existing and "fields" in payload[self.METADATA_KEY]:
+                            existing["fields"] = payload[self.METADATA_KEY]["fields"]
+                        for k, v in payload[self.METADATA_KEY].items():
+                            existing.setdefault(k, v)
+                    else:
+                        metadata[self.METADATA_KEY] = payload[self.METADATA_KEY]
         elif backend == "matplotlib":
             try:
-                state._hv_hover_metadata = spec
+                state._hv_hover_metadata = payload[self.METADATA_KEY]
             except Exception:
                 pass
         return state
+
+    # ------------------------------------------------------------------
+    # Aggregation helpers (Overlay / NdOverlay / DynamicMap)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def merge_export_specs(specs: list[dict]) -> dict:
+        """Merge multiple :meth:`get_export_spec` outputs into one.
+
+        Used by Overlay/NdOverlay/DynamicMap renderers to aggregate the
+        hover metadata from every sub-element into a single top-level
+        payload written into the exported figure state.
+        """
+        specs = [s for s in specs if s]
+        if not specs:
+            return {"version": 1, "backend_capabilities": {
+                b: sorted(list(k)) for b, k in _BACKEND_FORMATTER_CAPABILITIES.items()
+            }, "fields": [], "elements": []}
+
+        merged_fields: list[dict] = []
+        seen_fields: set[tuple] = set()
+        elements: list[dict] = []
+        for idx, s in enumerate(specs):
+            for f in s.get("fields", []):
+                key = (f.get("canonical_name"), f.get("sanitized_name"), f.get("label"))
+                if key not in seen_fields:
+                    seen_fields.add(key)
+                    merged_fields.append(f)
+            elem = {
+                "index": idx,
+                "fields": [f.get("sanitized_name") for f in s.get("fields", [])],
+            }
+            if "traces" in s:
+                elem["traces"] = s["traces"]
+            elements.append(elem)
+
+        base = specs[0]
+        return {
+            "version": base.get("version", 1),
+            "backend_capabilities": base.get(
+                "backend_capabilities",
+                {b: sorted(list(k)) for b, k in _BACKEND_FORMATTER_CAPABILITIES.items()},
+            ),
+            "fields": merged_fields,
+            "elements": elements,
+            **{k: v for k, v in base.items() if k not in {"version", "backend_capabilities", "fields", "elements"}},
+        }
+
+    @staticmethod
+    def collect_from_plot(plot) -> list[dict]:
+        """Walk a HoloViews *plot* tree and collect every element's
+        :meth:`get_export_spec` output.
+
+        Supports ElementPlot, OverlayPlot, NdOverlayPlot, GridSpace
+        and DynamicMap-like composites.
+        """
+        results: list[dict] = []
+        seen_elements: set[int] = set()
+
+        def _visit(p):
+            element = getattr(p, "current_key", None) is not None and hasattr(p, "hmap") and p.hmap is not None
+            # Collect from this plot's element
+            if hasattr(p, "current_frame") and p.current_frame is not None:
+                eid = id(p.current_frame)
+                if eid not in seen_elements and getattr(p.current_frame, "hover_fields", None) is not None:
+                    try:
+                        results.append(p.current_frame._get_hover_resolver().get_export_spec())
+                        seen_elements.add(eid)
+                    except Exception:
+                        pass
+            elif hasattr(p, "element") and p.element is not None and getattr(p.element, "hover_fields", None) is not None:
+                eid = id(p.element)
+                if eid not in seen_elements:
+                    try:
+                        results.append(p.element._get_hover_resolver().get_export_spec())
+                        seen_elements.add(eid)
+                    except Exception:
+                        pass
+
+            # Recurse into children
+            for attr in ("subplots", "plots", "_subplots", "subplot"):
+                children = getattr(p, attr, None)
+                if children is None:
+                    continue
+                if isinstance(children, dict):
+                    for child in children.values():
+                        _visit(child)
+                elif isinstance(children, (list, tuple)):
+                    for child in children:
+                        _visit(child)
+                else:
+                    _visit(children)
+
+        _visit(plot)
+        return results
 
     # ------------------------------------------------------------------
     # Internal helpers

@@ -9,6 +9,7 @@ from param.parameterized import bothmethod
 
 from ...core import HoloMap
 from ...core.options import Store
+from ..plot import Plot
 from ..renderer import HTML_TAGS, MIME_TYPES, Renderer
 from .callbacks import callbacks
 from .util import (
@@ -81,24 +82,67 @@ class PlotlyRenderer(Renderer):
         Allows cleaning the dictionary of any internal properties that were added
 
         """
-        fig_dict = super().get_plot_state(obj, renderer, **kwargs)
+        if not isinstance(obj, Plot):
+            plot = self_or_cls.get_plot(obj=obj, renderer=renderer, **kwargs)
+        else:
+            plot = obj
+
+        fig_dict = super(PlotlyRenderer, self_or_cls).get_plot_state(
+            plot, renderer=renderer, **kwargs
+        )
         config = fig_dict.get("config", {})
 
         # Remove internal properties (e.g. '_id', '_dim')
         clean_internal_figure_properties(fig_dict)
+
+        # Temporarily strip any custom metadata that go.Figure schema-rejects,
+        # we will re-attach the final version below.
+        layout = fig_dict.get("layout", {})
+        preserved_metadata = layout.pop("metadata", None)
 
         # Run through Figure constructor to normalize keys
         # (e.g. to expand magic underscore notation)
         fig_dict = go.Figure(fig_dict).to_dict()
         fig_dict["config"] = config
 
+        # Restore + merge previously preserved metadata
+        if preserved_metadata:
+            existing = fig_dict.get("layout", {}).get("metadata", {})
+            if isinstance(existing, dict):
+                existing.update(preserved_metadata)
+                fig_dict["layout"]["metadata"] = existing
+            else:
+                fig_dict["layout"]["metadata"] = preserved_metadata
+
         # Remove template
         fig_dict.get("layout", {}).pop("template", None)
+
+        # Re-attach aggregated hover metadata after Figure.to_dict()
+        # (which may have stripped it).
+        try:
+            from ...core.hover import HoverResolver
+            specs = HoverResolver.collect_from_plot(plot)
+            if specs:
+                merged = HoverResolver.merge_export_specs(specs)
+                self_or_cls._attach_hover_metadata(plot, fig_dict, merged)
+        except Exception:
+            pass
 
         if numpy_convert and PLOTLY_GE_6_0_0:
             return _convert_numpy_in_fig_dict(fig_dict)
 
         return fig_dict
+
+    @bothmethod
+    def _attach_hover_metadata(self_or_cls, plot, state, merged_spec):
+        from ...core.hover import HoverResolver
+
+        if isinstance(state, dict):
+            layout = state.setdefault("layout", {})
+            metadata = layout.setdefault("metadata", {})
+            if isinstance(metadata, dict):
+                metadata[HoverResolver.METADATA_KEY] = merged_spec
+        return state
 
     def _figure_data(self, plot, fmt, as_script=False, **kwargs):
         if fmt == "gif":

@@ -321,7 +321,25 @@ class Renderer(Exporter):
         """Given a HoloViews Viewable return a corresponding plot state."""
         if not isinstance(obj, Plot):
             obj = self_or_cls.get_plot(obj=obj, renderer=renderer, **kwargs)
-        return obj.state
+        state = obj.state
+        try:
+            from ..core.hover import HoverResolver
+            specs = HoverResolver.collect_from_plot(obj)
+            if specs:
+                merged = HoverResolver.merge_export_specs(specs)
+                state = self_or_cls._attach_hover_metadata(obj, state, merged)
+        except Exception:
+            pass
+        return state
+
+    @bothmethod
+    def _attach_hover_metadata(self_or_cls, plot, state, merged_spec):
+        """Backend-specific hook to attach merged hover metadata to state.
+
+        Subclasses override this to write into the correct container for
+        their backend (Bokeh figure.tags, Plotly layout.metadata, etc.).
+        """
+        return state
 
     def _validate(self, obj, fmt, **kwargs):
         """Helper method to be used in the __call__ method to get a

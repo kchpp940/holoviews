@@ -276,9 +276,11 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
         )
         self.handles["fig"] = fig
 
-        if element.hover_fields is not None:
+        hover_trace_meta = self.handles.get("_hv_hover_trace_meta", [])
+        if element.hover_fields is not None or hover_trace_meta:
             try:
-                element._get_hover_resolver().attach_metadata("plotly", fig)
+                extra = {"traces": hover_trace_meta} if hover_trace_meta else None
+                element._get_hover_resolver().attach_metadata("plotly", fig, extra=extra)
             except Exception:
                 pass
 
@@ -340,7 +342,14 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
         if hovertemplate is not None:
             opts["hovertemplate"] = hovertemplate
         if column_meta:
-            opts["_hv_hover_column_meta"] = column_meta
+            # Store on the plot-level handles for later aggregation into
+            # layout.metadata; never set private keys on Plotly traces.
+            hover_trace_meta = self.handles.setdefault("_hv_hover_trace_meta", [])
+            hover_trace_meta.append({
+                "uid": self.trace_uid,
+                "element_type": type(element).__name__,
+                "columns": column_meta,
+            })
 
         if self._style_key is not None:
             styles = self._apply_transforms(element, ranges, style)
