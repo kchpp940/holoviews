@@ -534,6 +534,8 @@ class ElementPlot(BokehPlot, GenericElementPlot):
         return changed
 
     def _hover_opts(self, element):
+        if element.hover_fields is not None:
+            return element._get_hover_fields(), {}
         if self.batched:
             dims = list(self.hmap.last.kdims)
         else:
@@ -583,6 +585,8 @@ class ElementPlot(BokehPlot, GenericElementPlot):
         return tooltip
 
     def _prepare_hover_kwargs(self, element):
+        from ...util.transform import dim
+
         tooltips, hover_opts = self._hover_opts(element)
 
         dim_aliases = {
@@ -590,7 +594,8 @@ class ElementPlot(BokehPlot, GenericElementPlot):
             for dim in element.kdims + element.vdims
         }
 
-        # make dict so it's easy to get the tooltip for a given dimension;
+        use_element_hover_config = element.hover_fields is not None
+
         tooltips_dict = {}
         units_dict = {}
         for ttp in tooltips:
@@ -599,32 +604,38 @@ class ElementPlot(BokehPlot, GenericElementPlot):
                 tuple_ = (ttp[0], ttp[1])
             elif isinstance(ttp, Dimension):
                 label = ttp.label
-                # three brackets means replacing variable,
-                # and then wrapping in brackets, like @{air}
                 unit = f" ({ttp.unit})" if ttp.unit else ""
-                tuple_ = (ttp.pprint_label, f"@{{{util.dimension_sanitizer(ttp.name)}}}")
+                field_name = element._resolve_hover_field_name(ttp) if use_element_hover_config else ttp.name
+                tuple_ = (
+                    element._get_hover_field_label(ttp) if use_element_hover_config else ttp.pprint_label,
+                    f"@{{{util.dimension_sanitizer(field_name)}}}",
+                )
                 units_dict[label] = unit
+            elif isinstance(ttp, dim):
+                label = element._resolve_hover_field_name(ttp) if use_element_hover_config else str(ttp)
+                tuple_ = (
+                    element._get_hover_field_label(ttp) if use_element_hover_config else label,
+                    f"@{{{util.dimension_sanitizer(label)}}}",
+                )
             elif isinstance(ttp, str):
                 label = ttp
-                # three brackets means replacing variable,
-                # and then wrapping in brackets, like @{air}
-                tuple_ = (ttp, f"@{{{util.dimension_sanitizer(ttp)}}}")
+                field_name = element._resolve_hover_field_name(ttp) if use_element_hover_config else ttp
+                display_label = element._get_hover_field_label(ttp) if use_element_hover_config else ttp
+                tuple_ = (display_label, f"@{{{util.dimension_sanitizer(field_name)}}}")
+            else:
+                label = str(ttp)
+                tuple_ = (label, f"@{{{util.dimension_sanitizer(label)}}}")
 
             if label in dim_aliases:
                 label = dim_aliases[label]
 
-            # key is the vanilla data column/dimension name
-            # value should always be a tuple (label, value)
             tooltips_dict[label] = tuple_
 
-        # subset the tooltips to only the ones user wants
         if self.hover_tooltips:
-            # If hover tooltips are defined as a list of strings or tuples
             if isinstance(self.hover_tooltips, list):
                 new_tooltips = []
                 for tooltip in self.hover_tooltips:
                     if isinstance(tooltip, str):
-                        # make into a tuple
                         new_tooltip = tooltips_dict.get(tooltip.lstrip("@"))
                         if new_tooltip is None:
                             label = tooltip.lstrip("$").lstrip("@")
@@ -643,19 +654,20 @@ class ElementPlot(BokehPlot, GenericElementPlot):
                         )
                 tooltips = new_tooltips
             else:
-                # Likely HTML str
                 tooltips = self._replace_hover_value_aliases(self.hover_tooltips, tooltips_dict)
         else:
             tooltips = list(tooltips_dict.values())
 
-        # replace the label and group in the tooltips
         if isinstance(tooltips, list):
             tooltips = [self._replace_hover_label_group(element, ttp) for ttp in tooltips]
         elif isinstance(tooltips, str):
             tooltips = self._replace_hover_label_group(element, tooltips)
 
+        formatters = dict(element.hover_formatters) if use_element_hover_config else {}
         if self.hover_formatters:
-            hover_opts["formatters"] = self.hover_formatters
+            formatters.update(self.hover_formatters)
+        if formatters:
+            hover_opts["formatters"] = formatters
 
         if self.hover_mode:
             hover_opts["mode"] = self.hover_mode
@@ -800,10 +812,16 @@ class ElementPlot(BokehPlot, GenericElementPlot):
             return
 
         if has_hover and not self.static_source:
-            for d in dimensions or element.dimensions():
-                dim = util.dimension_sanitizer(d.name)
-                if dim not in data:
-                    data[dim] = element.dimension_values(d)
+            if element.hover_fields is not None:
+                hover_data = element._get_hover_data()
+                for k, v in hover_data.items():
+                    if k not in data:
+                        data[k] = v
+            else:
+                for d in dimensions or element.dimensions():
+                    dim = util.dimension_sanitizer(d.name)
+                    if dim not in data:
+                        data[dim] = element.dimension_values(d)
 
         if not data:
             return

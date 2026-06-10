@@ -235,6 +235,12 @@ class ElementPlot(GenericElementPlot, MPLPlot):
                 # Set axes limits
                 self._set_axis_limits(axis, element, subplots, ranges)
 
+                # Apply hover format_coord for status bar display
+                if element is not None and not (isinstance(self.projection, str) and self.projection == "3d"):
+                    format_coord = self._get_mpl_format_coord(element)
+                    if format_coord is not None:
+                        axis.format_coord = format_coord
+
             # Apply aspects
             if self.aspect is not None and self.projection != "polar" and not self.adjoined:
                 self._set_aspect(axis, self.aspect)
@@ -244,6 +250,48 @@ class ElementPlot(GenericElementPlot, MPLPlot):
 
         self._execute_hooks(element)
         return super()._finalize_axis(key)
+
+    def _get_mpl_format_coord(self, element):
+        """Generate a format_coord function for matplotlib axis status bar."""
+        if element.hover_fields is None:
+            return None
+
+        hover_fields = element._get_hover_fields()
+        hover_data = element._get_hover_data()
+        sanitized_names = list(hover_data.keys())
+        n_points = len(next(iter(hover_data.values()))) if hover_data else 0
+
+        if not n_points:
+            return None
+
+        try:
+            xdim = element.get_dimension(0)
+            ydim = element.get_dimension(1)
+            xname = element._resolve_hover_field_name(xdim) if xdim else None
+            yname = element._resolve_hover_field_name(ydim) if ydim else None
+        except Exception:
+            xname = None
+            yname = None
+
+        xvalues = hover_data.get(xname) if xname else None
+        yvalues = hover_data.get(yname) if yname else None
+
+        def format_coord(x, y):
+            parts = []
+            if xvalues is not None and yvalues is not None and len(xvalues) == len(yvalues):
+                distances = (xvalues - x) ** 2 + (yvalues - y) ** 2
+                idx = int(np.argmin(distances))
+                if 0 <= idx < n_points:
+                    for field, sname in zip(hover_fields, sanitized_names):
+                        label = element._get_hover_field_label(field)
+                        value = hover_data[sname][idx]
+                        formatted = element._format_hover_value(field, value)
+                        parts.append(f"{label}={formatted}")
+            if not parts:
+                parts = [f"x={x:.6g}", f"y={y:.6g}"]
+            return ", ".join(parts)
+
+        return format_coord
 
     def _execute_hooks(self, element):
         super()._execute_hooks(element)
@@ -783,11 +831,21 @@ class ElementPlot(GenericElementPlot, MPLPlot):
                         factors = util.unique_array(val)
                     val = util.search_indices(val, factors)
                     labels = getattr(self, "legend_labels", {})
-                    factors = [labels.get(f, f) for f in factors]
+                    dim_obj = element.get_dimension(v.dimension) if hasattr(element, "get_dimension") else None
+                    legend_title = element._get_hover_field_label(dim_obj) if dim_obj else v.dimension
+                    formatted_factors = []
+                    for f in factors:
+                        label = labels.get(f, f)
+                        if dim_obj:
+                            try:
+                                label = element._format_hover_value(dim_obj, f)
+                            except Exception:
+                                pass
+                        formatted_factors.append(label)
                     new_style["cat_legend"] = {
-                        "title": v.dimension,
+                        "title": legend_title,
                         "prop": "c",
-                        "factors": factors,
+                        "factors": formatted_factors,
                     }
                 k = prefix + "c"
             new_style[k] = val

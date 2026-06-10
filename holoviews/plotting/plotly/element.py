@@ -281,6 +281,32 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
 
         return fig
 
+    def _get_plotly_customdata_and_template(self, element):
+        """Generate customdata array and hovertemplate for Plotly backend."""
+        if element.hover_fields is None:
+            return None, None
+
+        hover_fields = element._get_hover_fields()
+        hover_data = element._get_hover_data()
+        sanitized_names = list(hover_data.keys())
+        n_points = len(next(iter(hover_data.values()))) if hover_data else 0
+
+        customdata = np.column_stack([hover_data[k] for k in sanitized_names]) if sanitized_names else None
+
+        hovertemplate_parts = []
+        for i, field in enumerate(hover_fields):
+            label = element._get_hover_field_label(field)
+            formatter = element._get_hover_formatter(field)
+            if formatter is not None and callable(formatter):
+                hovertemplate_parts.append(f"<b>{label}</b>: %{{customdata[{i}]}}")
+            elif formatter is not None:
+                hovertemplate_parts.append(f"<b>{label}</b>: %{{customdata[{i}]:{formatter}}}")
+            else:
+                hovertemplate_parts.append(f"<b>{label}</b>: %{{customdata[{i}]}}")
+        hovertemplate = "<br>".join(hovertemplate_parts) + "<extra></extra>" if hovertemplate_parts else None
+
+        return customdata, hovertemplate
+
     def graph_options(self, element, ranges, style, is_geo=False, **kwargs):
         if self.overlay_dims:
             legend = ", ".join([d.pprint_value_string(v) for d, v in self.overlay_dims.items()])
@@ -293,6 +319,12 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
             opts.update(
                 showlegend=self.show_legend, legendgroup=element.group + "_" + legend
             )  # make legendgroup unique for single trace enable/disable
+
+        customdata, hovertemplate = self._get_plotly_customdata_and_template(element)
+        if customdata is not None:
+            opts["customdata"] = customdata
+        if hovertemplate is not None:
+            opts["hovertemplate"] = hovertemplate
 
         if self._style_key is not None:
             styles = self._apply_transforms(element, ranges, style)
