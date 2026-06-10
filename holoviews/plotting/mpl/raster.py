@@ -7,7 +7,7 @@ import param
 
 from ...core import CompositeOverlay, Element, traversal
 from ...core.util import isfinite, match_spec, max_range, unique_iterator
-from ...element.raster import RGB, Image, Raster, element_edge_bounds
+from ...element.raster import RGB, Image, Raster, element_edge_bounds, element_edge_range
 from ..util import categorical_legend
 from .chart import PointPlot
 from .element import ColorbarPlot, ElementPlot, LegendPlot, OverlayPlot
@@ -416,8 +416,8 @@ class RasterGridPlot(GridPlot, OverlayPlot):
 
     def _compute_borders(self):
         ndims = self.layout.ndims
-        width_fn = lambda x: x.range(0)
-        height_fn = lambda x: x.range(1)
+        width_fn = lambda x: element_edge_range(x, 0)
+        height_fn = lambda x: element_edge_range(x, 1)
         width_extents = [
             max_range(self.layout[x, :].traverse(width_fn, [Element]))
             for x in unique_iterator(self.layout.dimension_values(0))
