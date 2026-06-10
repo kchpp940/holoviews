@@ -2563,6 +2563,78 @@ def edges_to_centers_2d(X_edges, Y_edges, time_unit="us"):
     return X_centers, Y_centers
 
 
+def element_edge_bounds(element):
+    """Return (left, bottom, right, top) EDGE bounds for any Raster-like element.
+
+    Unified single entry point for backends and operations.
+    Handles Image, RGB, ImageStack, Raster, QuadMesh (regular and irregular).
+    Datetime-aware, descending-coordinate-safe, irregular-grid-safe.
+
+    Always returns EDGE bounds (pixel/bin edges), not center ranges.
+
+    Parameters
+    ----------
+    element : Raster, Image, RGB, ImageStack, QuadMesh
+
+    Returns
+    -------
+    tuple : (left, bottom, right, top)
+    """
+    from ...element.raster import Raster, Image, QuadMesh
+
+    if isinstance(element, Image):
+        return element.bounds.lbrt()
+
+    if type(element) is Raster:
+        return element.extents
+
+    if isinstance(element, QuadMesh):
+        xdim, ydim = element.kdims
+        try:
+            x0, x1 = element.range(xdim)
+            y0, y1 = element.range(ydim)
+        except Exception:
+            try:
+                x_edges = element.interface.coords(element, xdim, edges=True, ordered=True)
+                y_edges = element.interface.coords(element, ydim, edges=True, ordered=True)
+                if getattr(x_edges, "ndim", 1) == 2:
+                    x0, x1 = np.nanmin(x_edges), np.nanmax(x_edges)
+                    y0, y1 = np.nanmin(y_edges), np.nanmax(y_edges)
+                else:
+                    x0, x1 = x_edges[0], x_edges[-1]
+                    y0, y1 = y_edges[0], y_edges[-1]
+                    if x0 > x1:
+                        x0, x1 = x1, x0
+                    if y0 > y1:
+                        y0, y1 = y1, y0
+            except Exception:
+                x_vals = element.dimension_values(xdim, False)
+                y_vals = element.dimension_values(ydim, False)
+                (x0, y0, x1, y1), _ = coords_to_bounds_2d(x_vals, y_vals)
+        return (x0, y0, x1, y1)
+
+    return element.extents
+
+
+def element_edge_range(element, dim):
+    """Return (edge_low, edge_high) EDGE range for one dimension of a raster element.
+
+    Thin wrapper around element_edge_bounds that returns a single-axis range.
+
+    Parameters
+    ----------
+    element : Raster, Image, RGB, ImageStack, QuadMesh
+    dim : int or Dimension or str
+
+    Returns
+    -------
+    tuple : (edge_low, edge_high)
+    """
+    l, b, r, t = element_edge_bounds(element)
+    idx = element.get_dimension_index(dim)
+    return (b, t) if idx == 1 else (l, r)
+
+
 def date_range(start, end, length, time_unit="us"):
     """Computes a date range given a start date, end date and the number
     of samples.

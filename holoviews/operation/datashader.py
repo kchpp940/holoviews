@@ -40,6 +40,7 @@ from ..core.util import (
     dt_to_int,
     dtype_kind,
     edges_to_pixel_centers,
+    element_edge_range,
     get_param_values,
 )
 from ..core.util.dependencies import PANDAS_GE_3_0_0, _no_import_version, dd
@@ -1104,7 +1105,7 @@ class regrid(AggregationOperation):
             not (self.p.upsample or self.p.interpolation in (False, None))
             and self.p.target is None
         ):
-            (x0, x1), (y0, y1) = element.range(0), element.range(1)
+            (x0, x1), (y0, y1) = element_edge_range(element, 0), element_edge_range(element, 1)
             if isinstance(x0, datetime_types):
                 x0, x1 = dt_to_int(x0, "ns"), dt_to_int(x1, "ns")
             if isinstance(y0, datetime_types):
@@ -2107,7 +2108,7 @@ class inspect_mask(Operation):
     def _process(self, raster, key=None):
         if isinstance(raster, RGB):
             raster = raster[..., raster.vdims[-1]]
-        x_range, y_range = raster.range(0), raster.range(1)
+        x_range, y_range = element_edge_range(raster, 0), element_edge_range(raster, 1)
         xdelta, ydelta = self._distance_args(raster, x_range, y_range, self.p.pixels)
         x, y = self.p.x, self.p.y
         return self._indicator(raster.kdims, x, y, xdelta, ydelta)
@@ -2243,7 +2244,7 @@ class inspect_base(inspect):
         if x is not None and y is not None:
             if isinstance(raster, RGB):
                 raster = raster[..., raster.vdims[-1]]
-            x_range, y_range = raster.range(0), raster.range(1)
+            x_range, y_range = element_edge_range(raster, 0), element_edge_range(raster, 1)
             xdelta, ydelta = self._distance_args(raster, x_range, y_range, self.p.pixels)
             val = raster[x - xdelta : x + xdelta, y - ydelta : y + ydelta].reduce(
                 function=np.nansum

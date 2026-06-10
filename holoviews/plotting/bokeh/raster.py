@@ -11,7 +11,14 @@ from bokeh.models.dom import Div, Span, Styles, ValueOf
 from panel.io import hold
 
 from ...core.data import XArrayInterface
-from ...core.util import cartesian_product, dimension_sanitizer, dtype_kind, isfinite
+from ...core.util import (
+    cartesian_product,
+    dimension_sanitizer,
+    dtype_kind,
+    edges_to_centers_1d,
+    element_edge_bounds,
+    isfinite,
+)
 from ...element import Raster
 from ...util.warnings import warn
 from ..util import categorical_legend
@@ -312,14 +319,9 @@ class RasterPlot(ServerHoverMixin, ColorbarPlot):
         if self.static_source:
             return {}, mapping, style
 
-        if type(element) is Raster:
-            l, b, r, t = element.extents
-            if self.invert_axes:
-                l, b, r, t = b, l, t, r
-        else:
-            l, b, r, t = element.bounds.lbrt()
-            if self.invert_axes:
-                l, b, r, t = b, l, t, r
+        l, b, r, t = element_edge_bounds(element)
+        if self.invert_axes:
+            l, b, r, t = b, l, t, r
 
         dh, dw = t - b, r - l
         data = dict(x=[l], y=[b], dw=[dw], dh=[dh])
@@ -424,7 +426,7 @@ class RGBPlot(ServerHoverMixin, SyntheticLegendMixin):
         img[nan_mask.any(-1)] = 0
 
         # Ensure axis inversions are handled correctly
-        l, b, r, t = element.bounds.lbrt()
+        l, b, r, t = element_edge_bounds(element)
         if self.invert_axes:
             img = img.T
             l, b, r, t = b, l, t, r
@@ -527,7 +529,7 @@ class ImageStackPlot(RasterPlot, SyntheticLegendMixin):
         if 0 in img.shape[:2]:  # Means we don't have any data
             img = np.array([[[np.nan]]])
         # Ensure axis inversions are handled correctly
-        l, b, r, t = element.bounds.lbrt()
+        l, b, r, t = element_edge_bounds(element)
         if self.invert_axes:
             # transposed in dstack
             l, b, r, t = b, l, t, r

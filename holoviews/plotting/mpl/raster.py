@@ -6,7 +6,7 @@ import numpy as np
 import param
 
 from ...core import CompositeOverlay, Element, traversal
-from ...core.util import isfinite, match_spec, max_range, unique_iterator
+from ...core.util import element_edge_bounds, isfinite, match_spec, max_range, unique_iterator
 from ...element.raster import RGB, Image, Raster
 from ..util import categorical_legend
 from .chart import PointPlot
@@ -50,10 +50,8 @@ class RasterBasePlot(ElementPlot):
         extents = super().get_extents(element, ranges, range_type)
         if self.situate_axes or range_type not in ("combined", "data"):
             return extents
-        elif isinstance(element, Image):
-            return element.bounds.lbrt()
         else:
-            return element.extents
+            return element_edge_bounds(element)
 
     def _compute_ticks(self, element, ranges):
         return None, None
@@ -76,14 +74,13 @@ class RasterPlot(RasterBasePlot, ColorbarPlot):
             style.pop("cmap", None)
 
         data = get_raster_array(element)
+        l, b, r, t = element_edge_bounds(element)
         if type(element) is Raster:
-            l, b, r, t = element.extents
             if self.invert_axes:
                 data = data[:, ::-1]
             else:
                 data = data[::-1]
         else:
-            l, b, r, t = element.bounds.lbrt()
             if self.invert_axes:
                 data = data[::-1, ::-1]
 
@@ -117,7 +114,7 @@ class RGBPlot(RasterBasePlot, LegendPlot):
     def get_data(self, element, ranges, style):
         xticks, yticks = self._compute_ticks(element, ranges)
         data = get_raster_array(element)
-        l, b, r, t = element.bounds.lbrt()
+        l, b, r, t = element_edge_bounds(element)
         if self.invert_axes:
             data = data[::-1, ::-1]
             data = data.transpose([1, 0, 2])
