@@ -34,6 +34,7 @@ from ..selection import NoOpSelectionDisplay
 from ..streams import RangeX, RangeXY, RangeY, Stream
 from ..util.transform import dim
 from .util import (
+    DimensionFieldMap,
     attach_streams,
     compute_overlayable_zorders,
     dim_axis_label,
