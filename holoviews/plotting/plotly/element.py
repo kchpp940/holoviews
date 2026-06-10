@@ -448,7 +448,9 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
                                 {
                                     "tickmode": "array",
                                     "tickvals": list(range(len(categories))),
-                                    "ticktext": [v.dimension.pprint_value(c) for c in categories],
+                                    "ticktext": [v.dimension.pprint_value(c) for c in categories]
+                                    if isinstance(v.dimension, Dimension)
+                                    else list(categories),
                                 }
                             )
 
@@ -717,7 +719,7 @@ class ColorbarPlot(ElementPlot):
                     else:
                         title = title[1:-1]
                 else:
-                    title = eldim.pprint_label
+                    title = self.get_dim_label(eldim)
                 opts["colorbar"]["title"] = title
             opts["showscale"] = True
         else:

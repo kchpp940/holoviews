@@ -40,6 +40,7 @@ from .util import (
     dynamic_update,
     get_axis_padding,
     get_dynamic_mode,
+    get_dim_field_name,
     get_minimum_span,
     get_nested_plot_frame,
     get_plot_frame,
@@ -1441,6 +1442,99 @@ class GenericElementPlot(DimensionedPlot):
             self.style = self.lookup_options(plot_element, "style").max_cycles(len(self.ordering))
         else:
             self.ordering = []
+
+        self._dim_field_map = {}
+        self._dim_label_map = {}
+        self._build_dimension_maps(plot_element)
+
+    def _build_dimension_maps(self, element):
+        """Build the canonical dimension→field and dimension→label maps for an
+        element. These maps are shared by all backends so that style mapping,
+        hover tooltips, legend grouping, and exported state always reference
+        the same sanitized field names and human-readable labels regardless of
+        whether the backend is Bokeh, Plotly, or Matplotlib.
+
+        For each dimension the map stores:
+          field: the sanitized identifier used for data-source column references
+          label: the human-readable display label (pprint_label) used in UI text
+        """
+        from ..core.dimension import Dimension
+
+        all_dims = list(element.dimensions()) + list(self.overlay_dims.keys())
+        for d in all_dims:
+            if isinstance(d, str):
+                d = element.get_dimension(d) or Dimension(d)
+            if d is None:
+                continue
+            key = d.name
+            self._dim_field_map[key] = get_dim_field_name(d)
+            self._dim_label_map[key] = d.pprint_label
+
+    def get_dim_field(self, dimension):
+        """Return the canonical backend data-source field name for a dimension.
+
+        Accepts a dimension name string, a Dimension object, or a dim()
+        transform. All backends should use this method (or the module-level
+        ``get_dim_field_name`` helper) when referencing columns in data
+        sources, hover tooltips, legend fields, and style-mapping output.
+        """
+        from ..core.dimension import Dimension
+
+        if isinstance(dimension, dim):
+            raw = dimension.dimension
+            if isinstance(raw, Dimension):
+                key = raw.name
+            elif hasattr(raw, "name"):
+                key = raw.name
+            else:
+                key = str(raw)
+        elif isinstance(dimension, Dimension):
+            key = dimension.name
+        elif isinstance(dimension, str):
+            key = dimension
+        elif dimension is None:
+            return dimension
+        elif hasattr(dimension, "name"):
+            key = dimension.name
+        else:
+            key = str(dimension)
+
+        if key not in self._dim_field_map:
+            self._dim_field_map[key] = get_dim_field_name(dimension)
+        return self._dim_field_map[key]
+
+    def get_dim_label(self, dimension):
+        """Return the canonical human-readable display label for a dimension.
+
+        All backends should use this label for UI text such as hover tooltip
+        labels, legend titles, and axis labels.
+        """
+        from ..core.dimension import Dimension
+
+        if isinstance(dimension, dim):
+            raw = dimension.dimension
+            if isinstance(raw, Dimension):
+                key = raw.name
+            elif hasattr(raw, "name"):
+                key = raw.name
+            else:
+                key = str(raw)
+        elif isinstance(dimension, Dimension):
+            key = dimension.name
+        elif isinstance(dimension, str):
+            key = dimension
+        elif dimension is None:
+            return dimension
+        elif hasattr(dimension, "name"):
+            key = dimension.name
+        else:
+            key = str(dimension)
+
+        if key not in self._dim_label_map:
+            from ..core.dimension import Dimension as Dim
+            d = Dim(key)
+            self._dim_label_map[key] = d.pprint_label
+        return self._dim_label_map[key]
 
     def get_zorder(self, overlay, key, el):
         """Computes the z-order of element in the NdOverlay

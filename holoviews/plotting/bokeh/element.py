@@ -602,13 +602,13 @@ class ElementPlot(BokehPlot, GenericElementPlot):
                 # three brackets means replacing variable,
                 # and then wrapping in brackets, like @{air}
                 unit = f" ({ttp.unit})" if ttp.unit else ""
-                tuple_ = (ttp.pprint_label, f"@{{{get_dim_field_name(ttp)}}}")
+                tuple_ = (self.get_dim_label(ttp), f"@{{{self.get_dim_field(ttp)}}}")
                 units_dict[label] = unit
             elif isinstance(ttp, str):
                 label = ttp
                 # three brackets means replacing variable,
                 # and then wrapping in brackets, like @{air}
-                tuple_ = (ttp, f"@{{{get_dim_field_name(ttp)}}}")
+                tuple_ = (self.get_dim_label(ttp), f"@{{{self.get_dim_field(ttp)}}}")
 
             if label in dim_aliases:
                 label = dim_aliases[label]
@@ -801,7 +801,7 @@ class ElementPlot(BokehPlot, GenericElementPlot):
 
         if has_hover and not self.static_source:
             for d in dimensions or element.dimensions():
-                dim = get_dim_field_name(d)
+                dim = self.get_dim_field(d)
                 if dim not in data:
                     data[dim] = element.dimension_values(d)
 
@@ -809,7 +809,7 @@ class ElementPlot(BokehPlot, GenericElementPlot):
             return
 
         for k, v in self.overlay_dims.items():
-            dim = get_dim_field_name(k)
+            dim = self.get_dim_field(k)
             if dim not in data:
                 data[dim] = [v] * len(next(iter(data.values())))
 

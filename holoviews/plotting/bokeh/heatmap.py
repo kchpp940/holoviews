@@ -13,7 +13,6 @@ from ...core.util import (
     find_contiguous_subarray,
     is_nan,
 )
-from ..util import get_dim_field_name
 from .element import ColorbarPlot, CompositeElementPlot
 from .selection import BokehOverlaySelectionDisplay
 from .styles import base_properties, fill_properties, line_properties, text_properties
@@ -155,7 +154,7 @@ class HeatMapPlot(ColorbarPlot):
         hover.formatters = {"$x": pixel_image, "$y": pixel_image}
 
     def get_data(self, element, ranges, style):
-        x, y = (get_dim_field_name(d) for d in element.dimensions()[:2])
+        x, y = (self.get_dim_field(d) for d in element.dimensions()[:2])
         if self.invert_axes:
             x, y = y, x
         cmapper = self._get_colormapper(element.vdims[0], element, ranges, style)
@@ -235,7 +234,7 @@ class HeatMapPlot(ColorbarPlot):
                     img = np.array([[np.nan]])
                 if self.invert_axes:
                     img = img.T
-                key = "image" if i == 2 else get_dim_field_name(vdim)
+                key = "image" if i == 2 else self.get_dim_field(vdim)
                 data[key] = [img]
             dw = (
                 data["image"][0].shape[1]
@@ -311,7 +310,7 @@ class HeatMapPlot(ColorbarPlot):
 
         if "hover" in self.handles and not self.static_source:
             for vdim in element.vdims:
-                sanitized = get_dim_field_name(vdim)
+                sanitized = self.get_dim_field(vdim)
                 data[sanitized] = [
                     "-" if is_nan(v) else vdim.pprint_value(v)
                     for v in aggregate.dimension_values(vdim)
@@ -683,7 +682,7 @@ class RadialHeatMapPlot(CompositeElementPlot, ColorbarPlot):
 
     def get_data(self, element, ranges, style):
         # dimension labels
-        x, y, z = (get_dim_field_name(d) for d in element.dimensions()[:3])
+        x, y, z = (self.get_dim_field(d) for d in element.dimensions()[:3])
         if self.invert_axes:
             x, y = y, x
 
@@ -741,7 +740,7 @@ class RadialHeatMapPlot(CompositeElementPlot, ColorbarPlot):
 
         if "hover" in self.handles:
             for vdim in element.vdims:
-                sanitized = get_dim_field_name(vdim)
+                sanitized = self.get_dim_field(vdim)
                 values = [
                     "-" if is_nan(v) else vdim.pprint_value(v)
                     for v in aggregate.dimension_values(vdim)

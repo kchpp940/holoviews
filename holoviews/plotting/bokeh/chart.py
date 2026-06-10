@@ -179,8 +179,8 @@ class PointPlot(SizebarMixin, ColorbarPlot):
         xdim, ydim = element.dimensions()[:2]
 
         xidx, yidx = (1, 0) if self.invert_axes else (0, 1)
-        xfield = get_dim_field_name(xdim)
-        yfield = get_dim_field_name(ydim)
+        xfield = self.get_dim_field(xdim)
+        yfield = self.get_dim_field(ydim)
         mapping = dict(x=xfield, y=yfield)
         data = {}
 
@@ -244,7 +244,7 @@ class PointPlot(SizebarMixin, ColorbarPlot):
 
             if "hover" in self.handles:
                 for d, k in zip(element.dimensions(), key, strict=None):
-                    sanitized = get_dim_field_name(d)
+                    sanitized = self.get_dim_field(d)
                     data[sanitized].append([k] * nvals)
 
         data = {k: np.concatenate(v) for k, v in data.items()}
@@ -460,7 +460,7 @@ class CurvePlot(ElementPlot):
                 data[k].append(v[0])
 
             for d, k in zip(overlay.kdims, key, strict=None):
-                sanitized = get_dim_field_name(d)
+                sanitized = self.get_dim_field(d)
                 data[sanitized].append(k)
         data = {opt: vals for opt, vals in data.items() if not any(v is None for v in vals)}
         mapping = {{"x": "xs", "y": "ys"}.get(k, k): v for k, v in elmapping.items()}
@@ -968,7 +968,7 @@ class BarPlot(BarsMixin, ColorbarPlot, LegendPlot):
         if cdim is None:
             return
 
-        field = get_dim_field_name(cdim)
+        field = self.get_dim_field(cdim)
         cd = ds.dimension_values(cdim)
         cmapper = self._get_colormapper(cdim, ds, ranges, style, factors, colors)
         is_categorical = isinstance(cmapper, CategoricalColorMapper)

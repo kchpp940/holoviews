@@ -785,7 +785,7 @@ class ElementPlot(GenericElementPlot, MPLPlot):
                     labels = getattr(self, "legend_labels", {})
                     factors = [labels.get(f, f) for f in factors]
                     new_style["cat_legend"] = {
-                        "title": v.dimension,
+                        "title": self.get_dim_label(v.dimension),
                         "prop": "c",
                         "factors": factors,
                     }
@@ -1021,9 +1021,9 @@ class ColorbarPlot(ElementPlot):
         if self.clabel is not None:
             label = self.clabel
         elif dimension:
-            label = dimension.pprint_label
+            label = self.get_dim_label(dimension)
         elif element.vdims:
-            label = element.vdims[0].pprint_label
+            label = self.get_dim_label(element.vdims[0])
         elif dimension is None:
             label = ""
 
