@@ -602,13 +602,13 @@ class ElementPlot(BokehPlot, GenericElementPlot):
                 # three brackets means replacing variable,
                 # and then wrapping in brackets, like @{air}
                 unit = f" ({ttp.unit})" if ttp.unit else ""
-                tuple_ = (self.get_dim_label(ttp), f"@{{{self.get_dim_field(ttp)}}}")
+                tuple_ = (ttp.pprint_label, f"@{{{util.dimension_sanitizer(ttp.name)}}}")
                 units_dict[label] = unit
             elif isinstance(ttp, str):
                 label = ttp
                 # three brackets means replacing variable,
                 # and then wrapping in brackets, like @{air}
-                tuple_ = (self.get_dim_label(ttp), f"@{{{self.get_dim_field(ttp)}}}")
+                tuple_ = (ttp, f"@{{{util.dimension_sanitizer(ttp)}}}")
 
             if label in dim_aliases:
                 label = dim_aliases[label]
@@ -801,7 +801,7 @@ class ElementPlot(BokehPlot, GenericElementPlot):
 
         if has_hover and not self.static_source:
             for d in dimensions or element.dimensions():
-                dim = self.get_dim_field(d)
+                dim = util.dimension_sanitizer(d.name)
                 if dim not in data:
                     data[dim] = element.dimension_values(d)
 
@@ -809,7 +809,7 @@ class ElementPlot(BokehPlot, GenericElementPlot):
             return
 
         for k, v in self.overlay_dims.items():
-            dim = self.get_dim_field(k)
+            dim = util.dimension_sanitizer(k.name)
             if dim not in data:
                 data[dim] = [v] * len(next(iter(data.values())))
 
@@ -2643,9 +2643,6 @@ class ElementPlot(BokehPlot, GenericElementPlot):
             self.current_key = key
             self.current_frame = element
 
-        if element is not None:
-            self._build_dimension_maps(element)
-
         renderer = self.handles.get("glyph_renderer", None)
         visible = element is not None
         if hasattr(renderer, "visible"):
@@ -3976,9 +3973,6 @@ class OverlayPlot(GenericOverlayPlot, LegendPlot):
             self.current_frame = element
             self.current_key = key
         items = [] if element is None else list(element.data.items())
-
-        if element is not None:
-            self._build_dimension_maps(element)
 
         if isinstance(self.hmap, DynamicMap):
             range_obj = element

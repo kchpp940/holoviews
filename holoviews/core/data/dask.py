@@ -92,6 +92,16 @@ class DaskInterface(PandasInterface):
             return dd.compute(column.min(), column.max())
 
     @classmethod
+    def count_unique(cls, dataset, dimension):
+        dim = dataset.get_dimension(dimension, strict=True)
+        return int(dataset.data[dim.name].nunique().compute())
+
+    @classmethod
+    def count_missing(cls, dataset, dimension):
+        dim = dataset.get_dimension(dimension, strict=True)
+        return int(dataset.data[dim.name].isna().sum().compute())
+
+    @classmethod
     def sort(cls, dataset, by=None, reverse=False):
         if by is None:
             by = []

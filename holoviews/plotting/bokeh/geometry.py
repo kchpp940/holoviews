@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import param
 
+from ...core.util import dimension_sanitizer
 from ..mixins import GeomMixin
 from .element import ColorbarPlot, LegendPlot
 from .selection import BokehOverlaySelectionDisplay
@@ -32,7 +33,7 @@ class SegmentPlot(GeomMixin, ColorbarPlot):
 
     def get_data(self, element, ranges, style):
         inds = (1, 0, 3, 2) if self.invert_axes else (0, 1, 2, 3)
-        xd0, yd0, xd1, yd1 = (self.get_dim_field(element.get_dimension(i)) for i in inds)
+        xd0, yd0, xd1, yd1 = (dimension_sanitizer(element.get_dimension(i).name) for i in inds)
         x0s, y0s, x1s, y1s = (element.dimension_values(kd) for kd in inds)
         data = {xd0: x0s, xd1: x1s, yd0: y0s, yd1: y1s}
         mapping = dict(x0=xd0, x1=xd1, y0=yd0, y1=yd1)

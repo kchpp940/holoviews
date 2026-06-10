@@ -613,7 +613,6 @@ class ElementPlot(GenericElementPlot, MPLPlot):
             self.current_frame = element
 
         if element is not None:
-            self._build_dimension_maps(element)
             self._apply_plot_opts(self.lookup_options(element, "plot").options)
         axis = self.handles["axis"]
 
@@ -786,7 +785,7 @@ class ElementPlot(GenericElementPlot, MPLPlot):
                     labels = getattr(self, "legend_labels", {})
                     factors = [labels.get(f, f) for f in factors]
                     new_style["cat_legend"] = {
-                        "title": self.get_dim_label(v.dimension),
+                        "title": v.dimension,
                         "prop": "c",
                         "factors": factors,
                     }
@@ -1022,9 +1021,9 @@ class ColorbarPlot(ElementPlot):
         if self.clabel is not None:
             label = self.clabel
         elif dimension:
-            label = self.get_dim_label(dimension)
+            label = dimension.pprint_label
         elif element.vdims:
-            label = self.get_dim_label(element.vdims[0])
+            label = element.vdims[0].pprint_label
         elif dimension is None:
             label = ""
 
@@ -1458,9 +1457,6 @@ class OverlayPlot(LegendPlot, GenericOverlayPlot):
             self.current_frame = element
             self.current_key = key
         empty = element is None
-
-        if element is not None:
-            self._build_dimension_maps(element)
 
         if isinstance(self.hmap, DynamicMap):
             range_obj = element

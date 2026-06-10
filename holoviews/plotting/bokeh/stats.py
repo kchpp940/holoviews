@@ -11,6 +11,7 @@ from ...core import NdOverlay
 from ...core.dimension import Dimension, Dimensioned
 from ...core.ndmapping import sorted_context
 from ...core.util import (
+    dimension_sanitizer,
     is_cupy_array,
     is_dask_array,
     isfinite,
@@ -200,7 +201,7 @@ class BoxWhiskerPlot(MultiDistributionMixin, CompositeElementPlot, ColorbarPlot,
                 groups = element.groupby(element.kdims).data
         else:
             groups = {element.label: element}
-        vdim = self.get_dim_field(element.vdims[0])
+        vdim = dimension_sanitizer(element.vdims[0].name)
 
         # Define CDS data
         r1_data, r2_data = ({"index": [], "top": [], "bottom": []} for i in range(2))
@@ -224,7 +225,7 @@ class BoxWhiskerPlot(MultiDistributionMixin, CompositeElementPlot, ColorbarPlot,
         vbar2_map = dict(vbar_map)
 
         factors = []
-        vdim = self.get_dim_field(element.vdims[0])
+        vdim = dimension_sanitizer(element.vdims[0].name)
         for key, g in groups.items():
             # Compute group label
             if element.kdims:
@@ -268,10 +269,10 @@ class BoxWhiskerPlot(MultiDistributionMixin, CompositeElementPlot, ColorbarPlot,
                 out_data[vdim] += list(outliers)
                 if hover:
                     for kd, k in zip(element.kdims, wrap_tuple(key), strict=None):
-                        out_data[self.get_dim_field(kd)] += [k] * len(outliers)
+                        out_data[dimension_sanitizer(kd.name)] += [k] * len(outliers)
             if hover:
                 for kd, k in zip(element.kdims, wrap_tuple(key), strict=None):
-                    kd_name = self.get_dim_field(kd)
+                    kd_name = dimension_sanitizer(kd.name)
                     if kd_name in r1_data:
                         r1_data[kd_name].append(k)
                     else:

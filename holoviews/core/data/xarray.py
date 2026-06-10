@@ -352,6 +352,45 @@ class XArrayInterface(GridInterface):
         return finite_range(data, dmin, dmax)
 
     @classmethod
+    def count_unique(cls, dataset, dimension):
+        dim = dataset.get_dimension(dimension, strict=True)
+        name = dim.name
+        if cls.packed(dataset) and name in dataset.vdims:
+            data = dataset.data.values[..., dataset.vdims.index(name)]
+        else:
+            data = dataset.data[name]
+        if hasattr(data, "values"):
+            data = data.values
+        da_mod = dask_array_module()
+        if da_mod and isinstance(data, da_mod.Array):
+            data = data.compute()
+        return len(np.unique(data))
+
+    @classmethod
+    def count_missing(cls, dataset, dimension):
+        dim = dataset.get_dimension(dimension, strict=True)
+        name = dim.name
+        if cls.packed(dataset) and name in dataset.vdims:
+            data = dataset.data.values[..., dataset.vdims.index(name)]
+        else:
+            data = dataset.data[name]
+        if hasattr(data, "isnull"):
+            return int(data.isnull().sum())
+        if hasattr(data, "values"):
+            data = data.values
+        da_mod = dask_array_module()
+        if da_mod and isinstance(data, da_mod.Array):
+            data = data.compute()
+        kind = dtype_kind(data)
+        if kind in "iub":
+            return 0
+        elif kind in "fc":
+            return int(np.count_nonzero(np.isnan(data)))
+        elif kind in "Mm":
+            return int(np.count_nonzero(np.isnat(data)))
+        return 0
+
+    @classmethod
     def groupby(cls, dataset, dimensions, container_type, group_type, **kwargs):
         index_dims = [dataset.get_dimension(d, strict=True) for d in dimensions]
         element_dims = [kdim for kdim in dataset.kdims if kdim not in index_dims]

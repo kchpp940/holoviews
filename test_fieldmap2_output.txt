@@ -1,0 +1,98 @@
+Error processing line 1 of /Users/pkcha/.local/lib/python3.13/site-packages/autogluon_common-1.5.1b20260503-nspkg.pth:
+
+  Traceback (most recent call last):
+    File "<frozen site>", line 207, in addpackage
+    File "<string>", line 1, in <module>
+    File "<frozen importlib._bootstrap>", line 810, in module_from_spec
+  AttributeError: 'NoneType' object has no attribute 'loader'
+
+Remainder of file ignored
+Error processing line 1 of /Users/pkcha/.local/lib/python3.13/site-packages/autogluon_core-1.5.1b20260503-nspkg.pth:
+
+  Traceback (most recent call last):
+    File "<frozen site>", line 207, in addpackage
+    File "<string>", line 1, in <module>
+    File "<frozen importlib._bootstrap>", line 810, in module_from_spec
+  AttributeError: 'NoneType' object has no attribute 'loader'
+
+Remainder of file ignored
+Error processing line 1 of /Users/pkcha/.local/lib/python3.13/site-packages/autogluon_features-1.5.1b20260503-nspkg.pth:
+
+  Traceback (most recent call last):
+    File "<frozen site>", line 207, in addpackage
+    File "<string>", line 1, in <module>
+    File "<frozen importlib._bootstrap>", line 810, in module_from_spec
+  AttributeError: 'NoneType' object has no attribute 'loader'
+
+Remainder of file ignored
+Error processing line 1 of /Users/pkcha/.local/lib/python3.13/site-packages/autogluon_tabular-1.5.1b20260503-nspkg.pth:
+
+  Traceback (most recent call last):
+    File "<frozen site>", line 207, in addpackage
+    File "<string>", line 1, in <module>
+    File "<frozen importlib._bootstrap>", line 810, in module_from_spec
+  AttributeError: 'NoneType' object has no attribute 'loader'
+
+Remainder of file ignored
+=== Test 1: DimensionFieldMap from_objects multi-element (Overlay) ===
+  Overlay fields: ['X_Value', 'Y_left_parenthesis_Value_right_parenthesis', 'Z_over_Cat']
+  Overlay dims map: {'X Value': 'X_Value', 'Y (Value)': 'Y_left_parenthesis_Value_right_parenthesis', 'Z/Cat': 'Z_over_Cat'}
+  'X Value': field='X_Value', label='X Value', reverse OK
+  'Y (Value)': field='Y_left_parenthesis_Value_right_parenthesis', label='Y (Value)', reverse OK
+  'Z/Cat': field='Z_over_Cat', label='Z/Cat', reverse OK
+  Test 1 PASSED
+
+=== Test 2: DimensionFieldMap collision across Overlay elements ===
+  Collision fields: ['X_Value', 'A', 'X_Value_2', 'B']
+  Collision map: {'X_Value': 'X_Value', 'A': 'A', 'X Value': 'X_Value_2', 'B': 'B'}
+  'X_Value' -> 'X_Value'
+  'X Value' -> 'X_Value_2'
+  Test 2 PASSED: collision dedup works across overlay elements
+
+=== Test 3: DimensionFieldMap from HoloMap ===
+  HoloMap fields: ['X_Value', 'Y_left_parenthesis_Value_right_parenthesis', 'Val_full_stop_ue']
+  HoloMap map: {'X Value': 'X_Value', 'Y (Value)': 'Y_left_parenthesis_Value_right_parenthesis', 'Val.ue': 'Val_full_stop_ue'}
+  'X Value': field='X_Value', label='X Value', reverse OK
+  'Y (Value)': field='Y_left_parenthesis_Value_right_parenthesis', label='Y (Value)', reverse OK
+  'Val.ue': field='Val_full_stop_ue', label='Val.ue', reverse OK
+  'Frame/Idx': field='Frame_over_Idx', label='Frame/Idx', reverse OK
+  Test 3 PASSED: HoloMap with overlay kdims registered correctly
+
+=== Test 4: Bokeh PointPlot (Element) ===
+  'X Value': field='X_Value', label='X Value'
+  'Y (Value)': field='Y_left_parenthesis_Value_right_parenthesis', label='Y (Value)'
+  'Cat/egory': field='Cat_over_egory', label='Cat/egory'
+  'Val.ue': field='Val_full_stop_ue', label='Val.ue'
+  After rebuild: 'New/Dim' -> 'New_over_Dim'
+  Test 4 PASSED: Bokeh Element Plot field map + rebuild map
+
+=== Test 5: Bokeh NdOverlayPlot (multi-element) ===
+  Overlay field map: {'X Value': 'X_Value', 'Y (Value)': 'Y_left_parenthesis_Value_right_parenthesis'}
+  Overlay fields: ['X_Value', 'Y_left_parenthesis_Value_right_parenthesis']
+  All subplots have consistent field mapping with parent overlay plot
+  After rebuild: 'New/Dim' -> 'New_over_Dim'
+  Test 5 PASSED: Bokeh NdOverlay field map + subplots consistent + rebuild
+
+=== Test 6: Plotly OverlayPlot ===
+WARNING:param.Scatter: Chart elements should only be supplied a single kdim
+WARNING:param.Scatter: Chart elements should only be supplied a single kdim
+  Plotly overlay map: {'X Value': 'X_Value', 'Y (Value)': 'Y_left_parenthesis_Value_right_parenthesis', 'Val.ue': 'Val_full_stop_ue'}
+  Test 6 PASSED: Plotly Overlay field map + subplots consistent
+
+=== Test 7: Matplotlib OverlayPlot ===
+  MPL overlay map: {'X Value': 'X_Value', 'Y (Value)': 'Y_left_parenthesis_Value_right_parenthesis', 'Val.ue': 'Val_full_stop_ue'}
+  Test 7 PASSED: MPL Overlay field map + subplots consistent
+
+=== Test 8: HoloMap element plot (frame update) ===
+  Initial HoloMap PointPlot fields: {'X Value': 'X_Value', 'Y (Value)': 'Y_left_parenthesis_Value_right_parenthesis', 'Frame/Val': 'Frame_over_Val'}
+  Test 8 PASSED: HoloMap frame rebuilds preserve mapping
+
+=== Test 9: Reserved field clash in Overlay element ===
+  Reserved clash map: {'x': 'dim_x', 'normal': 'normal', 'y': 'dim_y', 'color': 'dim_color'}
+  'x' -> 'dim_x' (should start with dim_)
+  'y' -> 'dim_y' (should start with dim_)
+  'color' -> 'dim_color' (should start with dim_)
+  'normal' -> 'normal' (should NOT start with dim_)
+  Test 9 PASSED: reserved field clash correctly handled
+
+=== ALL TESTS PASSED ===

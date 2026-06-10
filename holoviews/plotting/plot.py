@@ -34,14 +34,12 @@ from ..selection import NoOpSelectionDisplay
 from ..streams import RangeX, RangeXY, RangeY, Stream
 from ..util.transform import dim
 from .util import (
-    DimensionFieldMap,
     attach_streams,
     compute_overlayable_zorders,
     dim_axis_label,
     dynamic_update,
     get_axis_padding,
     get_dynamic_mode,
-    get_dim_field_name,
     get_minimum_span,
     get_nested_plot_frame,
     get_plot_frame,
@@ -1444,67 +1442,6 @@ class GenericElementPlot(DimensionedPlot):
         else:
             self.ordering = []
 
-        self._dim_field_map = DimensionFieldMap()
-        self._build_dimension_maps(plot_element)
-
-    def _build_dimension_maps(self, element):
-        """Build the bidirectional dimension↔field mapping used by all
-        backends for referencing columns in data sources, hover tooltips,
-        legend fields, style mapping output, and exported state.
-
-        The mapping is a :class:`~holoviews.plotting.util.DimensionFieldMap`
-        instance that:
-
-        * is bidirectional (``field_for`` / ``dimension_for``),
-        * deduplicates sanitized names that would otherwise collide,
-        * prefixes identifiers that clash with reserved internal field
-          names (``x``, ``y``, ``color``, ``size``, …) with ``dim_``,
-        * supports Overlays, NdOverlays, HoloMaps and DynamicMaps by
-          collecting every dimension from every element.
-        """
-        from ..core.overlay import CompositeOverlay
-        from ..core.spaces import HoloMap, DynamicMap
-
-        self._dim_field_map = DimensionFieldMap()
-
-        source = self.hmap if isinstance(self, GenericOverlayPlot) else element
-        if isinstance(source, DynamicMap):
-            last = source.last
-            if last is not None:
-                self._dim_field_map.register(last)
-        elif isinstance(source, HoloMap):
-            self._dim_field_map.register(source)
-        elif isinstance(source, CompositeOverlay):
-            self._dim_field_map.register(source)
-        else:
-            self._dim_field_map.register(source)
-
-        for od in self.overlay_dims.keys():
-            self._dim_field_map.register(od)
-
-    def get_dim_field(self, dimension):
-        """Return the canonical backend data-source field name for a
-        dimension.
-
-        This method delegates to the per-frame
-        :class:`~holoviews.plotting.util.DimensionFieldMap`, guaranteeing
-        a unique, sanitized, non-clashing identifier suitable for use as
-        a Bokeh ColumnDataSource column key, a Plotly trace field, a
-        Matplotlib data reference, and exported state.
-        """
-        return self._dim_field_map.field_for(dimension)
-
-    def get_dim_label(self, dimension):
-        """Return the canonical human-readable display label for a
-        dimension, sourced from the shared :class:`DimensionFieldMap`.
-        """
-        return self._dim_field_map.label_for(dimension)
-
-    def get_dimension_from_field(self, field):
-        """Reverse lookup: return the original :class:`Dimension` for a
-        data-source field name, or ``None`` if unknown."""
-        return self._dim_field_map.dimension_for(field)
-
     def get_zorder(self, overlay, key, el):
         """Computes the z-order of element in the NdOverlay
         taking into account possible batching of elements.
@@ -1980,9 +1917,6 @@ class GenericElementPlot(DimensionedPlot):
         using the last available frame.
 
         """
-        if key in self.hmap:
-            frame = self.hmap[key]
-            self._build_dimension_maps(frame)
 
 
 class GenericOverlayPlot(GenericElementPlot):

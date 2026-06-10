@@ -1,0 +1,83 @@
+Error processing line 1 of /Users/pkcha/.local/lib/python3.13/site-packages/autogluon_common-1.5.1b20260503-nspkg.pth:
+
+  Traceback (most recent call last):
+    File "<frozen site>", line 207, in addpackage
+    File "<string>", line 1, in <module>
+    File "<frozen importlib._bootstrap>", line 810, in module_from_spec
+  AttributeError: 'NoneType' object has no attribute 'loader'
+
+Remainder of file ignored
+Error processing line 1 of /Users/pkcha/.local/lib/python3.13/site-packages/autogluon_core-1.5.1b20260503-nspkg.pth:
+
+  Traceback (most recent call last):
+    File "<frozen site>", line 207, in addpackage
+    File "<string>", line 1, in <module>
+    File "<frozen importlib._bootstrap>", line 810, in module_from_spec
+  AttributeError: 'NoneType' object has no attribute 'loader'
+
+Remainder of file ignored
+Error processing line 1 of /Users/pkcha/.local/lib/python3.13/site-packages/autogluon_features-1.5.1b20260503-nspkg.pth:
+
+  Traceback (most recent call last):
+    File "<frozen site>", line 207, in addpackage
+    File "<string>", line 1, in <module>
+    File "<frozen importlib._bootstrap>", line 810, in module_from_spec
+  AttributeError: 'NoneType' object has no attribute 'loader'
+
+Remainder of file ignored
+Error processing line 1 of /Users/pkcha/.local/lib/python3.13/site-packages/autogluon_tabular-1.5.1b20260503-nspkg.pth:
+
+  Traceback (most recent call last):
+    File "<frozen site>", line 207, in addpackage
+    File "<string>", line 1, in <module>
+    File "<frozen importlib._bootstrap>", line 810, in module_from_spec
+  AttributeError: 'NoneType' object has no attribute 'loader'
+
+Remainder of file ignored
+=== Test 1: DimensionFieldMap basics ===
+  field_map: {'X Value': 'X_Value', 'Y (Value)': 'Y_left_parenthesis_Value_right_parenthesis', 'Cat/egory': 'Cat_over_egory', 'Val.ue': 'Val_full_stop_ue'}
+  fields: ['X_Value', 'Y_left_parenthesis_Value_right_parenthesis', 'Cat_over_egory', 'Val_full_stop_ue']
+  dimension_names: ['X Value', 'Y (Value)', 'Cat/egory', 'Val.ue']
+  'X Value': field='X_Value', label='X Value', reverse OK
+  'Y (Value)': field='Y_left_parenthesis_Value_right_parenthesis', label='Y (Value)', reverse OK
+  'Cat/egory': field='Cat_over_egory', label='Cat/egory', reverse OK
+  'Val.ue': field='Val_full_stop_ue', label='Val.ue', reverse OK
+  Test 1 PASSED
+
+=== Test 2: Conflict deduplication ===
+  field_map: {'X_Value': 'X_Value', 'X Value': 'X_Value_2'}
+  'X_Value' -> 'X_Value'
+  'X Value' -> 'X_Value_2'
+  Test 2 PASSED: conflict deduplication works
+
+=== Test 3: Reserved field prefix ===
+  field_map: {'x': 'dim_x', 'y': 'dim_y', 'color': 'dim_color', 'size': 'dim_size', 'normal': 'normal'}
+  reserved: 'x' -> 'dim_x' (prefixed)
+  reserved: 'y' -> 'dim_y' (prefixed)
+  reserved: 'color' -> 'dim_color' (prefixed)
+  reserved: 'size' -> 'dim_size' (prefixed)
+  normal:   'normal' -> 'normal'
+  Test 3 PASSED: reserved field prefix works
+
+=== Test 4: All backends use DimensionFieldMap ===
+  bokeh: 'X Value' -> field='X_Value', label='X Value', reverse OK
+  bokeh: 'Y (Value)' -> field='Y_left_parenthesis_Value_right_parenthesis', label='Y (Value)', reverse OK
+  bokeh: 'Cat/egory' -> field='Cat_over_egory', label='Cat/egory', reverse OK
+  bokeh: 'Val.ue' -> field='Val_full_stop_ue', label='Val.ue', reverse OK
+  bokeh: all field lookups consistent
+  plotly: 'X Value' -> field='X_Value', label='X Value', reverse OK
+  plotly: 'Y (Value)' -> field='Y_left_parenthesis_Value_right_parenthesis', label='Y (Value)', reverse OK
+  plotly: 'Cat/egory' -> field='Cat_over_egory', label='Cat/egory', reverse OK
+  plotly: 'Val.ue' -> field='Val_full_stop_ue', label='Val.ue', reverse OK
+  plotly: all field lookups consistent
+  matplotlib: 'X Value' -> field='X_Value', label='X Value', reverse OK
+  matplotlib: 'Y (Value)' -> field='Y_left_parenthesis_Value_right_parenthesis', label='Y (Value)', reverse OK
+  matplotlib: 'Cat/egory' -> field='Cat_over_egory', label='Cat/egory', reverse OK
+  matplotlib: 'Val.ue' -> field='Val_full_stop_ue', label='Val.ue', reverse OK
+  matplotlib: all field lookups consistent
+
+=== Test 5: Overlay dimension collection ===
+Traceback (most recent call last):
+  File "/Users/pkcha/holoviews/test_fieldmap.py", line 128, in <module>
+    from holoviews.plotting.bokeh.overlay import NdOverlayPlot
+ModuleNotFoundError: No module named 'holoviews.plotting.bokeh.overlay'

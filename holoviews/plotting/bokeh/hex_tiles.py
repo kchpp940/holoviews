@@ -8,7 +8,7 @@ from bokeh.util.hex import cartesian_to_axial
 
 from ...core import Dimension, Operation
 from ...core.options import Compositor
-from ...core.util import isfinite, max_range
+from ...core.util import dimension_sanitizer, isfinite, max_range
 from ...element import HexTiles
 from .element import ColorbarPlot
 from .selection import BokehOverlaySelectionDisplay
@@ -186,7 +186,7 @@ class HexTilesPlot(ColorbarPlot):
         cmapper = None
         if element.vdims:
             cdim = element.vdims[0]
-            field = self.get_dim_field(cdim)
+            field = dimension_sanitizer(cdim.name)
             cdata = element.dimension_values(cdim)
             cmapper = self._get_colormapper(cdim, element, ranges, style)
             data[field] = cdata

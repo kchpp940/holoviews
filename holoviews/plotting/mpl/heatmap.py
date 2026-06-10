@@ -9,7 +9,7 @@ from matplotlib.patches import Circle, Wedge
 
 from ...core.data import GridInterface
 from ...core.spaces import HoloMap
-from ...core.util import dtype_kind, is_nan
+from ...core.util import dimension_sanitizer, dtype_kind, is_nan
 from ..mixins import HeatMapMixin
 from .element import ColorbarPlot
 from .raster import QuadMeshPlot
@@ -355,15 +355,15 @@ class RadialHeatMapPlot(ColorbarPlot):
 
     def get_data(self, element, ranges, style):
         # dimension labels
-        xdim, ydim = element.dimensions()[:2]
+        x, y = (dimension_sanitizer(d) for d in element.dimensions(label=True)[:2])
 
         if self.invert_axes:
-            xdim, ydim = ydim, xdim
+            x, y = y, x
 
         # get raw values
         aggregate = element.gridded
-        xvals = aggregate.dimension_values(xdim, expanded=False)
-        yvals = aggregate.dimension_values(ydim, expanded=False)
+        xvals = aggregate.dimension_values(x, expanded=False)
+        yvals = aggregate.dimension_values(y, expanded=False)
         zvals = aggregate.dimension_values(2, flat=False)
 
         # pretty print x and y dimension values if necessary

@@ -1,0 +1,84 @@
+Error processing line 1 of /Users/pkcha/.local/lib/python3.13/site-packages/autogluon_common-1.5.1b20260503-nspkg.pth:
+
+  Traceback (most recent call last):
+    File "<frozen site>", line 207, in addpackage
+    File "<string>", line 1, in <module>
+    File "<frozen importlib._bootstrap>", line 810, in module_from_spec
+  AttributeError: 'NoneType' object has no attribute 'loader'
+
+Remainder of file ignored
+Error processing line 1 of /Users/pkcha/.local/lib/python3.13/site-packages/autogluon_core-1.5.1b20260503-nspkg.pth:
+
+  Traceback (most recent call last):
+    File "<frozen site>", line 207, in addpackage
+    File "<string>", line 1, in <module>
+    File "<frozen importlib._bootstrap>", line 810, in module_from_spec
+  AttributeError: 'NoneType' object has no attribute 'loader'
+
+Remainder of file ignored
+Error processing line 1 of /Users/pkcha/.local/lib/python3.13/site-packages/autogluon_features-1.5.1b20260503-nspkg.pth:
+
+  Traceback (most recent call last):
+    File "<frozen site>", line 207, in addpackage
+    File "<string>", line 1, in <module>
+    File "<frozen importlib._bootstrap>", line 810, in module_from_spec
+  AttributeError: 'NoneType' object has no attribute 'loader'
+
+Remainder of file ignored
+Error processing line 1 of /Users/pkcha/.local/lib/python3.13/site-packages/autogluon_tabular-1.5.1b20260503-nspkg.pth:
+
+  Traceback (most recent call last):
+    File "<frozen site>", line 207, in addpackage
+    File "<string>", line 1, in <module>
+    File "<frozen importlib._bootstrap>", line 810, in module_from_spec
+  AttributeError: 'NoneType' object has no attribute 'loader'
+
+Remainder of file ignored
+=== Test 1: 基类维度映射表 ===
+
+Backend: bokeh
+  _dim_field_map = {'X Value': 'X_Value', 'Y (Value)': 'Y_left_parenthesis_Value_right_parenthesis', 'Cat/egory': 'Cat_over_egory', 'Val.ue': 'Val_full_stop_ue'}
+  _dim_label_map = {'X Value': 'X Value', 'Y (Value)': 'Y (Value)', 'Cat/egory': 'Cat/egory', 'Val.ue': 'Val.ue'}
+  'X Value': field='X_Value', label='X Value' OK
+  'Y (Value)': field='Y_left_parenthesis_Value_right_parenthesis', label='Y (Value)' OK
+  'Cat/egory': field='Cat_over_egory', label='Cat/egory' OK
+  'Val.ue': field='Val_full_stop_ue', label='Val.ue' OK
+  bokeh: all dimension mappings consistent
+
+Backend: plotly
+  _dim_field_map = {'X Value': 'X_Value', 'Y (Value)': 'Y_left_parenthesis_Value_right_parenthesis', 'Cat/egory': 'Cat_over_egory', 'Val.ue': 'Val_full_stop_ue'}
+  _dim_label_map = {'X Value': 'X Value', 'Y (Value)': 'Y (Value)', 'Cat/egory': 'Cat/egory', 'Val.ue': 'Val.ue'}
+  'X Value': field='X_Value', label='X Value' OK
+  'Y (Value)': field='Y_left_parenthesis_Value_right_parenthesis', label='Y (Value)' OK
+  'Cat/egory': field='Cat_over_egory', label='Cat/egory' OK
+  'Val.ue': field='Val_full_stop_ue', label='Val.ue' OK
+  plotly: all dimension mappings consistent
+
+Backend: matplotlib
+  _dim_field_map = {'X Value': 'X_Value', 'Y (Value)': 'Y_left_parenthesis_Value_right_parenthesis', 'Cat/egory': 'Cat_over_egory', 'Val.ue': 'Val_full_stop_ue'}
+  _dim_label_map = {'X Value': 'X Value', 'Y (Value)': 'Y (Value)', 'Cat/egory': 'Cat/egory', 'Val.ue': 'Val.ue'}
+  'X Value': field='X_Value', label='X Value' OK
+  'Y (Value)': field='Y_left_parenthesis_Value_right_parenthesis', label='Y (Value)' OK
+  'Cat/egory': field='Cat_over_egory', label='Cat/egory' OK
+  'Val.ue': field='Val_full_stop_ue', label='Val.ue' OK
+  matplotlib: all dimension mappings consistent
+
+=== Test 2: Bokeh PointPlot.get_data ===
+  xdim field: 'X_Value'
+  ydim field: 'Y_left_parenthesis_Value_right_parenthesis'
+  OK
+
+=== Test 3: dim() transforms with special names ===
+  bokeh: dim() transforms OK
+  plotly: dim() transforms OK
+  matplotlib: dim() transforms OK
+
+=== Test 4: MPL HeatMap get_data with special dims ===
+  HeatMap dimensions: ['X Key', 'Y/Key', 'Val.ue']
+  plot._dim_field_map: {'X Key': 'X_Key', 'Y/Key': 'Y_over_Key', 'Val.ue': 'Val_full_stop_ue'}
+    'X Key': field='X_Key', label='X Key'
+    'Y/Key': field='Y_over_Key', label='Y/Key'
+    'Val.ue': field='Val_full_stop_ue', label='Val.ue'
+  OK
+
+=== ALL BACKEND CONSISTENCY TESTS PASSED ===

@@ -191,9 +191,6 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
         else:
             self.current_frame = element
 
-        if element is not None:
-            self._build_dimension_maps(element)
-
         if is_geo and not self._supports_geo:
             raise ValueError(
                 f"Elements of type {type(element)} cannot be overlaid "
@@ -451,9 +448,7 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
                                 {
                                     "tickmode": "array",
                                     "tickvals": list(range(len(categories))),
-                                    "ticktext": [v.dimension.pprint_value(c) for c in categories]
-                                    if isinstance(v.dimension, Dimension)
-                                    else list(categories),
+                                    "ticktext": [v.dimension.pprint_value(c) for c in categories],
                                 }
                             )
 
@@ -722,7 +717,7 @@ class ColorbarPlot(ElementPlot):
                     else:
                         title = title[1:-1]
                 else:
-                    title = self.get_dim_label(eldim)
+                    title = eldim.pprint_label
                 opts["colorbar"]["title"] = title
             opts["showscale"] = True
         else:
@@ -817,9 +812,6 @@ class OverlayPlot(GenericOverlayPlot, ElementPlot):
         if element is None:
             element = self._get_frame(key)
         items = [] if element is None else list(element.data.items())
-
-        if element is not None:
-            self._build_dimension_maps(element)
 
         # Update plot options
         plot_opts = self.lookup_options(element, "plot").options

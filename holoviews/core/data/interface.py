@@ -610,6 +610,101 @@ class Interface(param.Parameterized):
                 return column[0], column[-1]
 
     @classmethod
+    def count_unique(cls, dataset, dimension):
+        """Returns the number of unique values along a dimension.
+
+        Parameters
+        ----------
+        dataset : Dataset
+            The dataset to query
+        dimension : str or Dimension
+            Dimension to count unique values for
+
+        Returns
+        -------
+        int
+            Number of unique values
+        """
+        dim = dataset.get_dimension(dimension, strict=True)
+        values = cls.values(dataset, dim, expanded=False)
+        return len(values)
+
+    @classmethod
+    def count_missing(cls, dataset, dimension):
+        """Returns the number of missing (null/NaN) values along a dimension.
+
+        Parameters
+        ----------
+        dataset : Dataset
+            The dataset to query
+        dimension : str or Dimension
+            Dimension to count missing values for
+
+        Returns
+        -------
+        int
+            Number of missing values
+        """
+        dim = dataset.get_dimension(dimension, strict=True)
+        values = cls.values(dataset, dim)
+        kind = dtype_kind(values)
+        if kind in "iub":
+            return 0
+        elif kind in "fc":
+            return int(np.count_nonzero(np.isnan(values)))
+        elif kind in "Mm":
+            return int(np.count_nonzero(np.isnat(values)))
+        else:
+            count = 0
+            for v in values:
+                if v is None:
+                    count += 1
+                elif isinstance(v, float) and np.isnan(v):
+                    count += 1
+            return count
+
+    @classmethod
+    def dimension_schema(cls, dataset, dimension):
+        """Returns a structured schema dictionary for a single dimension.
+
+        Computes dtype, categorical/datetime flags, nullability, data range,
+        unique count and missing count by reusing the existing interface
+        primitives (``dtype``, ``range``, ``values``, ``count_unique``,
+        ``count_missing``).  Subclasses should override ``count_unique`` and
+        ``count_missing`` for backend-specific efficiency; the schema
+        assembly itself stays in this single place.
+
+        Parameters
+        ----------
+        dataset : Dataset
+            The dataset to query
+        dimension : str or Dimension
+            Dimension to return the schema for
+
+        Returns
+        -------
+        dict
+            Dictionary with keys: name, dtype, is_categorical, is_datetime,
+            is_nullable, range, unique_count, missing_count
+        """
+        dim = dataset.get_dimension(dimension, strict=True)
+        dt = cls.dtype(dataset, dim)
+        kind = dtype_kind(dt)
+        dim_range = cls.range(dataset, dim)
+        unique_count = cls.count_unique(dataset, dim)
+        missing_count = cls.count_missing(dataset, dim)
+        return {
+            "name": dim.name,
+            "dtype": str(dt),
+            "is_categorical": kind in "SUO",
+            "is_datetime": kind == "M",
+            "is_nullable": kind in "fcOmM" or missing_count > 0,
+            "range": dim_range,
+            "unique_count": unique_count,
+            "missing_count": missing_count,
+        }
+
+    @classmethod
     def concatenate(cls, datasets, datatype=None, new_type=None):
         """
         Utility function to concatenate an NdMapping of Dataset objects.

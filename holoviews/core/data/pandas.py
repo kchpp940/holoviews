@@ -260,6 +260,20 @@ class PandasInterface(Interface, PandasAPI):
             return cmin, cmax
 
     @classmethod
+    def count_unique(cls, dataset, dimension):
+        dim = dataset.get_dimension(dimension, strict=True)
+        if cls.isindex(dataset, dim):
+            return len(cls.index_values(dataset, dim).unique())
+        return int(dataset.data[dim.name].nunique())
+
+    @classmethod
+    def count_missing(cls, dataset, dimension):
+        dim = dataset.get_dimension(dimension, strict=True)
+        if cls.isindex(dataset, dim):
+            return int(cls.index_values(dataset, dim).isna().sum())
+        return int(dataset.data[dim.name].isna().sum())
+
+    @classmethod
     def concat_fn(cls, dataframes, **kwargs):
         return pd.concat(dataframes, sort=False, **kwargs)
 

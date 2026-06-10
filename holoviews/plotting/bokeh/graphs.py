@@ -17,7 +17,7 @@ from bokeh.models import (
 
 from ...core.data import Dataset
 from ...core.options import abbreviated_exception
-from ...core.util import dtype_kind
+from ...core.util import dimension_sanitizer, dtype_kind
 from ...util.transform import dim
 from ..mixins import ChordMixin, GraphMixin
 from ..util import get_directed_graph_paths
@@ -187,10 +187,10 @@ class GraphPlot(GraphMixin, CompositeElementPlot, ColorbarPlot, LegendPlot):
                     index_dim.pprint_value(v) for v in element.nodes.dimension_values(2)
                 ]
                 for d in element.nodes.dimensions()[3:]:
-                    point_data[self.get_dim_field(d)] = element.nodes.dimension_values(d)
+                    point_data[dimension_sanitizer(d.name)] = element.nodes.dimension_values(d)
             elif self.inspection_policy == "edges":
                 for d in element.dimensions():
-                    dim_name = self.get_dim_field(d)
+                    dim_name = dimension_sanitizer(d.name)
                     if dim_name in ("start", "end"):
                         dim_name += "_values"
                     path_data[dim_name] = element.dimension_values(d)

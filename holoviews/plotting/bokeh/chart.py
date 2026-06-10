@@ -12,7 +12,7 @@ from bokeh.transform import jitter
 
 from ...core.data import Dataset
 from ...core.dimension import dimension_name
-from ...core.util import dtype_kind, isdatetime, isfinite
+from ...core.util import dimension_sanitizer, dtype_kind, isdatetime, isfinite
 from ...operation import interpolate_curve
 from ...util.transform import dim
 from ...util.warnings import warn
@@ -176,28 +176,26 @@ class PointPlot(SizebarMixin, ColorbarPlot):
         return super()._init_glyph(plot, mapping, properties)
 
     def get_data(self, element, ranges, style):
-        xdim, ydim = element.dimensions()[:2]
+        dims = element.dimensions(label=True)
 
         xidx, yidx = (1, 0) if self.invert_axes else (0, 1)
-        xfield = self.get_dim_field(xdim)
-        yfield = self.get_dim_field(ydim)
-        mapping = dict(x=xfield, y=yfield)
+        mapping = dict(x=dims[xidx], y=dims[yidx])
         data = {}
 
         if not self.static_source or self.batched:
-            dims = element.dimensions()[:2]
-            data[xfield] = element.dimension_values(dims[xidx])
-            data[yfield] = element.dimension_values(dims[yidx])
-            self._categorize_data(data, [xfield, yfield], dims)
+            xdim, ydim = dims[:2]
+            data[xdim] = element.dimension_values(xdim)
+            data[ydim] = element.dimension_values(ydim)
+            self._categorize_data(data, dims[:2], element.dimensions())
 
         if "angle" in style and isinstance(style["angle"], (int, float)):
             style["angle"] = np.deg2rad(style["angle"])
 
         if self.jitter:
             if self.invert_axes:
-                mapping["y"] = jitter(yfield, self.jitter, range=self.handles["y_range"])
+                mapping["y"] = jitter(dims[yidx], self.jitter, range=self.handles["y_range"])
             else:
-                mapping["x"] = jitter(xfield, self.jitter, range=self.handles["x_range"])
+                mapping["x"] = jitter(dims[xidx], self.jitter, range=self.handles["x_range"])
 
         self._get_hover_data(data, element)
         return data, mapping, style
@@ -244,7 +242,7 @@ class PointPlot(SizebarMixin, ColorbarPlot):
 
             if "hover" in self.handles:
                 for d, k in zip(element.dimensions(), key, strict=None):
-                    sanitized = self.get_dim_field(d)
+                    sanitized = dimension_sanitizer(d.name)
                     data[sanitized].append([k] * nvals)
 
         data = {k: np.concatenate(v) for k, v in data.items()}
@@ -460,7 +458,7 @@ class CurvePlot(ElementPlot):
                 data[k].append(v[0])
 
             for d, k in zip(overlay.kdims, key, strict=None):
-                sanitized = self.get_dim_field(d)
+                sanitized = dimension_sanitizer(d.name)
                 data[sanitized].append(k)
         data = {opt: vals for opt, vals in data.items() if not any(v is None for v in vals)}
         mapping = {{"x": "xs", "y": "ys"}.get(k, k): v for k, v in elmapping.items()}
@@ -968,7 +966,7 @@ class BarPlot(BarsMixin, ColorbarPlot, LegendPlot):
         if cdim is None:
             return
 
-        field = self.get_dim_field(cdim)
+        field = dimension_sanitizer(cdim.name)
         cd = ds.dimension_values(cdim)
         cmapper = self._get_colormapper(cdim, ds, ranges, style, factors, colors)
         is_categorical = isinstance(cmapper, CategoricalColorMapper)
@@ -977,7 +975,7 @@ class BarPlot(BarsMixin, ColorbarPlot, LegendPlot):
         # Enable legend if colormapper is categorical
         legend_prop = "legend_field"
         if self.show_legend and is_categorical:
-            mapping[legend_prop] = field
+            mapping[legend_prop] = cdim.name
 
         if not self.stacked and ds.ndims > 1 and self.multi_level:
             mapping.pop(legend_prop, None)
@@ -1166,23 +1164,23 @@ class BarPlot(BarsMixin, ColorbarPlot, LegendPlot):
         sanitized_data = {}
         for col, vals in data.items():
             if len(vals) == 1:
-                sanitized_data[self.get_dim_field(col)] = vals[0]
+                sanitized_data[dimension_sanitizer(col)] = vals[0]
             elif vals:
-                sanitized_data[self.get_dim_field(col)] = np.concatenate(vals)
+                sanitized_data[dimension_sanitizer(col)] = np.concatenate(vals)
 
         for name, val in mapping.items():
             sanitized = None
             if isinstance(val, str):
-                sanitized = self.get_dim_field(val)
+                sanitized = dimension_sanitizer(val)
                 mapping[name] = sanitized
             elif isinstance(val, dict) and "field" in val:
-                sanitized = self.get_dim_field(val["field"])
+                sanitized = dimension_sanitizer(val["field"])
                 val["field"] = sanitized
             if sanitized is not None and sanitized not in sanitized_data:
                 sanitized_data[sanitized] = []
 
         # Ensure x-values are categorical
-        xname = self.get_dim_field(xdim)
+        xname = dimension_sanitizer(xdim.name)
         if (
             xname in sanitized_data
             and isinstance(sanitized_data[xname], np.ndarray)
@@ -1307,8 +1305,8 @@ class WaterfallPlot(WaterfallMixin, ColorbarPlot, LegendPlot):
         )
 
         if "hover" in self.handles and not self.static_source:
-            xdim_name = self.get_dim_field(xdim)
-            ydim_name = self.get_dim_field(element.vdims[0])
+            xdim_name = dimension_sanitizer(xdim.name)
+            ydim_name = dimension_sanitizer(element.vdims[0].name)
             data[xdim_name] = np.array(labels, dtype=str)
             data[ydim_name] = np.where(kinds == "total", cumulative, values)
             data["kind"] = list(kinds)
@@ -1508,7 +1506,7 @@ class DonutPlot(DonutMixin, CompositeElementPlot, ColorbarPlot, LegendPlot):
 
         kdim = element.kdims[0]
         vdim = element.vdims[0]
-        kdim_san = self.get_dim_field(kdim)
+        kdim_san = dimension_sanitizer(kdim.name)
 
         # Color mapper
         color_style = style.pop("color", None)
@@ -1527,9 +1525,9 @@ class DonutPlot(DonutMixin, CompositeElementPlot, ColorbarPlot, LegendPlot):
             start_angle=starts,
             end_angle=ends,
             percentage=fracs * 100,
-            **{kdim_san: display_labels, self.get_dim_field(vdim): values},
+            **{kdim_san: display_labels, dimension_sanitizer(vdim.name): values},
             **{
-                self.get_dim_field(vd): element.dimension_values(vd)[valid]
+                dimension_sanitizer(vd.name): element.dimension_values(vd)[valid]
                 for vd in element.vdims[1:]
             },
         )

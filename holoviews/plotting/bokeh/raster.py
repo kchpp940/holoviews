@@ -11,7 +11,7 @@ from bokeh.models.dom import Div, Span, Styles, ValueOf
 from panel.io import hold
 
 from ...core.data import XArrayInterface
-from ...core.util import cartesian_product, dtype_kind, isfinite
+from ...core.util import cartesian_product, dimension_sanitizer, dtype_kind, isfinite
 from ...element import Raster
 from ...util.warnings import warn
 from ..util import categorical_legend
@@ -251,7 +251,7 @@ class RasterPlot(ServerHoverMixin, ColorbarPlot):
         vdims = element.vdims
         tooltips.append((vdims[0].pprint_label, "@image"))
         for vdim in vdims[1:]:
-            vname = self.get_dim_field(vdim)
+            vname = dimension_sanitizer(vdim.name)
             tooltips.append((vdim.pprint_label, f"@{{{vname}}}"))
         return tooltips, {}
 
@@ -334,7 +334,7 @@ class RasterPlot(ServerHoverMixin, ColorbarPlot):
                 img = np.array([[np.nan]])
             if self.invert_axes ^ (type(element) is Raster):
                 img = img.T
-            key = "image" if i == 2 else self.get_dim_field(vdim)
+            key = "image" if i == 2 else dimension_sanitizer(vdim.name)
             data[key] = [img]
 
         return (data, mapping, style)
@@ -595,7 +595,7 @@ class QuadMeshPlot(ColorbarPlot):
         if self.invert_axes:
             x, y = y, x
         cmapper = self._get_colormapper(z, element, ranges, style)
-        cmapper = {"field": self.get_dim_field(z), "transform": cmapper}
+        cmapper = {"field": dimension_sanitizer(z.name), "transform": cmapper}
 
         irregular = element.interface.irregular(element, x) or element.interface.irregular(
             element, y
@@ -614,7 +614,7 @@ class QuadMeshPlot(ColorbarPlot):
         if self.static_source:
             return {}, mapping, style
 
-        x, y = self.get_dim_field(x), self.get_dim_field(y)
+        x, y = dimension_sanitizer(x.name), dimension_sanitizer(y.name)
 
         zdata = element.dimension_values(z, flat=False)
         hover_data = {}
@@ -642,7 +642,7 @@ class QuadMeshPlot(ColorbarPlot):
                     mask.append(False)
             mask = np.array(mask)
 
-            data = {"xs": XS, "ys": YS, self.get_dim_field(z): zvals[mask]}
+            data = {"xs": XS, "ys": YS, dimension_sanitizer(z.name): zvals[mask]}
             if "hover" in self.handles:
                 if not self.static_source:
                     hover_data = self._collect_hover_data(element, mask, irregular=True)
@@ -660,7 +660,7 @@ class QuadMeshPlot(ColorbarPlot):
             data = {
                 "left": x0,
                 "right": x1,
-                self.get_dim_field(z): zvals,
+                dimension_sanitizer(z.name): zvals,
                 "bottom": y0,
                 "top": y1,
             }
@@ -691,7 +691,7 @@ class QuadMeshPlot(ColorbarPlot):
         hover_data = {}
         for hdim, hvals in zip(hover_dims, hover_vals, strict=None):
             hdat = hvals.T.flatten() if transpose else hvals.flatten()
-            hover_data[self.get_dim_field(hdim)] = hdat[mask]
+            hover_data[dimension_sanitizer(hdim.name)] = hdat[mask]
         return hover_data
 
     def _init_glyph(self, plot, mapping, properties):

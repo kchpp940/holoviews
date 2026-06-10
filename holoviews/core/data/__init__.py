@@ -565,6 +565,52 @@ class Dataset(Element, metaclass=PipelineMeta):
             return lower, upper
         return core_util.dimension_range(lower, upper, dim.range, dim.soft_range)
 
+    def schema(self):
+        """Returns a structured schema of all dimensions in the Dataset.
+
+        The schema contains metadata about each key and value dimension
+        including data type, categorical/datetime flags, nullability,
+        data range, unique count and missing count.  The computation
+        reuses the existing interface primitives (``dtype``, ``range``,
+        ``values``, ``count_unique``, ``count_missing``) so that every
+        backend (pandas, dask, xarray, narwhals, etc.) produces a
+        consistent field set without duplicating logic.
+
+        Returns
+        -------
+        dict
+            Dictionary with ``'kdims'`` and ``'vdims'`` keys.  Each
+            value is a list of dimension-schema dictionaries containing:
+
+            - **name** (*str*): dimension name
+            - **dtype** (*str*): data type string
+            - **is_categorical** (*bool*): whether the dimension is
+              categorical (string / object / unicode dtype)
+            - **is_datetime** (*bool*): whether the dimension is
+              datetime
+            - **is_nullable** (*bool*): whether the dimension can
+              contain null / missing values
+            - **range** (*tuple*): ``(min, max)`` data range
+            - **unique_count** (*int*): number of unique values
+            - **missing_count** (*int*): number of missing values
+
+        Examples
+        --------
+        >>> import holoviews as hv
+        >>> ds = hv.Dataset({"x": [1, 2, 3], "y": [4.0, 5.0, float("nan")]}, kdims=["x"], vdims=["y"])
+        >>> ds.schema()
+        {'kdims': [{'name': 'x', 'dtype': 'int64', 'is_categorical': False,
+                    'is_datetime': False, 'is_nullable': False,
+                    'range': (1, 3), 'unique_count': 3, 'missing_count': 0}],
+         'vdims': [{'name': 'y', 'dtype': 'float64', 'is_categorical': False,
+                    'is_datetime': False, 'is_nullable': True,
+                    'range': (4.0, 5.0), 'unique_count': 3, 'missing_count': 1}]}
+        """
+        return {
+            "kdims": [self.interface.dimension_schema(self, dim) for dim in self.kdims],
+            "vdims": [self.interface.dimension_schema(self, dim) for dim in self.vdims],
+        }
+
     def add_dimension(self, dimension, dim_pos, dim_val, vdim=False, **kwargs):
         """Adds a dimension and its values to the Dataset
 
