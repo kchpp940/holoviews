@@ -15,7 +15,7 @@ from bokeh.models.widgets import (
 )
 
 from ...core import Dataset, Dimension
-from ...core.util import dimension_sanitizer, dtype_kind, isdatetime
+from ...core.util import dtype_kind, isdatetime
 from ...element import ItemTable
 from ...streams import Buffer
 from ..plot import GenericElementPlot
@@ -70,7 +70,7 @@ class TablePlot(BokehPlot, GenericElementPlot):
     def get_data(self, element, ranges, style):
         return (
             {
-                dimension_sanitizer(d.name): element.dimension_values(d)
+                self.get_dim_field(d): element.dimension_values(d)
                 for d in element.dimensions()
             },
             {},
@@ -119,7 +119,7 @@ class TablePlot(BokehPlot, GenericElementPlot):
     def _get_columns(self, element, data):
         columns = []
         for d in element.dimensions():
-            col = dimension_sanitizer(d.name)
+            col = self.get_dim_field(d)
             kind = dtype_kind(data[col])
             if kind == "i":
                 formatter = NumberFormatter()
@@ -136,7 +136,7 @@ class TablePlot(BokehPlot, GenericElementPlot):
                 formatter = StringFormatter()
                 editor = StringEditor()
             column = TableColumn(
-                field=dimension_sanitizer(d.name),
+                field=self.get_dim_field(d),
                 title=d.pprint_label,
                 editor=editor,
                 formatter=formatter,

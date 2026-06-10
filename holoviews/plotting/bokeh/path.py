@@ -82,7 +82,7 @@ class PathPlot(LegendPlot, ColorbarPlot):
             return
 
         for k, v in self.overlay_dims.items():
-            dim = util.dimension_sanitizer(k.name)
+            dim = self.get_dim_field(k)
             if dim not in data:
                 data[dim] = [v] * len(next(iter(data.values())))
 
@@ -120,9 +120,9 @@ class PathPlot(LegendPlot, ColorbarPlot):
         hover = "hover" in self.handles
         vals = defaultdict(list)
         if hover:
-            vals.update({util.dimension_sanitizer(vd.name): [] for vd in element.vdims})
+            vals.update({self.get_dim_field(vd): [] for vd in element.vdims})
         if cdim:
-            dim_name = util.dimension_sanitizer(cdim.name)
+            dim_name = self.get_dim_field(cdim)
             cmapper = self._get_colormapper(cdim, element, ranges, style)
             mapping["line_color"] = {"field": dim_name, "transform": cmapper}
             vals[dim_name] = []
@@ -158,7 +158,7 @@ class PathPlot(LegendPlot, ColorbarPlot):
                 if vd == cdim:
                     continue
                 values = path.dimension_values(vd)[:-1]
-                vd_name = util.dimension_sanitizer(vd.name)
+                vd_name = self.get_dim_field(vd)
                 vals[vd_name].append(values)
 
         values = {d: np.concatenate(vs) if len(vs) else [] for d, vs in vals.items()}
@@ -284,7 +284,7 @@ class ContourPlot(PathPlot):
         interface = element.interface
         scalar_kwargs = {"per_geom": True} if interface.multi else {}
         for d in element.vdims:
-            dim = util.dimension_sanitizer(d.name)
+            dim = self.get_dim_field(d)
             if dim not in data:
                 if interface.isunique(element, d, **scalar_kwargs):
                     data[dim] = element.dimension_values(d, expanded=False)
@@ -292,7 +292,7 @@ class ContourPlot(PathPlot):
                     data[dim] = element.split(datatype="array", dimensions=[d])
 
         for k, v in self.overlay_dims.items():
-            dim = util.dimension_sanitizer(k.name)
+            dim = self.get_dim_field(k)
             if dim not in data:
                 data[dim] = [v] * len(next(iter(data.values())))
 
@@ -337,7 +337,7 @@ class ContourPlot(PathPlot):
             return data, mapping, style
 
         cdim = element.vdims[0]
-        dim_name = util.dimension_sanitizer(cdim.name)
+        dim_name = self.get_dim_field(cdim)
         values = element.dimension_values(cdim, expanded=False)
         data[dim_name] = values
 

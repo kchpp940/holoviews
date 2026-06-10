@@ -5,7 +5,7 @@ from collections import defaultdict
 
 import param
 
-from ..core.util import dimension_sanitizer
+from .util import get_dim_field_name
 
 
 class Link(param.Parameterized):
@@ -182,7 +182,7 @@ class VertexTableLink(Link):
 
     def __init__(self, source, target, **params):
         if "vertex_columns" not in params:
-            dimensions = [dimension_sanitizer(d.name) for d in target.dimensions()[:2]]
+            dimensions = [get_dim_field_name(d) for d in target.dimensions()[:2]]
             params["vertex_columns"] = dimensions
         super().__init__(source, target, **params)
 

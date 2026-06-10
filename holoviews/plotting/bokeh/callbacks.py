@@ -31,7 +31,6 @@ from ...core.options import CallbackError
 from ...core.util import (
     VersionError,
     datetime_types,
-    dimension_sanitizer,
     dt64_to_dt,
     isequal,
 )
@@ -1453,7 +1452,7 @@ class GlyphDrawCallback(CDSCallback):
         element = self.plot.current_frame
         stream = self.streams[0]
         for d in element.vdims:
-            dim = dimension_sanitizer(d.name)
+            dim = self.plot.get_dim_field(d)
             if dim in data:
                 continue
             values = element.dimension_values(d)
@@ -1529,7 +1528,7 @@ class CurveEditCallback(GlyphDrawCallback):
         """
         element = self.plot.current_frame
         for d in element.vdims:
-            dim = dimension_sanitizer(d.name)
+            dim = self.plot.get_dim_field(d)
             if dim not in data:
                 data[dim] = element.dimension_values(d)
 
@@ -1578,7 +1577,7 @@ class PolyDrawCallback(GlyphDrawCallback):
         scalar_kwargs = {"per_geom": True} if interface.multi else {}
         for d in element.vdims:
             scalar = element.interface.isunique(element, d, **scalar_kwargs)
-            dim = dimension_sanitizer(d.name)
+            dim = self.plot.get_dim_field(d)
             if dim not in data:
                 if scalar:
                     values = element.dimension_values(d, not scalar)

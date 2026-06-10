@@ -613,6 +613,7 @@ class ElementPlot(GenericElementPlot, MPLPlot):
             self.current_frame = element
 
         if element is not None:
+            self._build_dimension_maps(element)
             self._apply_plot_opts(self.lookup_options(element, "plot").options)
         axis = self.handles["axis"]
 
@@ -1457,6 +1458,9 @@ class OverlayPlot(LegendPlot, GenericOverlayPlot):
             self.current_frame = element
             self.current_key = key
         empty = element is None
+
+        if element is not None:
+            self._build_dimension_maps(element)
 
         if isinstance(self.hmap, DynamicMap):
             range_obj = element

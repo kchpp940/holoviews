@@ -60,7 +60,7 @@ from ...streams import Buffer, PlotSize, RangeXY
 from ...util.transform import dim
 from ...util.warnings import warn
 from ..plot import GenericElementPlot, GenericOverlayPlot
-from ..util import color_intervals, dim_axis_label, dim_range_key, get_dim_field_name, process_cmap
+from ..util import color_intervals, dim_axis_label, dim_range_key, process_cmap
 from .plot import BokehPlot
 from .styles import (
     base_properties,
@@ -2642,6 +2642,9 @@ class ElementPlot(BokehPlot, GenericElementPlot):
         elif element is not None:
             self.current_key = key
             self.current_frame = element
+
+        if element is not None:
+            self._build_dimension_maps(element)
 
         renderer = self.handles.get("glyph_renderer", None)
         visible = element is not None

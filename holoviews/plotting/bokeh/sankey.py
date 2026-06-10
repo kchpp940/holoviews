@@ -5,7 +5,7 @@ import param
 from bokeh.models import Patches
 
 from ...core.data import Dataset
-from ...core.util import dimension_sanitizer, max_range
+from ...core.util import max_range
 from ...util.transform import dim
 from .graphs import GraphPlot
 
@@ -240,7 +240,7 @@ class SankeyPlot(GraphPlot):
         if not (self.inspection_policy == "edges" and "hover" in self.handles):
             return
         lidx = element.nodes.get_dimension(self.label_index)
-        src, tgt = (dimension_sanitizer(kd.name) for kd in element.kdims[:2])
+        src, tgt = (self.get_dim_field(kd) for kd in element.kdims[:2])
         if src == "start":
             src += "_values"
         if tgt == "end":

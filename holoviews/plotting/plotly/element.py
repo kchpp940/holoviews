@@ -191,6 +191,9 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
         else:
             self.current_frame = element
 
+        if element is not None:
+            self._build_dimension_maps(element)
+
         if is_geo and not self._supports_geo:
             raise ValueError(
                 f"Elements of type {type(element)} cannot be overlaid "

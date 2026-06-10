@@ -10,7 +10,7 @@ from bokeh.models import Arrow, BoxAnnotation, NormalHead, Slope, Span, TeeHead
 from bokeh.transform import dodge
 from panel.models import HTML
 
-from ...core.util import datetime_types, dimension_sanitizer
+from ...core.util import datetime_types
 from ...element import HLine, HLines, HSpans, VLine, VLines, VSpan, VSpans
 from ..plot import GenericElementPlot
 from .element import AnnotationPlot, ColorbarPlot, CompositeElementPlot, ElementPlot
@@ -205,7 +205,7 @@ class LabelsPlot(ColorbarPlot, AnnotationPlot):
 
         dims = element.dimensions()
         coords = (1, 0) if self.invert_axes else (0, 1)
-        xdim, ydim, tdim = (dimension_sanitizer(dims[i].name) for i in (*coords, 2))
+        xdim, ydim, tdim = (self.get_dim_field(dims[i]) for i in (*coords, 2))
         mapping = dict(x=xdim, y=ydim, text=tdim)
         data = {d: element.dimension_values(d) for d in (xdim, ydim)}
         if self.xoffset is not None:

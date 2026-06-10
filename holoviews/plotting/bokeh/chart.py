@@ -12,12 +12,12 @@ from bokeh.transform import jitter
 
 from ...core.data import Dataset
 from ...core.dimension import dimension_name
-from ...core.util import dimension_sanitizer, dtype_kind, isdatetime, isfinite
+from ...core.util import dtype_kind, isdatetime, isfinite
 from ...operation import interpolate_curve
 from ...util.transform import dim
 from ...util.warnings import warn
 from ..mixins import AreaMixin, BarsMixin, DonutMixin, SpikesMixin, WaterfallMixin
-from ..util import get_dim_field_name, get_min_distance, rgb2hex
+from ..util import get_min_distance, rgb2hex
 from .element import ColorbarPlot, CompositeElementPlot, ElementPlot, LegendPlot, OverlayPlot
 from .selection import BokehOverlaySelectionDisplay
 from .styles import (
@@ -1166,23 +1166,23 @@ class BarPlot(BarsMixin, ColorbarPlot, LegendPlot):
         sanitized_data = {}
         for col, vals in data.items():
             if len(vals) == 1:
-                sanitized_data[dimension_sanitizer(col)] = vals[0]
+                sanitized_data[self.get_dim_field(col)] = vals[0]
             elif vals:
-                sanitized_data[dimension_sanitizer(col)] = np.concatenate(vals)
+                sanitized_data[self.get_dim_field(col)] = np.concatenate(vals)
 
         for name, val in mapping.items():
             sanitized = None
             if isinstance(val, str):
-                sanitized = dimension_sanitizer(val)
+                sanitized = self.get_dim_field(val)
                 mapping[name] = sanitized
             elif isinstance(val, dict) and "field" in val:
-                sanitized = dimension_sanitizer(val["field"])
+                sanitized = self.get_dim_field(val["field"])
                 val["field"] = sanitized
             if sanitized is not None and sanitized not in sanitized_data:
                 sanitized_data[sanitized] = []
 
         # Ensure x-values are categorical
-        xname = dimension_sanitizer(xdim.name)
+        xname = self.get_dim_field(xdim)
         if (
             xname in sanitized_data
             and isinstance(sanitized_data[xname], np.ndarray)
@@ -1307,8 +1307,8 @@ class WaterfallPlot(WaterfallMixin, ColorbarPlot, LegendPlot):
         )
 
         if "hover" in self.handles and not self.static_source:
-            xdim_name = dimension_sanitizer(xdim.name)
-            ydim_name = dimension_sanitizer(element.vdims[0].name)
+            xdim_name = self.get_dim_field(xdim)
+            ydim_name = self.get_dim_field(element.vdims[0])
             data[xdim_name] = np.array(labels, dtype=str)
             data[ydim_name] = np.where(kinds == "total", cumulative, values)
             data["kind"] = list(kinds)
@@ -1508,7 +1508,7 @@ class DonutPlot(DonutMixin, CompositeElementPlot, ColorbarPlot, LegendPlot):
 
         kdim = element.kdims[0]
         vdim = element.vdims[0]
-        kdim_san = dimension_sanitizer(kdim.name)
+        kdim_san = self.get_dim_field(kdim)
 
         # Color mapper
         color_style = style.pop("color", None)
@@ -1527,9 +1527,9 @@ class DonutPlot(DonutMixin, CompositeElementPlot, ColorbarPlot, LegendPlot):
             start_angle=starts,
             end_angle=ends,
             percentage=fracs * 100,
-            **{kdim_san: display_labels, dimension_sanitizer(vdim.name): values},
+            **{kdim_san: display_labels, self.get_dim_field(vdim): values},
             **{
-                dimension_sanitizer(vd.name): element.dimension_values(vd)[valid]
+                self.get_dim_field(vd): element.dimension_values(vd)[valid]
                 for vd in element.vdims[1:]
             },
         )
