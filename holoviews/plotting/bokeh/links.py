@@ -349,6 +349,13 @@ class VertexTableLinkCallback(LinkCallback):
     on_source_changes = ["selected", "data", "patching"]
     on_target_changes = ["data", "patching"]
 
+    def __init__(self, root_model, link, source_plot, target_plot=None):
+        target = link.target
+        if target is not None and target_plot is not None:
+            vcols = [target_plot.get_dim_field(d) for d in target.dimensions()[:2]]
+            link.param.set_param(vertex_columns=vcols)
+        super().__init__(root_model, link, source_plot, target_plot)
+
     source_code = """
     var index = source_cds.selected.indices[0];
     if (index == undefined) {

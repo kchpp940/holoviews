@@ -3977,6 +3977,9 @@ class OverlayPlot(GenericOverlayPlot, LegendPlot):
             self.current_key = key
         items = [] if element is None else list(element.data.items())
 
+        if element is not None:
+            self._build_dimension_maps(element)
+
         if isinstance(self.hmap, DynamicMap):
             range_obj = element
         else:

@@ -818,6 +818,9 @@ class OverlayPlot(GenericOverlayPlot, ElementPlot):
             element = self._get_frame(key)
         items = [] if element is None else list(element.data.items())
 
+        if element is not None:
+            self._build_dimension_maps(element)
+
         # Update plot options
         plot_opts = self.lookup_options(element, "plot").options
         inherited = self._traverse_options(
