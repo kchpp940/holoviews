@@ -2220,10 +2220,29 @@ def bound_range(vals, density, time_unit="us"):
     assumed to be evenly spaced. Density is rounded to machine precision
     using significant digits reported by sys.float_info.dig.
 
-    .. deprecated::
-        Use `centers_to_range_1d` instead for unified datetime handling.
     """
-    return centers_to_range_1d(vals, density, time_unit)
+    if not len(vals):
+        return (np.nan, np.nan, density, False)
+    low, high = vals.min(), vals.max()
+    invert = False
+    if len(vals) > 1 and vals[0] > vals[1]:
+        invert = True
+    if not density:
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", r"invalid value encountered in (double_scalars|scalar divide)"
+            )
+            full_precision_density = compute_density(low, high, len(vals) - 1)
+            with np.errstate(over="ignore"):
+                density = round(full_precision_density, sys.float_info.dig)
+        if density in (0, np.inf):
+            density = full_precision_density
+    if density == 0:
+        raise ValueError("Could not determine Image density, ensure it has a non-zero range.")
+    halfd = 0.5 / density
+    if isinstance(low, datetime_types):
+        halfd = np.timedelta64(round(halfd), time_unit)
+    return low - halfd, high + halfd, density, invert
 
 
 def validate_regular_sampling(values, rtol=10e-6):
@@ -2257,310 +2276,6 @@ def compute_density(start, end, length, time_unit="us"):
         if isinstance(diff, dt.timedelta):
             return length / (diff.total_seconds() * _TIME_SCALES[time_unit])
     return length / diff
-
-
-def infer_interval_breaks(coord, axis=0, time_unit="us"):
-    """Infers the edges of intervals from center coordinates.
-
-    Supports 1D and 2D arrays (for curvilinear/irregular grids)
-    and correctly handles datetime64 dtypes.
-
-    Parameters
-    ----------
-    coord : np.ndarray
-        Center coordinates, 1D or 2D
-    axis : int
-        Axis along which to compute breaks (for 2D arrays)
-    time_unit : str
-        Time unit for datetime timedelta computation
-
-    Returns
-    -------
-    np.ndarray
-        Edge coordinates with shape (N+1,) for 1D or (M+1, N) / (M, N+1) for 2D
-
-    Examples
-    --------
-    >>> infer_interval_breaks(np.arange(5))
-    array([-0.5,  0.5,  1.5,  2.5,  3.5,  4.5])
-    >>> infer_interval_breaks(np.array([[0, 1], [3, 4]]), axis=1)
-    array([[-0.5,  0.5,  1.5], [ 2.5,  3.5,  4.5]])
-    """
-    coord = np.asarray(coord)
-    if coord.shape[axis] == 0:
-        return np.array([], dtype=coord.dtype)
-
-    is_datetime = coord.dtype.kind == "M"
-
-    if coord.shape[axis] > 1:
-        if is_datetime:
-            coord_ns = coord.astype("datetime64[ns]").astype("int64")
-            deltas = 0.5 * np.diff(coord_ns, axis=axis)
-            first = np.take(coord_ns, [0], axis=axis) - np.take(deltas, [0], axis=axis)
-            last = np.take(coord_ns, [-1], axis=axis) + np.take(deltas, [-1], axis=axis)
-            trim_last = tuple(
-                slice(None, -1) if n == axis else slice(None) for n in range(coord_ns.ndim)
-            )
-            result = np.concatenate([first, coord_ns[trim_last] + deltas, last], axis=axis)
-            return result.astype("datetime64[ns]").astype(f"datetime64[{time_unit}]")
-        else:
-            deltas = 0.5 * np.diff(coord, axis=axis)
-            first = np.take(coord, [0], axis=axis) - np.take(deltas, [0], axis=axis)
-            last = np.take(coord, [-1], axis=axis) + np.take(deltas, [-1], axis=axis)
-            trim_last = tuple(
-                slice(None, -1) if n == axis else slice(None) for n in range(coord.ndim)
-            )
-            return np.concatenate([first, coord[trim_last] + deltas, last], axis=axis)
-    else:
-        if is_datetime:
-            half = np.timedelta64(500_000_000, "ns").astype(f"timedelta64[{time_unit}]")
-        else:
-            half = 0.5
-        return np.concatenate(
-            [np.take(coord, [0], axis=axis) - half, np.take(coord, [-1], axis=axis) + half],
-            axis=axis,
-        )
-
-
-def centers_to_edges_1d(centers, time_unit="us"):
-    """Convert 1D center coordinates to edge coordinates.
-
-    Parameters
-    ----------
-    centers : array-like
-        1D array of center coordinates
-    time_unit : str
-        Time unit for datetime timedelta computation
-
-    Returns
-    -------
-    np.ndarray
-        Edge coordinates with length N+1
-    """
-    return infer_interval_breaks(centers, axis=0, time_unit=time_unit)
-
-
-def edges_to_centers_1d(edges, time_unit="us"):
-    """Convert 1D edge coordinates to center coordinates.
-
-    Parameters
-    ----------
-    edges : array-like
-        1D array of edge coordinates
-    time_unit : str
-        Time unit for datetime timedelta computation
-
-    Returns
-    -------
-    np.ndarray
-        Center coordinates with length N-1
-    """
-    edges = np.asarray(edges)
-    is_datetime = edges.dtype.kind == "M"
-
-    if is_datetime:
-        edges_ns = edges.astype("datetime64[ns]").astype("int64")
-        centers_ns = edges_ns[:-1] + np.diff(edges_ns) / 2.0
-        return centers_ns.astype("datetime64[ns]").astype(f"datetime64[{time_unit}]")
-    else:
-        return edges[:-1] + np.diff(edges) / 2.0
-
-
-def centers_to_range_1d(centers, density=None, time_unit="us"):
-    """Compute (edge_min, edge_max) range from 1D center coordinates.
-
-    Unified replacement for bound_range's edge computation logic.
-    Correctly handles datetime coordinates and descending order.
-
-    Parameters
-    ----------
-    centers : array-like
-        1D center coordinates
-    density : float or None
-        Pre-computed density (samples per unit). If None, will be computed.
-    time_unit : str
-        Time unit for datetime timedelta computation
-
-    Returns
-    -------
-    tuple : (edge_low, edge_high, density, invert)
-        edge_low, edge_high : the bounding edges (min-center - half_step, max-center + half_step)
-        density : computed density (samples per unit)
-        invert : bool indicating if coordinates are in descending order
-    """
-    centers = np.asarray(centers)
-    if not len(centers):
-        return (np.nan, np.nan, density, False)
-
-    invert = len(centers) > 1 and centers[0] > centers[1]
-    is_datetime = centers.dtype.kind == "M"
-
-    if is_datetime:
-        centers_sorted = np.sort(centers)
-        low, high = centers_sorted[0], centers_sorted[-1]
-    else:
-        low, high = centers.min(), centers.max()
-
-    if not density:
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore", r"invalid value encountered in (double_scalars|scalar divide)"
-            )
-            full_precision_density = compute_density(low, high, len(centers) - 1, time_unit)
-            with np.errstate(over="ignore"):
-                if full_precision_density == 0:
-                    density = 0
-                else:
-                    density = float(f"{full_precision_density:.{sys.float_info.dig}g}")
-        if density in (0, np.inf):
-            density = full_precision_density
-
-    if density == 0:
-        raise ValueError("Could not determine Image density, ensure it has a non-zero range.")
-
-    halfd = 0.5 / density
-    if is_datetime:
-        halfd = np.timedelta64(round(halfd), time_unit)
-
-    return low - halfd, high + halfd, density, invert
-
-
-def coords_to_bounds_2d(x_centers, y_centers, xdensity=None, ydensity=None,
-                        x_time_unit="us", y_time_unit="us"):
-    """Compute (l, b, r, t) bounds from x and y center coordinates.
-
-    Unified function for Image element bounds computation.
-
-    Parameters
-    ----------
-    x_centers, y_centers : array-like
-        1D center coordinates for x and y axes
-    xdensity, ydensity : float or None
-        Pre-computed densities
-    x_time_unit, y_time_unit : str
-        Time units for datetime computation on each axis
-
-    Returns
-    -------
-    tuple : ((l, b, r, t), (xdensity, ydensity))
-    """
-    l, r, xdensity, _ = centers_to_range_1d(x_centers, xdensity, x_time_unit)
-    b, t, ydensity, _ = centers_to_range_1d(y_centers, ydensity, y_time_unit)
-    return (l, b, r, t), (xdensity, ydensity)
-
-
-def edges_to_pixel_centers(edge_start, edge_end, num_pixels, time_unit="ns"):
-    """Compute pixel center coordinates from edge range and number of pixels.
-
-    Unified function used by datashader regrid/rasterize/resample operations.
-    Correctly handles datetime edge ranges.
-
-    Parameters
-    ----------
-    edge_start, edge_end : scalar
-        Edge range (boundaries of the first and last pixel)
-    num_pixels : int
-        Number of pixels
-    time_unit : str
-        Time unit for datetime computation (default "ns" for datashader compatibility)
-
-    Returns
-    -------
-    np.ndarray
-        Center coordinates with length num_pixels
-    """
-    is_datetime = isinstance(edge_start, datetime_types) or isinstance(edge_end, datetime_types)
-
-    if is_datetime:
-        edge_start_i = dt_to_int(edge_start, time_unit)
-        edge_end_i = dt_to_int(edge_end, time_unit)
-        span = edge_end_i - edge_start_i
-        if edge_start_i == edge_end_i or num_pixels == 0:
-            unit = 0
-        else:
-            unit = float(span) / num_pixels
-        centers_int = np.linspace(
-            edge_start_i + unit / 2.0, edge_end_i - unit / 2.0, num_pixels
-        )
-        return centers_int.astype(f"datetime64[{time_unit}]")
-    else:
-        span = edge_end - edge_start
-        if edge_start == edge_end or num_pixels == 0:
-            unit = 0
-        else:
-            unit = float(span) / num_pixels
-        return np.linspace(
-            edge_start + unit / 2.0, edge_end - unit / 2.0, num_pixels
-        )
-
-
-def edges_range_to_centers_range(edge_low, edge_high, density, time_unit="us"):
-    """Compute (center_low, center_high) from edge range and density.
-
-    Inverse of centers_to_range_1d for range values.
-    Used by ImageInterface.range() to compute center coordinates
-    from stored edge bounds.
-
-    Parameters
-    ----------
-    edge_low, edge_high : scalar
-        Edge bounds (min and max pixel edges)
-    density : float
-        Density (samples per unit distance)
-    time_unit : str
-        Time unit for datetime timedelta computation
-
-    Returns
-    -------
-    tuple : (center_low, center_high)
-    """
-    halfd = 0.5 / density
-    is_datetime = isinstance(edge_low, datetime_types) or isinstance(edge_high, datetime_types)
-    if is_datetime:
-        halfd = np.timedelta64(round(halfd), time_unit)
-    return edge_low + halfd, edge_high - halfd
-
-
-def edges_to_centers_2d(X_edges, Y_edges, time_unit="us"):
-    """Convert 2D edge coordinate arrays to center coordinate arrays.
-
-    Used for irregular/curvilinear QuadMesh data. Correctly handles
-    datetime64 dtypes.
-
-    Parameters
-    ----------
-    X_edges, Y_edges : np.ndarray
-        2D arrays of edge coordinates with shape (M+1, N+1)
-    time_unit : str
-        Time unit for datetime computation
-
-    Returns
-    -------
-    tuple : (X_centers, Y_centers)
-        2D arrays with shape (M, N)
-    """
-    def _axis_centers(arr, axis):
-        is_dt = arr.dtype.kind == "M"
-        if is_dt:
-            arr_ns = arr.astype("datetime64[ns]").astype("int64")
-            trim_last = tuple(
-                slice(None, -1) if n == axis else slice(None)
-                for n in range(arr_ns.ndim)
-            )
-            centers_ns = arr_ns[trim_last] + 0.5 * np.diff(arr_ns, axis=axis)
-            return centers_ns.astype("datetime64[ns]").astype(f"datetime64[{time_unit}]")
-        else:
-            trim_last = tuple(
-                slice(None, -1) if n == axis else slice(None)
-                for n in range(arr.ndim)
-            )
-            return arr[trim_last] + 0.5 * np.diff(arr, axis=axis)
-
-    X_centers = _axis_centers(X_edges, axis=1)
-    X_centers = _axis_centers(X_centers, axis=0)
-    Y_centers = _axis_centers(Y_edges, axis=1)
-    Y_centers = _axis_centers(Y_centers, axis=0)
-    return X_centers, Y_centers
 
 
 def date_range(start, end, length, time_unit="us"):

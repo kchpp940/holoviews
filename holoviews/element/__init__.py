@@ -42,20 +42,7 @@ from .graphs import (
     TriMesh,
 )
 from .path import Bounds, Box, Contours, Dendrogram, Ellipse, Path, Polygons
-from .raster import (
-    HSV,
-    RGB,
-    HeatMap,
-    Image,
-    ImageStack,
-    QuadMesh,
-    Raster,
-    element_bin_centers,
-    element_bin_centers_2d,
-    element_edge_bounds,
-    element_edge_range,
-    element_pixel_delta,
-)
+from .raster import HSV, RGB, HeatMap, Image, ImageStack, QuadMesh, Raster
 from .sankey import Sankey
 from .stats import Bivariate, BoxWhisker, Distribution, HexTiles, Violin
 from .tabular import ItemTable, Table

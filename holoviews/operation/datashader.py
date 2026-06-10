@@ -39,7 +39,6 @@ from ..core.util import (
     datetime_types,
     dt_to_int,
     dtype_kind,
-    edges_to_pixel_centers,
     get_param_values,
 )
 from ..core.util.dependencies import PANDAS_GE_3_0_0, _no_import_version, dd
@@ -61,8 +60,6 @@ from ..element import (
     Spikes,
     Spread,
     TriMesh,
-    element_edge_range,
-    element_pixel_delta,
 )
 from ..element.util import connect_tri_edges_pd
 from ..streams import PointerXY
@@ -1050,17 +1047,6 @@ class regrid(AggregationOperation):
         else:
             coord_dict = {x.name: coords[0], y.name: coords[1]}
 
-        def _convert_dt_to_int(arr, time_unit="ns"):
-            arr = np.asarray(arr)
-            if arr.dtype.kind == "M":
-                return arr.astype(f"datetime64[{time_unit}]").astype("int64")
-            else:
-                result = np.empty(arr.shape, dtype="int64")
-                flat = arr.ravel()
-                for i, v in enumerate(flat):
-                    result[i] = dt_to_int(v, time_unit)
-                return result.reshape(arr.shape)
-
         arrays = {}
         for i, vd in enumerate(element.vdims):
             if element.interface is XArrayInterface:
@@ -1079,9 +1065,9 @@ class regrid(AggregationOperation):
                 arr = element.dimension_values(vd, flat=False)
                 xarr = xr.DataArray(arr, coords=coord_dict, dims=dims)
             if xtype == "datetime":
-                xarr[x.name] = _convert_dt_to_int(xarr[x.name].values)
+                xarr[x.name] = [dt_to_int(v, "ns") for v in xarr[x.name].values]
             if ytype == "datetime":
-                xarr[y.name] = _convert_dt_to_int(xarr[y.name].values)
+                xarr[y.name] = [dt_to_int(v, "ns") for v in xarr[y.name].values]
             arrays[vd.name] = xarr
         return arrays
 
@@ -1106,7 +1092,7 @@ class regrid(AggregationOperation):
             not (self.p.upsample or self.p.interpolation in (False, None))
             and self.p.target is None
         ):
-            (x0, x1), (y0, y1) = element_edge_range(element, 0), element_edge_range(element, 1)
+            (x0, x1), (y0, y1) = element.range(0), element.range(1)
             if isinstance(x0, datetime_types):
                 x0, x1 = dt_to_int(x0, "ns"), dt_to_int(x1, "ns")
             if isinstance(y0, datetime_types):
@@ -1122,8 +1108,10 @@ class regrid(AggregationOperation):
                 height = 0
             xunit = float(xspan) / width if width else 0
             yunit = float(yspan) / height if height else 0
-            xs = edges_to_pixel_centers(xstart, xend, width)
-            ys = edges_to_pixel_centers(ystart, yend, height)
+            xs, ys = (
+                np.linspace(xstart + xunit / 2.0, xend - xunit / 2.0, width),
+                np.linspace(ystart + yunit / 2.0, yend - yunit / 2.0, height),
+            )
 
         # Compute bounds (converting datetimes)
         ((x0, x1), (y0, y1)), (xs, ys) = self._dt_transform(x_range, y_range, xs, ys, xtype, ytype)
@@ -2097,18 +2085,19 @@ class inspect_mask(Operation):
 
     @classmethod
     def _distance_args(cls, element, x_range, y_range, pixels):
+        ycount, xcount = element.interface.shape(element, gridded=True)
         if isinstance(pixels, tuple):
             xpixels, ypixels = pixels
         else:
             xpixels = ypixels = pixels
-        x_delta = element_pixel_delta(element, 0)
-        y_delta = element_pixel_delta(element, 1)
+        x_delta = abs(x_range[1] - x_range[0]) / xcount
+        y_delta = abs(y_range[1] - y_range[0]) / ycount
         return (x_delta * xpixels, y_delta * ypixels)
 
     def _process(self, raster, key=None):
         if isinstance(raster, RGB):
             raster = raster[..., raster.vdims[-1]]
-        x_range, y_range = element_edge_range(raster, 0), element_edge_range(raster, 1)
+        x_range, y_range = raster.range(0), raster.range(1)
         xdelta, ydelta = self._distance_args(raster, x_range, y_range, self.p.pixels)
         x, y = self.p.x, self.p.y
         return self._indicator(raster.kdims, x, y, xdelta, ydelta)
@@ -2244,7 +2233,7 @@ class inspect_base(inspect):
         if x is not None and y is not None:
             if isinstance(raster, RGB):
                 raster = raster[..., raster.vdims[-1]]
-            x_range, y_range = element_edge_range(raster, 0), element_edge_range(raster, 1)
+            x_range, y_range = raster.range(0), raster.range(1)
             xdelta, ydelta = self._distance_args(raster, x_range, y_range, self.p.pixels)
             val = raster[x - xdelta : x + xdelta, y - ydelta : y + ydelta].reduce(
                 function=np.nansum
@@ -2268,12 +2257,13 @@ class inspect_base(inspect):
 
     @classmethod
     def _distance_args(cls, element, x_range, y_range, pixels):
+        ycount, xcount = element.interface.shape(element, gridded=True)
         if isinstance(pixels, tuple):
             xpixels, ypixels = pixels
         else:
             xpixels = ypixels = pixels
-        x_delta = element_pixel_delta(element, 0)
-        y_delta = element_pixel_delta(element, 1)
+        x_delta = abs(x_range[1] - x_range[0]) / xcount
+        y_delta = abs(y_range[1] - y_range[0]) / ycount
         return (x_delta * xpixels, y_delta * ypixels)
 
     @classmethod

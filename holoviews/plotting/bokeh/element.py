@@ -60,7 +60,7 @@ from ...streams import Buffer, PlotSize, RangeXY
 from ...util.transform import dim
 from ...util.warnings import warn
 from ..plot import GenericElementPlot, GenericOverlayPlot
-from ..util import color_intervals, dim_axis_label, dim_range_key, process_cmap
+from ..util import color_intervals, dim_axis_label, dim_range_key, get_dim_field_name, process_cmap
 from .plot import BokehPlot
 from .styles import (
     base_properties,
@@ -602,13 +602,13 @@ class ElementPlot(BokehPlot, GenericElementPlot):
                 # three brackets means replacing variable,
                 # and then wrapping in brackets, like @{air}
                 unit = f" ({ttp.unit})" if ttp.unit else ""
-                tuple_ = (ttp.pprint_label, f"@{{{util.dimension_sanitizer(ttp.name)}}}")
+                tuple_ = (ttp.pprint_label, f"@{{{get_dim_field_name(ttp)}}}")
                 units_dict[label] = unit
             elif isinstance(ttp, str):
                 label = ttp
                 # three brackets means replacing variable,
                 # and then wrapping in brackets, like @{air}
-                tuple_ = (ttp, f"@{{{util.dimension_sanitizer(ttp)}}}")
+                tuple_ = (ttp, f"@{{{get_dim_field_name(ttp)}}}")
 
             if label in dim_aliases:
                 label = dim_aliases[label]
@@ -801,7 +801,7 @@ class ElementPlot(BokehPlot, GenericElementPlot):
 
         if has_hover and not self.static_source:
             for d in dimensions or element.dimensions():
-                dim = util.dimension_sanitizer(d.name)
+                dim = get_dim_field_name(d)
                 if dim not in data:
                     data[dim] = element.dimension_values(d)
 
@@ -809,7 +809,7 @@ class ElementPlot(BokehPlot, GenericElementPlot):
             return
 
         for k, v in self.overlay_dims.items():
-            dim = util.dimension_sanitizer(k.name)
+            dim = get_dim_field_name(k)
             if dim not in data:
                 data[dim] = [v] * len(next(iter(data.values())))
 

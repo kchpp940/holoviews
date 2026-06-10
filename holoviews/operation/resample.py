@@ -5,14 +5,8 @@ import param
 from param.parameterized import bothmethod
 
 from ..core import Dataset, Operation
-from ..core.util import (
-    datetime_types,
-    dt_to_int,
-    edges_to_pixel_centers,
-    isfinite,
-    max_range,
-)
-from ..element import Image, element_edge_bounds, element_edge_range
+from ..core.util import datetime_types, dt_to_int, isfinite, max_range
+from ..element import Image
 from ..streams import PlotSize, RangeX, RangeXY
 
 
@@ -172,7 +166,7 @@ class ResampleOperation2D(ResampleOperation1D):
             y = [y]
 
         if target:
-            x0, y0, x1, y1 = element_edge_bounds(target)
+            x0, y0, x1, y1 = target.bounds.lbrt()
             x_range, y_range = (x0, x1), (y0, y1)
             height, width = target.dimension_values(2, flat=False).shape
         else:
@@ -182,10 +176,10 @@ class ResampleOperation2D(ResampleOperation1D):
                 if self.p.x_range and all(isfinite(v) for v in self.p.x_range):
                     x_range = self.p.x_range
                 else:
-                    x_range = max_range([element_edge_range(element, xd) for xd in x])
+                    x_range = max_range([element.range(xd) for xd in x])
             else:
                 x0, x1 = self.p.x_range
-                ex0, ex1 = max_range([element_edge_range(element, xd) for xd in x])
+                ex0, ex1 = max_range([element.range(xd) for xd in x])
                 x_range = (
                     np.nanmin([np.nanmax([x0, ex0]), ex1]),
                     np.nanmax([np.nanmin([x1, ex1]), ex0]),
@@ -197,13 +191,13 @@ class ResampleOperation2D(ResampleOperation1D):
                 if self.p.y_range and all(isfinite(v) for v in self.p.y_range):
                     y_range = self.p.y_range
                 elif default is None:
-                    y_range = max_range([element_edge_range(element, yd) for yd in y])
+                    y_range = max_range([element.range(yd) for yd in y])
                 else:
                     y_range = default
             else:
                 y0, y1 = self.p.y_range
                 if default is None:
-                    ey0, ey1 = max_range([element_edge_range(element, yd) for yd in y])
+                    ey0, ey1 = max_range([element.range(yd) for yd in y])
                 else:
                     ey0, ey1 = default
                 y_range = (
@@ -256,8 +250,10 @@ class ResampleOperation2D(ResampleOperation1D):
         else:
             yunit = float(yspan) / height
 
-        xs = edges_to_pixel_centers(xstart, xend, width)
-        ys = edges_to_pixel_centers(ystart, yend, height)
+        xs, ys = (
+            np.linspace(xstart + xunit / 2.0, xend - xunit / 2.0, width),
+            np.linspace(ystart + yunit / 2.0, yend - yunit / 2.0, height),
+        )
         return ((xstart, xend), (ystart, yend)), (xs, ys), (width, height), (xtype, ytype)
 
     def _get_pixel_ratio(self):

@@ -17,7 +17,7 @@ from ...operation import interpolate_curve
 from ...util.transform import dim
 from ...util.warnings import warn
 from ..mixins import AreaMixin, BarsMixin, DonutMixin, SpikesMixin, WaterfallMixin
-from ..util import get_min_distance, rgb2hex
+from ..util import get_dim_field_name, get_min_distance, rgb2hex
 from .element import ColorbarPlot, CompositeElementPlot, ElementPlot, LegendPlot, OverlayPlot
 from .selection import BokehOverlaySelectionDisplay
 from .styles import (
@@ -176,26 +176,28 @@ class PointPlot(SizebarMixin, ColorbarPlot):
         return super()._init_glyph(plot, mapping, properties)
 
     def get_data(self, element, ranges, style):
-        dims = element.dimensions(label=True)
+        xdim, ydim = element.dimensions()[:2]
 
         xidx, yidx = (1, 0) if self.invert_axes else (0, 1)
-        mapping = dict(x=dims[xidx], y=dims[yidx])
+        xfield = get_dim_field_name(xdim)
+        yfield = get_dim_field_name(ydim)
+        mapping = dict(x=xfield, y=yfield)
         data = {}
 
         if not self.static_source or self.batched:
-            xdim, ydim = dims[:2]
-            data[xdim] = element.dimension_values(xdim)
-            data[ydim] = element.dimension_values(ydim)
-            self._categorize_data(data, dims[:2], element.dimensions())
+            dims = element.dimensions()[:2]
+            data[xfield] = element.dimension_values(dims[xidx])
+            data[yfield] = element.dimension_values(dims[yidx])
+            self._categorize_data(data, [xfield, yfield], dims)
 
         if "angle" in style and isinstance(style["angle"], (int, float)):
             style["angle"] = np.deg2rad(style["angle"])
 
         if self.jitter:
             if self.invert_axes:
-                mapping["y"] = jitter(dims[yidx], self.jitter, range=self.handles["y_range"])
+                mapping["y"] = jitter(yfield, self.jitter, range=self.handles["y_range"])
             else:
-                mapping["x"] = jitter(dims[xidx], self.jitter, range=self.handles["x_range"])
+                mapping["x"] = jitter(xfield, self.jitter, range=self.handles["x_range"])
 
         self._get_hover_data(data, element)
         return data, mapping, style
@@ -242,7 +244,7 @@ class PointPlot(SizebarMixin, ColorbarPlot):
 
             if "hover" in self.handles:
                 for d, k in zip(element.dimensions(), key, strict=None):
-                    sanitized = dimension_sanitizer(d.name)
+                    sanitized = get_dim_field_name(d)
                     data[sanitized].append([k] * nvals)
 
         data = {k: np.concatenate(v) for k, v in data.items()}
@@ -458,7 +460,7 @@ class CurvePlot(ElementPlot):
                 data[k].append(v[0])
 
             for d, k in zip(overlay.kdims, key, strict=None):
-                sanitized = dimension_sanitizer(d.name)
+                sanitized = get_dim_field_name(d)
                 data[sanitized].append(k)
         data = {opt: vals for opt, vals in data.items() if not any(v is None for v in vals)}
         mapping = {{"x": "xs", "y": "ys"}.get(k, k): v for k, v in elmapping.items()}
@@ -966,7 +968,7 @@ class BarPlot(BarsMixin, ColorbarPlot, LegendPlot):
         if cdim is None:
             return
 
-        field = dimension_sanitizer(cdim.name)
+        field = get_dim_field_name(cdim)
         cd = ds.dimension_values(cdim)
         cmapper = self._get_colormapper(cdim, ds, ranges, style, factors, colors)
         is_categorical = isinstance(cmapper, CategoricalColorMapper)
@@ -975,7 +977,7 @@ class BarPlot(BarsMixin, ColorbarPlot, LegendPlot):
         # Enable legend if colormapper is categorical
         legend_prop = "legend_field"
         if self.show_legend and is_categorical:
-            mapping[legend_prop] = cdim.name
+            mapping[legend_prop] = field
 
         if not self.stacked and ds.ndims > 1 and self.multi_level:
             mapping.pop(legend_prop, None)

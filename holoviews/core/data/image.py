@@ -144,10 +144,15 @@ class ImageInterface(GridInterface):
         if dim_idx in [0, 1] and obj.bounds:
             l, b, r, t = obj.bounds.lbrt()
             if dim_idx:
-                low, high, density = b, t, obj.ydensity
+                (low, high) = (b, t)
+                density = obj.ydensity
             else:
-                low, high, density = l, r, obj.xdensity
-            drange = util.edges_range_to_centers_range(low, high, density, obj._time_unit)
+                low, high = (l, r)
+                density = obj.xdensity
+            halfd = (1.0 / density) / 2.0
+            if isinstance(low, util.datetime_types):
+                halfd = np.timedelta64(round(halfd), obj._time_unit)
+            drange = (low + halfd, high - halfd)
         elif 1 < dim_idx < len(obj.vdims) + 2:
             dim_idx -= 2
             data = np.atleast_3d(obj.data)[:, :, dim_idx]
@@ -171,13 +176,15 @@ class ImageInterface(GridInterface):
             elif xdate:
                 xlin = util.date_range(l, r, dim1, dataset._time_unit)
             else:
-                xlin = util.edges_to_pixel_centers(l, r, dim1, dataset._time_unit)
+                xstep = float(r - l) / dim1
+                xlin = np.linspace(l + (xstep / 2.0), r - (xstep / 2.0), dim1)
             if b == t or dim2 == 0:
                 ylin = np.full((dim2,), b, dtype=("datetime64[us]" if ydate else "float"))
             elif ydate:
                 ylin = util.date_range(b, t, dim2, dataset._time_unit)
             else:
-                ylin = util.edges_to_pixel_centers(b, t, dim2, dataset._time_unit)
+                ystep = float(t - b) / dim2
+                ylin = np.linspace(b + (ystep / 2.0), t - (ystep / 2.0), dim2)
             if expanded:
                 values = np.meshgrid(ylin, xlin)[abs(dim_idx - 1)]
                 return values.flatten() if flat else values.T

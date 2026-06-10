@@ -27,6 +27,7 @@ from ..core.spaces import get_nested_streams
 from ..core.util import (
     arraylike_types,
     closest_match,
+    dimension_sanitizer,
     disable_constant,
     dtype_kind,
     get_overlay_spec,
@@ -1241,6 +1242,50 @@ def dim_range_key(eldim):
     else:
         dim_name = eldim.label
     return dim_name
+
+
+def get_dim_field_name(dimension):
+    """Given a dimension (name string, Dimension object, or dim transform),
+    return the sanitized field name used consistently across backends for
+    referencing columns in data sources, hover tooltips, legend fields, and
+    style mappings.
+
+    This unifies field-name resolution so that dimensions containing spaces,
+    parentheses, slashes, dots, or colliding with internal names are always
+    referenced by the same sanitized identifier in Bokeh ColumnDataSource,
+    Plotly traces, Matplotlib label handling, and exported state.
+
+    Parameters
+    ----------
+    dimension : str, Dimension, or dim
+        The dimension specification to resolve.
+
+    Returns
+    -------
+    str
+        The sanitized field name safe to use as a data-source column key.
+    """
+    from ..core.dimension import Dimension
+
+    if isinstance(dimension, dim):
+        raw = dimension.dimension
+        if isinstance(raw, Dimension):
+            raw = raw.name
+        elif hasattr(raw, "name"):
+            raw = raw.name
+        else:
+            raw = str(raw)
+    elif isinstance(dimension, Dimension):
+        raw = dimension.name
+    elif isinstance(dimension, str):
+        raw = dimension
+    elif dimension is None:
+        return dimension
+    elif hasattr(dimension, "name"):
+        raw = dimension.name
+    else:
+        raw = str(dimension)
+    return dimension_sanitizer(raw)
 
 
 def hex2rgb(hex):
