@@ -16,10 +16,9 @@ from ...core.util import (
     dimension_sanitizer,
     dtype_kind,
     edges_to_centers_1d,
-    element_edge_bounds,
     isfinite,
 )
-from ...element import Raster
+from ...element import Raster, element_bin_centers, element_edge_bounds
 from ...util.warnings import warn
 from ..util import categorical_legend
 from .chart import PointPlot
@@ -651,13 +650,13 @@ class QuadMeshPlot(ColorbarPlot):
                 hover_data[x] = np.array(xc)
                 hover_data[y] = np.array(yc)
         else:
-            xc, yc = (
+            x_edges, y_edges = (
                 element.interface.coords(element, x, edges=True, ordered=True),
                 element.interface.coords(element, y, edges=True, ordered=True),
             )
 
-            x0, y0 = cartesian_product([xc[:-1], yc[:-1]], copy=True)
-            x1, y1 = cartesian_product([xc[1:], yc[1:]], copy=True)
+            x0, y0 = cartesian_product([x_edges[:-1], y_edges[:-1]], copy=True)
+            x1, y1 = cartesian_product([x_edges[1:], y_edges[1:]], copy=True)
             zvals = zdata.flatten() if self.invert_axes else zdata.T.flatten()
             data = {
                 "left": x0,
@@ -669,8 +668,14 @@ class QuadMeshPlot(ColorbarPlot):
 
             if "hover" in self.handles and not self.static_source:
                 hover_data = self._collect_hover_data(element)
-                hover_data[x] = element.dimension_values(x)
-                hover_data[y] = element.dimension_values(y)
+                x_centers = element_bin_centers(element, element.kdims[0])
+                y_centers = element_bin_centers(element, element.kdims[1])
+                if self.invert_axes:
+                    xc_flat, yc_flat = cartesian_product([y_centers, x_centers], copy=True)
+                else:
+                    xc_flat, yc_flat = cartesian_product([x_centers, y_centers], copy=True)
+                hover_data[x] = xc_flat
+                hover_data[y] = yc_flat
 
         data.update(hover_data)
 

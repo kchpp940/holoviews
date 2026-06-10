@@ -40,7 +40,6 @@ from ..core.util import (
     dt_to_int,
     dtype_kind,
     edges_to_pixel_centers,
-    element_edge_range,
     get_param_values,
 )
 from ..core.util.dependencies import PANDAS_GE_3_0_0, _no_import_version, dd
@@ -62,6 +61,8 @@ from ..element import (
     Spikes,
     Spread,
     TriMesh,
+    element_edge_range,
+    element_pixel_delta,
 )
 from ..element.util import connect_tri_edges_pd
 from ..streams import PointerXY
@@ -2096,13 +2097,12 @@ class inspect_mask(Operation):
 
     @classmethod
     def _distance_args(cls, element, x_range, y_range, pixels):
-        ycount, xcount = element.interface.shape(element, gridded=True)
         if isinstance(pixels, tuple):
             xpixels, ypixels = pixels
         else:
             xpixels = ypixels = pixels
-        x_delta = abs(x_range[1] - x_range[0]) / xcount
-        y_delta = abs(y_range[1] - y_range[0]) / ycount
+        x_delta = element_pixel_delta(element, 0)
+        y_delta = element_pixel_delta(element, 1)
         return (x_delta * xpixels, y_delta * ypixels)
 
     def _process(self, raster, key=None):
@@ -2268,13 +2268,12 @@ class inspect_base(inspect):
 
     @classmethod
     def _distance_args(cls, element, x_range, y_range, pixels):
-        ycount, xcount = element.interface.shape(element, gridded=True)
         if isinstance(pixels, tuple):
             xpixels, ypixels = pixels
         else:
             xpixels = ypixels = pixels
-        x_delta = abs(x_range[1] - x_range[0]) / xcount
-        y_delta = abs(y_range[1] - y_range[0]) / ycount
+        x_delta = element_pixel_delta(element, 0)
+        y_delta = element_pixel_delta(element, 1)
         return (x_delta * xpixels, y_delta * ypixels)
 
     @classmethod

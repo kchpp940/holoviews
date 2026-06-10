@@ -6,8 +6,8 @@ import numpy as np
 import param
 
 from ...core import CompositeOverlay, Element, traversal
-from ...core.util import element_edge_bounds, isfinite, match_spec, max_range, unique_iterator
-from ...element.raster import RGB, Image, Raster
+from ...core.util import isfinite, match_spec, max_range, unique_iterator
+from ...element.raster import RGB, Image, Raster, element_edge_bounds
 from ..util import categorical_legend
 from .chart import PointPlot
 from .element import ColorbarPlot, ElementPlot, LegendPlot, OverlayPlot

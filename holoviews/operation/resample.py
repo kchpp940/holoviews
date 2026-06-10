@@ -9,12 +9,10 @@ from ..core.util import (
     datetime_types,
     dt_to_int,
     edges_to_pixel_centers,
-    element_edge_bounds,
-    element_edge_range,
     isfinite,
     max_range,
 )
-from ..element import Image
+from ..element import Image, element_edge_bounds, element_edge_range
 from ..streams import PlotSize, RangeX, RangeXY
 
 

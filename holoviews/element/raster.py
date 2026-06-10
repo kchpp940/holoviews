@@ -1037,3 +1037,155 @@ class HeatMap(Selection2DExpr, Dataset, Element2D):
             if drange is not None:
                 return drange
         return super().range(dim, data_range, dimension_range)
+
+
+# ---------------------------------------------------------------------------
+# Element-level unified boundary helpers (single source of truth)
+#
+# These operate on Raster-family elements and use the pure coordinate
+# functions from core.util internally. They live here (not in core.util)
+# to avoid core layer reverse-depending on element types.
+# ---------------------------------------------------------------------------
+
+def element_edge_bounds(element):
+    """Return (left, bottom, right, top) EDGE bounds for any Raster-like element.
+
+    Unified single entry point for backends and operations.
+    Handles Image, RGB, ImageStack, Raster, QuadMesh (regular and irregular).
+    Datetime-aware, descending-coordinate-safe, irregular-grid-safe.
+
+    Always returns EDGE bounds (pixel/bin edges), not center ranges.
+
+    Parameters
+    ----------
+    element : Raster, Image, RGB, ImageStack, QuadMesh
+
+    Returns
+    -------
+    tuple : (left, bottom, right, top)
+    """
+    if isinstance(element, Image):
+        return element.bounds.lbrt()
+
+    if type(element) is Raster:
+        return element.extents
+
+    if isinstance(element, QuadMesh):
+        xdim, ydim = element.kdims
+        try:
+            x0, x1 = element.range(xdim)
+            y0, y1 = element.range(ydim)
+        except Exception:
+            try:
+                x_edges = element.interface.coords(element, xdim, edges=True, ordered=True)
+                y_edges = element.interface.coords(element, ydim, edges=True, ordered=True)
+                if getattr(x_edges, "ndim", 1) == 2:
+                    x0, x1 = np.nanmin(x_edges), np.nanmax(x_edges)
+                    y0, y1 = np.nanmin(y_edges), np.nanmax(y_edges)
+                else:
+                    x0, x1 = x_edges[0], x_edges[-1]
+                    y0, y1 = y_edges[0], y_edges[-1]
+                    if x0 > x1:
+                        x0, x1 = x1, x0
+                    if y0 > y1:
+                        y0, y1 = y1, y0
+            except Exception:
+                x_vals = element.dimension_values(xdim, False)
+                y_vals = element.dimension_values(ydim, False)
+                (x0, y0, x1, y1), _ = util.coords_to_bounds_2d(x_vals, y_vals)
+        return (x0, y0, x1, y1)
+
+    return element.extents
+
+
+def element_edge_range(element, dim):
+    """Return (edge_low, edge_high) EDGE range for one dimension.
+
+    Thin wrapper around element_edge_bounds that returns a single-axis range.
+
+    Parameters
+    ----------
+    element : Raster, Image, RGB, ImageStack, QuadMesh
+    dim : int or Dimension or str
+
+    Returns
+    -------
+    tuple : (edge_low, edge_high)
+    """
+    l, b, r, t = element_edge_bounds(element)
+    idx = element.get_dimension_index(dim)
+    return (b, t) if idx == 1 else (l, r)
+
+
+def element_bin_centers(element, dim):
+    """Return CENTER coordinates for each bin/pixel along one dimension.
+
+    Explicit helper for hover display, value lookup, and inspect operations.
+    Handles 1D (regular) and 2D (curvilinear) grids, datetime, descending.
+
+    Parameters
+    ----------
+    element : Raster, Image, RGB, ImageStack, QuadMesh
+    dim : int or Dimension or str
+
+    Returns
+    -------
+    np.ndarray : 1D or 2D array of bin center coordinates
+    """
+    if isinstance(element, Image):
+        idx = element.get_dimension_index(dim)
+        axis = 1 - idx
+        shape = element.interface.shape(element, gridded=True)
+        edge_low, edge_high = element_edge_range(element, dim)
+        n = shape[axis]
+        return util.edges_to_pixel_centers(edge_low, edge_high, n, time_unit=getattr(element, "_time_unit", "us"))
+
+    xdim, ydim = element.kdims
+    is_y = element.get_dimension_index(dim) == 1
+    source_dim = ydim if is_y else xdim
+
+    try:
+        coords = element.interface.coords(element, source_dim, edges=False, ordered=False)
+    except Exception:
+        coords = element.dimension_values(source_dim, flat=False)
+
+    return coords
+
+
+def element_bin_centers_2d(element):
+    """Return (X_centers, Y_centers) for each bin, suitable for hover display.
+
+    For regular 1D grids, returns broadcast-compatible 1D arrays.
+    For irregular 2D grids, returns per-quad center 2D arrays.
+
+    Parameters
+    ----------
+    element : Raster, Image, RGB, ImageStack, QuadMesh
+
+    Returns
+    -------
+    tuple : (X_centers, Y_centers) — each 1D or 2D ndarray
+    """
+    xdim, ydim = element.kdims
+    return element_bin_centers(element, xdim), element_bin_centers(element, ydim)
+
+
+def element_pixel_delta(element, dim):
+    """Return the pixel/bin width along one dimension (for inspect/distance ops).
+
+    Computed as (edge_high - edge_low) / num_pixels. Datetime returns timedelta.
+
+    Parameters
+    ----------
+    element : Raster, Image, RGB, ImageStack, QuadMesh
+    dim : int or Dimension or str
+
+    Returns
+    -------
+    float or np.timedelta64
+    """
+    edge_low, edge_high = element_edge_range(element, dim)
+    idx = element.get_dimension_index(dim)
+    shape = element.interface.shape(element, gridded=True)
+    n = shape[1 - idx]
+    return (edge_high - edge_low) / n
