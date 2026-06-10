@@ -610,8 +610,13 @@ class Interface(param.Parameterized):
                 return column[0], column[-1]
 
     @classmethod
-    def count_unique(cls, dataset, dimension):
+    def count_unique(cls, dataset, dimension, sample_size=None, compute=True):
         """Returns the number of unique values along a dimension.
+
+        Unified implementation using the ``values()`` primitive.  All
+        interfaces inherit this; no per-backend override is needed.  When
+        ``sample_size`` is given, the computation is performed on a random
+        sample of the data to avoid loading huge datasets into memory.
 
         Parameters
         ----------
@@ -619,6 +624,10 @@ class Interface(param.Parameterized):
             The dataset to query
         dimension : str or Dimension
             Dimension to count unique values for
+        sample_size : int, optional
+            If provided, sample this many values before counting
+        compute : bool, default True
+            Whether to compute lazy data immediately
 
         Returns
         -------
@@ -626,12 +635,21 @@ class Interface(param.Parameterized):
             Number of unique values
         """
         dim = dataset.get_dimension(dimension, strict=True)
-        values = cls.values(dataset, dim, expanded=False)
+        values = cls.values(dataset, dim, expanded=False, compute=compute)
+        if sample_size is not None and hasattr(values, "__len__") and len(values) > sample_size:
+            rng = np.random.default_rng()
+            idx = rng.choice(len(values), size=sample_size, replace=False)
+            values = values[idx]
         return len(values)
 
     @classmethod
-    def count_missing(cls, dataset, dimension):
+    def count_missing(cls, dataset, dimension, sample_size=None, compute=True):
         """Returns the number of missing (null/NaN) values along a dimension.
+
+        Unified implementation using the ``values()`` primitive.  All
+        interfaces inherit this; no per-backend override is needed.  When
+        ``sample_size`` is given, the count is estimated from a random
+        sample and scaled up to the full population.
 
         Parameters
         ----------
@@ -639,6 +657,10 @@ class Interface(param.Parameterized):
             The dataset to query
         dimension : str or Dimension
             Dimension to count missing values for
+        sample_size : int, optional
+            If provided, estimate from this many sampled values
+        compute : bool, default True
+            Whether to compute lazy data immediately
 
         Returns
         -------
@@ -646,7 +668,28 @@ class Interface(param.Parameterized):
             Number of missing values
         """
         dim = dataset.get_dimension(dimension, strict=True)
-        values = cls.values(dataset, dim)
+        values = cls.values(dataset, dim, compute=compute)
+        total = len(values)
+        if sample_size is not None and total > sample_size:
+            rng = np.random.default_rng()
+            idx = rng.choice(total, size=sample_size, replace=False)
+            sample = values[idx]
+            kind = dtype_kind(sample)
+            if kind in "iub":
+                sample_missing = 0
+            elif kind in "fc":
+                sample_missing = int(np.count_nonzero(np.isnan(sample)))
+            elif kind in "Mm":
+                sample_missing = int(np.count_nonzero(np.isnat(sample)))
+            else:
+                sample_missing = 0
+                for v in sample:
+                    if v is None:
+                        sample_missing += 1
+                    elif isinstance(v, float) and np.isnan(v):
+                        sample_missing += 1
+            return int(round(sample_missing * total / sample_size))
+
         kind = dtype_kind(values)
         if kind in "iub":
             return 0
@@ -664,15 +707,16 @@ class Interface(param.Parameterized):
             return count
 
     @classmethod
-    def dimension_schema(cls, dataset, dimension):
+    def dimension_schema(cls, dataset, dimension, sample_size=None, compute=True):
         """Returns a structured schema dictionary for a single dimension.
 
-        Computes dtype, categorical/datetime flags, nullability, data range,
-        unique count and missing count by reusing the existing interface
-        primitives (``dtype``, ``range``, ``values``, ``count_unique``,
-        ``count_missing``).  Subclasses should override ``count_unique`` and
-        ``count_missing`` for backend-specific efficiency; the schema
-        assembly itself stays in this single place.
+        Unified schema builder that assembles the dimension summary from
+        three core interface primitives: ``dtype``, ``range``, and
+        ``values``.  The statistical logic (unique count, missing count,
+        categorical/datetime detection, nullability inference) lives here
+        in the base class and is shared across all backends (pandas,
+        dask, xarray, narwhals, etc.).  No per-backend override is
+        needed for schema assembly.
 
         Parameters
         ----------
@@ -680,6 +724,14 @@ class Interface(param.Parameterized):
             The dataset to query
         dimension : str or Dimension
             Dimension to return the schema for
+        sample_size : int, optional
+            If provided, estimate unique/missing counts from this many
+            sampled values instead of scanning the full dataset
+        compute : bool, default True
+            Whether to compute lazy data immediately.  Set to ``False``
+            to keep lazy backends (dask, narwhals LazyFrame) lazy — in
+            this case ``range``, ``unique_count`` and ``missing_count``
+            may return lazy objects instead of concrete values.
 
         Returns
         -------
@@ -691,8 +743,8 @@ class Interface(param.Parameterized):
         dt = cls.dtype(dataset, dim)
         kind = dtype_kind(dt)
         dim_range = cls.range(dataset, dim)
-        unique_count = cls.count_unique(dataset, dim)
-        missing_count = cls.count_missing(dataset, dim)
+        unique_count = cls.count_unique(dataset, dim, sample_size=sample_size, compute=compute)
+        missing_count = cls.count_missing(dataset, dim, sample_size=sample_size, compute=compute)
         return {
             "name": dim.name,
             "dtype": str(dt),

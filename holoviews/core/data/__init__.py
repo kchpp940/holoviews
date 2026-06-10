@@ -565,16 +565,30 @@ class Dataset(Element, metaclass=PipelineMeta):
             return lower, upper
         return core_util.dimension_range(lower, upper, dim.range, dim.soft_range)
 
-    def schema(self):
+    def schema(self, sample_size=None, compute=True):
         """Returns a structured schema of all dimensions in the Dataset.
 
         The schema contains metadata about each key and value dimension
         including data type, categorical/datetime flags, nullability,
         data range, unique count and missing count.  The computation
-        reuses the existing interface primitives (``dtype``, ``range``,
-        ``values``, ``count_unique``, ``count_missing``) so that every
-        backend (pandas, dask, xarray, narwhals, etc.) produces a
-        consistent field set without duplicating logic.
+        reuses three core interface primitives — ``dtype``, ``range``,
+        and ``values`` — so that every backend (pandas, dask, xarray,
+        narwhals, etc.) produces a consistent field set without any
+        per-backend schema logic.
+
+        Parameters
+        ----------
+        sample_size : int, optional
+            If provided, estimate ``unique_count`` and ``missing_count``
+            from a random sample of this many values instead of scanning
+            the full dataset.  Useful for large lazy datasets where a
+            full scan would be expensive.  The missing count estimate
+            is scaled back up to the full population size.
+        compute : bool, default True
+            Whether to compute lazy data immediately.  Set to ``False``
+            to keep lazy backends (dask, narwhals LazyFrame) lazy — in
+            this case ``range``, ``unique_count`` and ``missing_count``
+            may return lazy objects instead of concrete Python values.
 
         Returns
         -------
@@ -605,10 +619,13 @@ class Dataset(Element, metaclass=PipelineMeta):
          'vdims': [{'name': 'y', 'dtype': 'float64', 'is_categorical': False,
                     'is_datetime': False, 'is_nullable': True,
                     'range': (4.0, 5.0), 'unique_count': 3, 'missing_count': 1}]}
+
+        >>> # Use sampling for large datasets
+        >>> ds.schema(sample_size=1000)  # doctest: +SKIP
         """
         return {
-            "kdims": [self.interface.dimension_schema(self, dim) for dim in self.kdims],
-            "vdims": [self.interface.dimension_schema(self, dim) for dim in self.vdims],
+            "kdims": [self.interface.dimension_schema(self, dim, sample_size=sample_size, compute=compute) for dim in self.kdims],
+            "vdims": [self.interface.dimension_schema(self, dim, sample_size=sample_size, compute=compute) for dim in self.vdims],
         }
 
     def add_dimension(self, dimension, dim_pos, dim_val, vdim=False, **kwargs):

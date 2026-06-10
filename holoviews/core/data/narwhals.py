@@ -200,26 +200,6 @@ class NarwhalsInterface(Interface):
             return df_column.item(0, "cmin"), df_column.item(0, "cmax")
 
     @classmethod
-    def count_unique(cls, dataset, dimension):
-        dim = dataset.get_dimension(dimension, strict=True)
-        name = dim.name
-        is_lazy = isinstance(dataset.data, nw.LazyFrame)
-        result = dataset.data.select(nw.col(name).n_unique())
-        if is_lazy:
-            result = result.collect()
-        return result.item()
-
-    @classmethod
-    def count_missing(cls, dataset, dimension):
-        dim = dataset.get_dimension(dimension, strict=True)
-        name = dim.name
-        is_lazy = isinstance(dataset.data, nw.LazyFrame)
-        result = dataset.data.select(nw.col(name).null_count())
-        if is_lazy:
-            result = result.collect()
-        return result.item()
-
-    @classmethod
     def concat_fn(cls, dataframes, **kwargs):
         return nw.concat(dataframes, **kwargs)
 

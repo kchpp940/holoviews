@@ -205,6 +205,29 @@ class TestDatasetSchemaPandas:
         kdim_schema = ds.schema()["kdims"][0]
         assert kdim_schema["unique_count"] == 3
 
+    def test_schema_with_sample_size(self):
+        """Test that sample_size parameter triggers sampling estimation."""
+        rng = np.random.default_rng(42)
+        n = 10_000
+        df = self.pd.DataFrame({
+            "x": rng.integers(0, 100, size=n),
+            "y": rng.standard_normal(n),
+        })
+        ds = hv.Dataset(df, kdims=["x"], vdims=["y"])
+
+        full_schema = ds.schema()
+        sampled_schema = ds.schema(sample_size=1000)
+
+        for role in ("kdims", "vdims"):
+            for full_entry, sampled_entry in zip(full_schema[role], sampled_schema[role]):
+                assert full_entry["name"] == sampled_entry["name"]
+                assert full_entry["dtype"] == sampled_entry["dtype"]
+                assert full_entry["is_categorical"] == sampled_entry["is_categorical"]
+                assert full_entry["is_datetime"] == sampled_entry["is_datetime"]
+                assert full_entry["is_nullable"] == sampled_entry["is_nullable"]
+                assert full_entry["range"] == sampled_entry["range"]
+                assert 0 < sampled_entry["unique_count"] <= full_entry["unique_count"]
+
 
 class TestDatasetSchemaDask:
     def setup_method(self):
