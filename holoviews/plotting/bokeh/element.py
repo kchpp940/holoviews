@@ -568,9 +568,6 @@ class ElementPlot(BokehPlot, GenericElementPlot):
 
     def _replace_hover_value_aliases(self, tooltip, tooltips_dict):
         for name, tuple_ in tooltips_dict.items():
-            # some elements, like image, rename the tooltip, e.g. @y -> $y
-            # let's replace those, so the hover tooltip is discoverable
-            # ensure it works for `(@x, @y)` -> `($x, $y)` too
             if isinstance(tooltip, tuple):
                 value_alias = tuple_[1]
                 if f"@{name}" in tooltip[1]:
@@ -585,51 +582,34 @@ class ElementPlot(BokehPlot, GenericElementPlot):
         return tooltip
 
     def _prepare_hover_kwargs(self, element):
-        from ...util.transform import dim
-
-        tooltips, hover_opts = self._hover_opts(element)
-
-        dim_aliases = {
-            f"{dim.label} ({dim.unit})" if dim.unit else dim.label: dim.label
-            for dim in element.kdims + element.vdims
-        }
+        from ...core.hover import HoverResolver
 
         use_element_hover_config = element.hover_fields is not None
+
+        if use_element_hover_config:
+            resolver = element._get_hover_resolver()
+            specs = resolver.resolve()
+            tooltips = resolver.to_bokeh_tooltips()
+            bokeh_fmts = resolver.to_bokeh_formatters()
+        else:
+            raw_dims, _ = self._hover_opts(element)
+            tooltips = []
+            bokeh_fmts = {}
+            for d in raw_dims:
+                if isinstance(d, Dimension):
+                    unit = f" ({d.unit})" if d.unit else ""
+                    tooltips.append((d.pprint_label, f"@{{{util.dimension_sanitizer(d.name)}}}"))
+                elif isinstance(d, str):
+                    tooltips.append((d, f"@{{{util.dimension_sanitizer(d)}}}"))
+                else:
+                    name = str(d)
+                    tooltips.append((name, f"@{{{util.dimension_sanitizer(name)}}}"))
 
         tooltips_dict = {}
         units_dict = {}
         for ttp in tooltips:
-            if isinstance(ttp, tuple):
-                label = ttp[0]
-                tuple_ = (ttp[0], ttp[1])
-            elif isinstance(ttp, Dimension):
-                label = ttp.label
-                unit = f" ({ttp.unit})" if ttp.unit else ""
-                field_name = element._resolve_hover_field_name(ttp) if use_element_hover_config else ttp.name
-                tuple_ = (
-                    element._get_hover_field_label(ttp) if use_element_hover_config else ttp.pprint_label,
-                    f"@{{{util.dimension_sanitizer(field_name)}}}",
-                )
-                units_dict[label] = unit
-            elif isinstance(ttp, dim):
-                label = element._resolve_hover_field_name(ttp) if use_element_hover_config else str(ttp)
-                tuple_ = (
-                    element._get_hover_field_label(ttp) if use_element_hover_config else label,
-                    f"@{{{util.dimension_sanitizer(label)}}}",
-                )
-            elif isinstance(ttp, str):
-                label = ttp
-                field_name = element._resolve_hover_field_name(ttp) if use_element_hover_config else ttp
-                display_label = element._get_hover_field_label(ttp) if use_element_hover_config else ttp
-                tuple_ = (display_label, f"@{{{util.dimension_sanitizer(field_name)}}}")
-            else:
-                label = str(ttp)
-                tuple_ = (label, f"@{{{util.dimension_sanitizer(label)}}}")
-
-            if label in dim_aliases:
-                label = dim_aliases[label]
-
-            tooltips_dict[label] = tuple_
+            label = ttp[0]
+            tooltips_dict[label] = ttp
 
         if self.hover_tooltips:
             if isinstance(self.hover_tooltips, list):
@@ -663,7 +643,11 @@ class ElementPlot(BokehPlot, GenericElementPlot):
         elif isinstance(tooltips, str):
             tooltips = self._replace_hover_label_group(element, tooltips)
 
-        formatters = dict(element.hover_formatters) if use_element_hover_config else {}
+        hover_opts = {}
+        if use_element_hover_config:
+            formatters = dict(bokeh_fmts)
+        else:
+            formatters = {}
         if self.hover_formatters:
             formatters.update(self.hover_formatters)
         if formatters:
@@ -813,7 +797,8 @@ class ElementPlot(BokehPlot, GenericElementPlot):
 
         if has_hover and not self.static_source:
             if element.hover_fields is not None:
-                hover_data = element._get_hover_data()
+                resolver = element._get_hover_resolver()
+                hover_data = resolver.data()
                 for k, v in hover_data.items():
                     if k not in data:
                         data[k] = v

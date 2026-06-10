@@ -1413,154 +1413,28 @@ class Dimensioned(LabelledData):
             return lower, upper
         return util.dimension_range(lower, upper, dimension.range, dimension.soft_range)
 
+    _hover_resolver_instance = None
+
+    def _get_hover_resolver(self):
+        from .hover import HoverResolver
+
+        if self._hover_resolver_instance is None or self._hover_resolver_instance._element is not self:
+            self._hover_resolver_instance = HoverResolver(self)
+        return self._hover_resolver_instance
+
+    def _invalidate_hover_resolver(self):
+        self._hover_resolver_instance = None
+
     def _resolve_hover_field_name(self, field):
-        """Resolve a hover field to its canonical name string.
-
-        Parameters
-        ----------
-        field
-            Can be a string, Dimension object, or dim() expression.
-
-        Returns
-        -------
-        str
-            Canonical field name.
-        """
-        from ..util.transform import dim
-
-        if isinstance(field, dim):
-            if len(field.ops) == 0:
-                return dimension_name(field.dimension)
-            return str(field)
-        elif isinstance(field, Dimension):
-            return field.name
-        elif isinstance(field, str):
-            return field
-        else:
-            return str(field)
+        return self._get_hover_resolver()._canonical_name(field)
 
     def _get_hover_fields(self):
-        """Get the list of hover fields, resolving defaults and normalizing.
-
-        Returns
-        -------
-        list
-            List of normalized field specs (each can be str, Dimension, or dim).
-        """
-        from ..util.transform import dim
-
-        fields = self.hover_fields
-        if fields is None:
-            fields = list(self.kdims) + list(self.vdims)
-
-        normalized = []
-        for f in fields:
-            if isinstance(f, (str, Dimension)):
-                existing_dim = self.get_dimension(f)
-                if existing_dim is not None:
-                    normalized.append(existing_dim)
-                else:
-                    normalized.append(f)
-            elif isinstance(f, dim):
-                normalized.append(f)
-            else:
-                normalized.append(f)
-        return normalized
-
-    def _lookup_hover_alias(self, field, aliases):
-        """Look up a hover alias for a field, trying multiple key formats.
-
-        Tries: resolved_name, str(field), and a cleaned version with
-        reduced parentheses for dim expressions.
-
-        Parameters
-        ----------
-        field
-            The field spec (str, Dimension, or dim).
-        aliases : dict
-            The alias dictionary to search.
-
-        Returns
-        -------
-        str or None
-            The alias value if found, else None.
-        """
-        from ..util.transform import dim
-
-        field_name = self._resolve_hover_field_name(field)
-
-        if field_name in aliases:
-            return aliases[field_name]
-
-        if isinstance(field, dim):
-            repr_str = repr(field)
-            if repr_str in aliases:
-                return aliases[repr_str]
-            str_str = str(field)
-            if str_str in aliases:
-                return aliases[str_str]
-            import re as _re
-            cleaned = _re.sub(r'\((dim\([^)]+\))\)', r'\1', str_str)
-            if cleaned in aliases:
-                return aliases[cleaned]
-
-        return None
+        return [spec.raw for spec in self._get_hover_resolver().resolve()]
 
     def _get_hover_field_label(self, field):
-        """Get the display label for a hover field.
-
-        Parameters
-        ----------
-        field
-            The field spec (str, Dimension, or dim).
-
-        Returns
-        -------
-        str
-            Display label for the field.
-        """
-        from ..util.transform import dim
-
-        alias = self._lookup_hover_alias(field, self.hover_aliases)
-        if alias is not None:
-            return alias
-
-        field_name = self._resolve_hover_field_name(field)
-
-        if isinstance(field, Dimension):
-            return field.pprint_label
-        elif isinstance(field, dim):
-            if len(field.ops) == 0:
-                dim_obj = self.get_dimension(field.dimension)
-                if dim_obj is not None:
-                    return dim_obj.pprint_label
-                return dimension_name(field.dimension)
-            return field_name
-        elif isinstance(field, str):
-            dim_obj = self.get_dimension(field)
-            if dim_obj is not None:
-                return dim_obj.pprint_label
-            return field
-        else:
-            return field_name
+        return self._get_hover_resolver()._resolve_label(field)
 
     def _get_hover_field_values(self, field, expanded=True, flat=True):
-        """Get the values for a hover field, computing dim() expressions if needed.
-
-        Parameters
-        ----------
-        field
-            The field spec (str, Dimension, or dim).
-        expanded : bool
-            Whether to expand values.
-        flat : bool
-            Whether to flatten array.
-
-        Returns
-        -------
-        np.ndarray
-            Array of values for the field.
-        """
         from ..util.transform import dim
 
         if isinstance(field, dim):
@@ -1578,101 +1452,20 @@ class Dimensioned(LabelledData):
             raise ValueError(f"Unsupported hover field type: {type(field)}")
 
     def _get_hover_formatter(self, field):
-        """Get the formatter for a hover field.
-
-        Parameters
-        ----------
-        field
-            The field spec (str, Dimension, or dim).
-
-        Returns
-        -------
-        callable or str or None
-            Formatter function or format string, or None if not specified.
-        """
-        formatter = self._lookup_hover_alias(field, self.hover_formatters)
-        if formatter is not None:
-            return formatter
-
-        if isinstance(field, Dimension):
-            if field.value_format:
-                return field.value_format
-        elif isinstance(field, str):
-            dim_obj = self.get_dimension(field)
-            if dim_obj is not None and dim_obj.value_format:
-                return dim_obj.value_format
-        return None
+        return self._get_hover_resolver()._resolve_formatter(field)
 
     def _format_hover_value(self, field, value):
-        """Format a single value for hover display.
-
-        Parameters
-        ----------
-        field
-            The field spec.
-        value
-            The raw value.
-
-        Returns
-        -------
-        str
-            Formatted value string.
-        """
-        formatter = self._get_hover_formatter(field)
-
-        if formatter is None:
-            if isinstance(value, float) and np.isnan(value):
-                return "NaN"
-            return str(value)
-
-        if callable(formatter):
-            return formatter(value)
-        elif isinstance(formatter, str):
-            if re.findall(r"\{[^}]*\}", formatter):
-                try:
-                    return formatter.format(value)
-                except (TypeError, ValueError):
-                    pass
-            try:
-                return formatter % value
-            except (TypeError, ValueError):
-                return str(value)
+        resolver = self._get_hover_resolver()
+        for spec in resolver.resolve():
+            if spec.raw is field or spec.raw == field:
+                return resolver.format_value(spec, value)
         return str(value)
 
     def _get_hover_data(self):
-        """Compute all hover field data as a dictionary.
-
-        Returns
-        -------
-        dict
-            Dictionary mapping field names to value arrays.
-        """
-        data = {}
-        for field in self._get_hover_fields():
-            field_name = self._resolve_hover_field_name(field)
-            safe_name = util.dimension_sanitizer(field_name)
-            try:
-                values = self._get_hover_field_values(field)
-                data[safe_name] = values
-            except (KeyError, ValueError):
-                pass
-        return data
+        return self._get_hover_resolver().data()
 
     def _get_hover_tooltips_spec(self):
-        """Get a list of (label, value_ref) tuples suitable for tooltips.
-
-        Returns
-        -------
-        list of tuple
-            List of (display_label, value_reference) tuples.
-        """
-        tooltips = []
-        for field in self._get_hover_fields():
-            label = self._get_hover_field_label(field)
-            field_name = self._resolve_hover_field_name(field)
-            safe_name = util.dimension_sanitizer(field_name)
-            tooltips.append((label, f"@{{{safe_name}}}"))
-        return tooltips
+        return self._get_hover_resolver().to_bokeh_tooltips()
 
     def __repr__(self):
         return PrettyPrinter.pprint(self)
