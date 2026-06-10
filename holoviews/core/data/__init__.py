@@ -576,6 +576,11 @@ class Dataset(Element, metaclass=PipelineMeta):
         narwhals, etc.) produces a consistent field set without any
         per-backend schema logic.
 
+        Each dimension entry also carries provenance metadata
+        (``computed``, ``estimated``, ``sample_size``, ``total_count``)
+        so callers can tell whether a value is exact, estimated, or
+        unavailable.
+
         Parameters
         ----------
         sample_size : int, optional
@@ -583,12 +588,17 @@ class Dataset(Element, metaclass=PipelineMeta):
             from a random sample of this many values instead of scanning
             the full dataset.  Useful for large lazy datasets where a
             full scan would be expensive.  The missing count estimate
-            is scaled back up to the full population size.
+            is scaled back up to the full population size.  When
+            sampling is active, ``estimated`` is ``True`` and the
+            actual ``sample_size`` is recorded.
         compute : bool, default True
-            Whether to compute lazy data immediately.  Set to ``False``
-            to keep lazy backends (dask, narwhals LazyFrame) lazy — in
-            this case ``range``, ``unique_count`` and ``missing_count``
-            may return lazy objects instead of concrete Python values.
+            Whether to compute lazy data immediately.  When ``False``,
+            only dtype-inferable fields are filled (``name``, ``dtype``,
+            ``is_categorical``, ``is_datetime``, ``is_nullable``); data-
+            dependent fields (``range``, ``unique_count``,
+            ``missing_count``, ``total_count``) are ``None`` and
+            ``computed`` is ``False``.  This prevents accidental full
+            materialization of dask DataFrames or narwhals LazyFrames.
 
         Returns
         -------
@@ -604,24 +614,41 @@ class Dataset(Element, metaclass=PipelineMeta):
               datetime
             - **is_nullable** (*bool*): whether the dimension can
               contain null / missing values
-            - **range** (*tuple*): ``(min, max)`` data range
-            - **unique_count** (*int*): number of unique values
-            - **missing_count** (*int*): number of missing values
+            - **range** (*tuple* or *None*): ``(min, max)`` data range,
+              or ``None`` when compute=False
+            - **unique_count** (*int* or *None*): number of unique
+              values (exact or estimated), or ``None`` when
+              compute=False
+            - **missing_count** (*int* or *None*): number of missing
+              values (exact or estimated), or ``None`` when
+              compute=False
+            - **total_count** (*int* or *None*): total number of
+              values, or ``None`` when compute=False
+            - **computed** (*bool*): whether data-dependent fields
+              were actually computed
+            - **estimated** (*bool*): whether unique/missing counts
+              are estimates from a sample
+            - **sample_size** (*int* or *None*): actual sample size
+              used for estimation
 
         Examples
         --------
         >>> import holoviews as hv
         >>> ds = hv.Dataset({"x": [1, 2, 3], "y": [4.0, 5.0, float("nan")]}, kdims=["x"], vdims=["y"])
-        >>> ds.schema()
-        {'kdims': [{'name': 'x', 'dtype': 'int64', 'is_categorical': False,
-                    'is_datetime': False, 'is_nullable': False,
-                    'range': (1, 3), 'unique_count': 3, 'missing_count': 0}],
-         'vdims': [{'name': 'y', 'dtype': 'float64', 'is_categorical': False,
-                    'is_datetime': False, 'is_nullable': True,
-                    'range': (4.0, 5.0), 'unique_count': 3, 'missing_count': 1}]}
+        >>> s = ds.schema()
+        >>> s["kdims"][0]["name"]
+        'x'
+        >>> s["kdims"][0]["computed"]
+        True
+        >>> s["kdims"][0]["estimated"]
+        False
 
-        >>> # Use sampling for large datasets
-        >>> ds.schema(sample_size=1000)  # doctest: +SKIP
+        >>> # Lazy mode — no data materialization
+        >>> s_lazy = ds.schema(compute=False)
+        >>> s_lazy["kdims"][0]["range"] is None
+        True
+        >>> s_lazy["kdims"][0]["computed"]
+        False
         """
         return {
             "kdims": [self.interface.dimension_schema(self, dim, sample_size=sample_size, compute=compute) for dim in self.kdims],

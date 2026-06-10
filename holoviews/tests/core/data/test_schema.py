@@ -9,7 +9,11 @@ import holoviews as hv
 
 
 _SCHEMA_FIELDS = frozenset(
-    {"name", "dtype", "is_categorical", "is_datetime", "is_nullable", "range", "unique_count", "missing_count"}
+    {
+        "name", "dtype", "is_categorical", "is_datetime", "is_nullable",
+        "range", "unique_count", "missing_count",
+        "total_count", "computed", "estimated", "sample_size",
+    }
 )
 
 
@@ -134,6 +138,70 @@ class TestDatasetSchemaDictionary:
             hv.Table.datatype = self.restore_datatype
 
 
+class TestSchemaMetadataComputed:
+    def setup_method(self):
+        self.restore_datatype = hv.Dataset.datatype
+        hv.Dataset.datatype = ["dictionary"]
+
+    def teardown_method(self):
+        hv.Dataset.datatype = self.restore_datatype
+
+    def test_computed_true_by_default(self):
+        ds = hv.Dataset({"x": [1, 2, 3], "y": [4.0, 5.0, 6.0]}, kdims=["x"], vdims=["y"])
+        for entry in ds.schema()["kdims"] + ds.schema()["vdims"]:
+            assert entry["computed"] == True
+            assert entry["estimated"] == False
+            assert entry["sample_size"] is None
+            assert entry["total_count"] == 3
+
+    def test_compute_false_gives_none_fields(self):
+        ds = hv.Dataset({"x": [1, 2, 3], "y": [4.0, 5.0, 6.0]}, kdims=["x"], vdims=["y"])
+        schema = ds.schema(compute=False)
+        for entry in schema["kdims"] + schema["vdims"]:
+            assert entry["computed"] == False
+            assert entry["estimated"] == False
+            assert entry["sample_size"] is None
+            assert entry["total_count"] is None
+            assert entry["range"] is None
+            assert entry["unique_count"] is None
+            assert entry["missing_count"] is None
+
+    def test_compute_false_still_has_dtype_fields(self):
+        ds = hv.Dataset({"x": [1, 2, 3], "y": [4.0, 5.0, 6.0]}, kdims=["x"], vdims=["y"])
+        schema = ds.schema(compute=False)
+        kdim = schema["kdims"][0]
+        assert kdim["name"] == "x"
+        assert "int" in kdim["dtype"]
+        assert kdim["is_categorical"] == False
+        assert kdim["is_datetime"] == False
+        assert kdim["is_nullable"] == False
+        vdim = schema["vdims"][0]
+        assert vdim["is_nullable"] == True
+
+    def test_sample_size_sets_estimated(self):
+        rng = np.random.default_rng(42)
+        n = 10_000
+        ds = hv.Dataset({
+            "x": rng.integers(0, 100, size=n),
+            "y": rng.standard_normal(n),
+        }, kdims=["x"], vdims=["y"])
+        schema = ds.schema(sample_size=1000)
+        for entry in schema["kdims"] + schema["vdims"]:
+            assert entry["computed"] == True
+            assert entry["estimated"] == True
+            assert entry["sample_size"] == 1000
+            assert entry["total_count"] == n
+
+    def test_sample_size_larger_than_data_no_estimation(self):
+        ds = hv.Dataset({"x": [1, 2, 3], "y": [4.0, 5.0, 6.0]}, kdims=["x"], vdims=["y"])
+        schema = ds.schema(sample_size=10000)
+        for entry in schema["kdims"] + schema["vdims"]:
+            assert entry["computed"] == True
+            assert entry["estimated"] == False
+            assert entry["sample_size"] is None
+            assert entry["total_count"] == 3
+
+
 class TestDatasetSchemaPandas:
     def setup_method(self):
         pd = pytest.importorskip("pandas")
@@ -169,7 +237,7 @@ class TestDatasetSchemaPandas:
         _assert_schema_fields(vdim_schema)
         assert vdim_schema["name"] == "y"
         assert "float" in vdim_schema["dtype"]
-        assert kdim_schema["is_nullable"] == True
+        assert vdim_schema["is_nullable"] == True
         assert vdim_schema["range"] == (4.0, 6.0)
 
     def test_schema_missing_values(self):
@@ -206,7 +274,6 @@ class TestDatasetSchemaPandas:
         assert kdim_schema["unique_count"] == 3
 
     def test_schema_with_sample_size(self):
-        """Test that sample_size parameter triggers sampling estimation."""
         rng = np.random.default_rng(42)
         n = 10_000
         df = self.pd.DataFrame({
@@ -227,6 +294,19 @@ class TestDatasetSchemaPandas:
                 assert full_entry["is_nullable"] == sampled_entry["is_nullable"]
                 assert full_entry["range"] == sampled_entry["range"]
                 assert 0 < sampled_entry["unique_count"] <= full_entry["unique_count"]
+
+    def test_schema_compute_false_pandas(self):
+        df = self.pd.DataFrame({"x": [1, 2, 3], "y": [4.0, 5.0, 6.0]})
+        ds = hv.Dataset(df, kdims=["x"], vdims=["y"])
+        schema = ds.schema(compute=False)
+        for entry in schema["kdims"] + schema["vdims"]:
+            assert entry["computed"] == False
+            assert entry["range"] is None
+            assert entry["unique_count"] is None
+            assert entry["missing_count"] is None
+            assert entry["total_count"] is None
+            assert entry["estimated"] == False
+            assert entry["sample_size"] is None
 
 
 class TestDatasetSchemaDask:
@@ -262,6 +342,18 @@ class TestDatasetSchemaDask:
         ds = hv.Dataset(ddf, kdims=["x"], vdims=["y"])
         kdim_schema = ds.schema()["kdims"][0]
         assert kdim_schema["unique_count"] == 3
+
+    def test_schema_compute_false_dask(self):
+        df = self.pd.DataFrame({"x": [1, 2, 3], "y": [4.0, 5.0, 6.0]})
+        ddf = self.dd.from_pandas(df, npartitions=1)
+        ds = hv.Dataset(ddf, kdims=["x"], vdims=["y"])
+        schema = ds.schema(compute=False)
+        for entry in schema["kdims"] + schema["vdims"]:
+            assert entry["computed"] == False
+            assert entry["range"] is None
+            assert entry["unique_count"] is None
+            assert entry["missing_count"] is None
+            assert entry["total_count"] is None
 
 
 class TestDatasetSchemaXArray:
@@ -343,6 +435,17 @@ class TestDatasetSchemaNarwhalsPandas:
         kdim_schema = ds.schema()["kdims"][0]
         assert kdim_schema["is_categorical"] == True
 
+    def test_schema_compute_false_narwhals(self):
+        df = self.pd.DataFrame({"x": [1, 2, 3], "y": [4.0, 5.0, 6.0]})
+        ds = hv.Dataset(df, kdims=["x"], vdims=["y"])
+        schema = ds.schema(compute=False)
+        for entry in schema["kdims"] + schema["vdims"]:
+            assert entry["computed"] == False
+            assert entry["range"] is None
+            assert entry["unique_count"] is None
+            assert entry["missing_count"] is None
+            assert entry["total_count"] is None
+
 
 class TestDatasetSchemaNarwhalsPolars:
     def setup_method(self):
@@ -375,8 +478,6 @@ class TestDatasetSchemaNarwhalsPolars:
 
 
 class TestDatasetSchemaCrossInterfaceConsistency:
-    """Verify that schema fields are consistent across pandas and narwhals backends."""
-
     def test_pandas_narwhals_same_fields(self):
         pd = pytest.importorskip("pandas")
         df = pd.DataFrame({"x": [1, 2, 3], "y": [4.0, 5.0, 6.0]})
@@ -399,3 +500,6 @@ class TestDatasetSchemaCrossInterfaceConsistency:
                 assert pd_entry["is_categorical"] == nw_entry["is_categorical"]
                 assert pd_entry["is_datetime"] == nw_entry["is_datetime"]
                 assert pd_entry["missing_count"] == nw_entry["missing_count"]
+                assert pd_entry["computed"] == nw_entry["computed"]
+                assert pd_entry["estimated"] == nw_entry["estimated"]
+                assert pd_entry["sample_size"] == nw_entry["sample_size"]

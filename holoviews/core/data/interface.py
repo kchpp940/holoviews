@@ -718,6 +718,19 @@ class Interface(param.Parameterized):
         dask, xarray, narwhals, etc.).  No per-backend override is
         needed for schema assembly.
 
+        **Lazy mode** (``compute=False``):  Only dtype-inferable fields
+        are populated (``name``, ``dtype``, ``is_categorical``,
+        ``is_datetime``, ``is_nullable``).  Fields that require data
+        materialization (``range``, ``unique_count``,
+        ``missing_count``, ``total_count``) are set to ``None``.
+        This avoids accidentally triggering a full ``.compute()`` on
+        dask DataFrames or narwhals LazyFrames.
+
+        **Sampling mode** (``sample_size`` set):  ``unique_count`` and
+        ``missing_count`` are estimated from a random sample and scaled
+        to the full population.  The ``estimated`` flag is set to
+        ``True`` and the actual ``sample_size`` used is recorded.
+
         Parameters
         ----------
         dataset : Dataset
@@ -728,23 +741,105 @@ class Interface(param.Parameterized):
             If provided, estimate unique/missing counts from this many
             sampled values instead of scanning the full dataset
         compute : bool, default True
-            Whether to compute lazy data immediately.  Set to ``False``
-            to keep lazy backends (dask, narwhals LazyFrame) lazy — in
-            this case ``range``, ``unique_count`` and ``missing_count``
-            may return lazy objects instead of concrete values.
+            Whether to compute lazy data immediately.  When ``False``,
+            only dtype-inferable fields are filled; data-dependent
+            fields are ``None`` and ``computed`` is ``False``.
 
         Returns
         -------
         dict
-            Dictionary with keys: name, dtype, is_categorical, is_datetime,
-            is_nullable, range, unique_count, missing_count
+            Dictionary with keys:
+
+            - **name** (*str*): dimension name
+            - **dtype** (*str*): data type string
+            - **is_categorical** (*bool*): dtype is string/object/unicode
+            - **is_datetime** (*bool*): dtype is datetime
+            - **is_nullable** (*bool*): dtype can hold nulls or actual
+              missing values found
+            - **range** (*tuple* or *None*): ``(min, max)`` or ``None``
+              when compute=False
+            - **unique_count** (*int* or *None*): exact or estimated
+              count, ``None`` when compute=False
+            - **missing_count** (*int* or *None*): exact or estimated
+              count, ``None`` when compute=False
+            - **total_count** (*int* or *None*): total number of
+              values, ``None`` when compute=False
+            - **computed** (*bool*): whether data-dependent fields
+              were actually computed
+            - **estimated** (*bool*): whether unique/missing counts
+              are estimates from a sample
+            - **sample_size** (*int* or *None*): actual sample size
+              used for estimation
         """
         dim = dataset.get_dimension(dimension, strict=True)
         dt = cls.dtype(dataset, dim)
         kind = dtype_kind(dt)
+
+        if not compute:
+            return {
+                "name": dim.name,
+                "dtype": str(dt),
+                "is_categorical": kind in "SUO",
+                "is_datetime": kind == "M",
+                "is_nullable": kind in "fcOmM",
+                "range": None,
+                "unique_count": None,
+                "missing_count": None,
+                "total_count": None,
+                "computed": False,
+                "estimated": False,
+                "sample_size": None,
+            }
+
         dim_range = cls.range(dataset, dim)
-        unique_count = cls.count_unique(dataset, dim, sample_size=sample_size, compute=compute)
-        missing_count = cls.count_missing(dataset, dim, sample_size=sample_size, compute=compute)
+        values = cls.values(dataset, dim, compute=True)
+        total_count = len(values)
+
+        is_estimated = sample_size is not None and total_count > sample_size
+
+        if is_estimated:
+            rng = np.random.default_rng()
+            idx = rng.choice(total_count, size=sample_size, replace=False)
+            sample = values[idx]
+
+            unique_vals = cls.values(dataset, dim, expanded=False, compute=True)
+            if len(unique_vals) > sample_size:
+                unique_count = len(np.unique(sample))
+            else:
+                unique_count = len(unique_vals)
+
+            kind_s = dtype_kind(sample)
+            if kind_s in "iub":
+                sample_missing = 0
+            elif kind_s in "fc":
+                sample_missing = int(np.count_nonzero(np.isnan(sample)))
+            elif kind_s in "Mm":
+                sample_missing = int(np.count_nonzero(np.isnat(sample)))
+            else:
+                sample_missing = 0
+                for v in sample:
+                    if v is None:
+                        sample_missing += 1
+                    elif isinstance(v, float) and np.isnan(v):
+                        sample_missing += 1
+            missing_count = int(round(sample_missing * total_count / sample_size))
+        else:
+            unique_count = len(cls.values(dataset, dim, expanded=False, compute=True))
+            kind_v = dtype_kind(values)
+            if kind_v in "iub":
+                missing_count = 0
+            elif kind_v in "fc":
+                missing_count = int(np.count_nonzero(np.isnan(values)))
+            elif kind_v in "Mm":
+                missing_count = int(np.count_nonzero(np.isnat(values)))
+            else:
+                missing_count = 0
+                for v in values:
+                    if v is None:
+                        missing_count += 1
+                    elif isinstance(v, float) and np.isnan(v):
+                        missing_count += 1
+
         return {
             "name": dim.name,
             "dtype": str(dt),
@@ -754,6 +849,10 @@ class Interface(param.Parameterized):
             "range": dim_range,
             "unique_count": unique_count,
             "missing_count": missing_count,
+            "total_count": total_count,
+            "computed": True,
+            "estimated": is_estimated,
+            "sample_size": sample_size if is_estimated else None,
         }
 
     @classmethod
