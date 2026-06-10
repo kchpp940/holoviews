@@ -276,21 +276,37 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
         )
         self.handles["fig"] = fig
 
+        if element.hover_fields is not None:
+            try:
+                element._get_hover_resolver().attach_metadata("plotly", fig)
+            except Exception:
+                pass
+
         self._execute_hooks(element)
         self.drawn = True
 
         return fig
 
     def _get_plotly_customdata_and_template(self, element):
-        """Generate customdata array and hovertemplate for Plotly backend."""
+        """Generate customdata array and hovertemplate for Plotly backend.
+
+        Returns
+        -------
+        tuple
+            (customdata_array, hovertemplate, column_metadata).  ``column_metadata``
+            is a list of dicts with ``label``, ``formatter_kind`` and
+            ``needs_python_formatting`` flags per column, so downstream code
+            knows which columns need callable-formatting applied on the
+            Python side.
+        """
         if element.hover_fields is None:
-            return None, None
+            return None, None, []
 
         resolver = element._get_hover_resolver()
-        customdata, ordered_specs = resolver.to_plotly_customdata()
+        customdata, ordered_specs, column_meta = resolver.to_plotly_customdata()
         hovertemplate = resolver.to_plotly_hovertemplate(ordered_specs)
 
-        return customdata, hovertemplate
+        return customdata, hovertemplate, column_meta
 
     def graph_options(self, element, ranges, style, is_geo=False, **kwargs):
         if element.hover_fields is not None:
@@ -318,11 +334,13 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
                 showlegend=self.show_legend, legendgroup=element.group + "_" + legend
             )
 
-        customdata, hovertemplate = self._get_plotly_customdata_and_template(element)
+        customdata, hovertemplate, column_meta = self._get_plotly_customdata_and_template(element)
         if customdata is not None:
             opts["customdata"] = customdata
         if hovertemplate is not None:
             opts["hovertemplate"] = hovertemplate
+        if column_meta:
+            opts["_hv_hover_column_meta"] = column_meta
 
         if self._style_key is not None:
             styles = self._apply_transforms(element, ranges, style)

@@ -2215,13 +2215,21 @@ class ElementPlot(BokehPlot, GenericElementPlot):
                 if categorical:
                     if dtype_kind(val) in "ifMub":
                         field = k + "_str__"
+                        resolver = element._get_hover_resolver()
                         if v.dimension in element:
-                            formatter = element.get_dimension(v.dimension).pprint_value
+                            dim_obj = element.get_dimension(v.dimension)
+                            formatter = lambda d, resolver=resolver, dim_obj=dim_obj: resolver.get_legend_formatted_value(dim_obj, d)
                         else:
                             formatter = str
                         data[field] = [formatter(d) for d in val]
                     if getattr(self, "show_legend", False):
                         legend_labels = getattr(self, "legend_labels", False)
+                        resolver = element._get_hover_resolver()
+                        if v.dimension in element:
+                            dim_obj = element.get_dimension(v.dimension)
+                            legend_title = resolver.get_legend_label(dim_obj)
+                        else:
+                            legend_title = str(v.dimension)
                         if legend_labels:
                             label_field = f"_{field}_labels"
                             data[label_field] = [legend_labels.get(v, v) for v in val]
@@ -2277,9 +2285,16 @@ class ElementPlot(BokehPlot, GenericElementPlot):
         properties = dict(style, source=source)
         if self.show_legend:
             if self.overlay_dims:
-                legend = ", ".join(
-                    [d.pprint_value(v, print_unit=True) for d, v in self.overlay_dims.items()]
-                )
+                legend_parts = []
+                resolver = element._get_hover_resolver()
+                for d, v in self.overlay_dims.items():
+                    alias_label = resolver.get_legend_label(d)
+                    formatted_val = resolver.get_legend_formatted_value(d, v)
+                    if alias_label != d.pprint_label:
+                        legend_parts.append(f"{alias_label}={formatted_val}")
+                    else:
+                        legend_parts.append(d.pprint_value(v, print_unit=True))
+                legend = ", ".join(legend_parts)
             else:
                 legend = element.label
             if legend and self.overlaid:
@@ -2529,6 +2544,11 @@ class ElementPlot(BokehPlot, GenericElementPlot):
 
         if not self.overlaid:
             self._set_active_tools(plot)
+            if element.hover_fields is not None:
+                try:
+                    element._get_hover_resolver().attach_metadata("bokeh", plot)
+                except Exception:
+                    pass
             self._process_legend()
             self._setup_data_callbacks(plot)
         self._execute_hooks(element)
