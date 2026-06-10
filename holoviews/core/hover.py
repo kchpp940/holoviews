@@ -679,7 +679,6 @@ class HoverResolver:
         seen_elements: set[int] = set()
 
         def _visit(p):
-            element = getattr(p, "current_key", None) is not None and hasattr(p, "hmap") and p.hmap is not None
             # Collect from this plot's element
             if hasattr(p, "current_frame") and p.current_frame is not None:
                 eid = id(p.current_frame)
@@ -713,6 +712,80 @@ class HoverResolver:
                     _visit(children)
 
         _visit(plot)
+        return results
+
+    @staticmethod
+    def collect_from_object(obj) -> list[dict]:
+        """Walk a HoloViews *object* tree and collect every element's
+        :meth:`get_export_spec` output.
+
+        Works with Element, Overlay, NdOverlay, Layout, AdjointLayout,
+        GridSpace, HoloMap, DynamicMap and other composites.
+
+        This is used when only the raw HoloViews object is available
+        (e.g. the Viewable / panel rendering path) and no Plot instance
+        has been created yet.
+        """
+        from . import (
+            AdjointLayout,
+            CompositeOverlay,
+            DynamicMap,
+            GridSpace,
+            HoloMap,
+            Layout,
+            NdLayout,
+            NdOverlay,
+            Overlay,
+        )
+
+        results: list[dict] = []
+        seen_elements: set[int] = set()
+
+        def _visit(o):
+            if o is None:
+                return
+
+            eid = id(o)
+            if eid in seen_elements:
+                return
+
+            # Collect from this element if it has hover config
+            if getattr(o, "hover_fields", None) is not None and hasattr(o, "_get_hover_resolver"):
+                try:
+                    results.append(o._get_hover_resolver().get_export_spec())
+                    seen_elements.add(eid)
+                except Exception:
+                    pass
+
+            # Recurse into composite types
+            if isinstance(o, (Layout, NdLayout, AdjointLayout, GridSpace)):
+                try:
+                    for child in o.traverse(lambda x: x):
+                        if child is not o:
+                            _visit(child)
+                except Exception:
+                    pass
+            elif isinstance(o, (Overlay, NdOverlay, CompositeOverlay)):
+                try:
+                    for child in o:
+                        _visit(child)
+                except Exception:
+                    pass
+            elif isinstance(o, (HoloMap, DynamicMap)):
+                try:
+                    if hasattr(o, "last") and o.last is not None:
+                        _visit(o.last)
+                except Exception:
+                    pass
+            # Handle dict-like containers (e.g. from .items())
+            elif isinstance(o, dict):
+                for child in o.values():
+                    _visit(child)
+            elif isinstance(o, (list, tuple)):
+                for child in o:
+                    _visit(child)
+
+        _visit(obj)
         return results
 
     # ------------------------------------------------------------------

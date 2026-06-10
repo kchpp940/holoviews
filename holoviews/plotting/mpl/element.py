@@ -249,13 +249,6 @@ class ElementPlot(GenericElementPlot, MPLPlot):
             self._finalize_artist(element)
 
         self._execute_hooks(element)
-        if element is not None and element.hover_fields is not None:
-            try:
-                fig = self.handles.get("fig")
-                if fig is not None:
-                    element._get_hover_resolver().attach_metadata("matplotlib", fig)
-            except Exception:
-                pass
         return super()._finalize_axis(key)
 
     def _get_mpl_format_coord(self, element):

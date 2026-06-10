@@ -2544,11 +2544,6 @@ class ElementPlot(BokehPlot, GenericElementPlot):
 
         if not self.overlaid:
             self._set_active_tools(plot)
-            if element.hover_fields is not None:
-                try:
-                    element._get_hover_resolver().attach_metadata("bokeh", plot)
-                except Exception:
-                    pass
             self._process_legend()
             self._setup_data_callbacks(plot)
         self._execute_hooks(element)

@@ -276,14 +276,6 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
         )
         self.handles["fig"] = fig
 
-        hover_trace_meta = self.handles.get("_hv_hover_trace_meta", [])
-        if element.hover_fields is not None or hover_trace_meta:
-            try:
-                extra = {"traces": hover_trace_meta} if hover_trace_meta else None
-                element._get_hover_resolver().attach_metadata("plotly", fig, extra=extra)
-            except Exception:
-                pass
-
         self._execute_hooks(element)
         self.drawn = True
 

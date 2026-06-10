@@ -235,11 +235,51 @@ class Renderer(Exporter):
 
     def __init__(self, **params):
         self.last_plot = None
+        self.last_hover_metadata = None
         super().__init__(**params)
+
+    @bothmethod
+    def _collect_hover_metadata(self_or_cls, obj):
+        """Collect and merge hover metadata from a HoloViews object or plot.
+
+        Accepts Plot instances, Viewable (panel) objects, or raw HoloViews
+        objects.  Returns the merged export spec dict, or None if no hover
+        config is present in any sub-element.
+        """
+        from ..core.hover import HoverResolver
+        from . import Plot
+
+        try:
+            if isinstance(obj, Plot):
+                specs = HoverResolver.collect_from_plot(obj)
+            elif hasattr(obj, "object") and hasattr(obj, "_repr_mimebundle_"):
+                specs = HoverResolver.collect_from_object(obj.object)
+            elif hasattr(obj, "hover_fields"):
+                specs = HoverResolver.collect_from_object(obj)
+            else:
+                return None
+        except Exception:
+            return None
+
+        if not specs:
+            return None
+
+        return HoverResolver.merge_export_specs(specs)
 
     def __call__(self, obj, fmt="auto", **kwargs):
         plot, fmt = self._validate(obj, fmt)
         info = {"file-ext": fmt, "mime_type": MIME_TYPES[fmt]}
+
+        # Attach aggregated hover metadata to the HoloViews-level info dict.
+        # This is the canonical export container — it is never stripped by
+        # backend schema validation, and is available across all save formats.
+        # We collect early so *every* return path (None / server / Viewable /
+        # figure_data) includes the metadata in `info`.
+        hover_source = plot if plot is not None else obj
+        hover_meta = self._collect_hover_metadata(hover_source)
+        if hover_meta is not None:
+            info["holoviews:hover"] = hover_meta
+            self.last_hover_metadata = hover_meta
 
         if plot is None:
             return None, info
@@ -320,24 +360,25 @@ class Renderer(Exporter):
     def get_plot_state(self_or_cls, obj, renderer=None, **kwargs):
         """Given a HoloViews Viewable return a corresponding plot state."""
         if not isinstance(obj, Plot):
-            obj = self_or_cls.get_plot(obj=obj, renderer=renderer, **kwargs)
-        state = obj.state
-        try:
-            from ..core.hover import HoverResolver
-            specs = HoverResolver.collect_from_plot(obj)
-            if specs:
-                merged = HoverResolver.merge_export_specs(specs)
-                state = self_or_cls._attach_hover_metadata(obj, state, merged)
-        except Exception:
-            pass
+            plot = self_or_cls.get_plot(obj=obj, renderer=renderer, **kwargs)
+        else:
+            plot = obj
+        state = plot.state
+
+        merged = self_or_cls._collect_hover_metadata(plot)
+        if merged is not None:
+            if isinstance(self_or_cls, Renderer):
+                self_or_cls.last_hover_metadata = merged
+            state = self_or_cls._attach_hover_metadata(plot, state, merged)
         return state
 
     @bothmethod
     def _attach_hover_metadata(self_or_cls, plot, state, merged_spec):
         """Backend-specific hook to attach merged hover metadata to state.
 
-        Subclasses override this to write into the correct container for
-        their backend (Bokeh figure.tags, Plotly layout.metadata, etc.).
+        Subclasses override this to write into backend-specific containers
+        (Bokeh figure.tags, etc.).  The *canonical* export container is the
+        ``info`` dict returned by ``__call__`` and ``last_hover_metadata``.
         """
         return state
 
@@ -679,6 +720,13 @@ class Renderer(Exporter):
 
         with StoreOptions.options(obj, options, **kwargs):
             plot, fmt = self_or_cls._validate(obj, fmt)
+
+        # Collect hover metadata so it's available via last_hover_metadata
+        # even when saving in Viewable (panel) mode.
+        hover_source = plot if plot is not None else obj
+        hover_meta = self_or_cls._collect_hover_metadata(hover_source)
+        if hover_meta is not None and isinstance(self_or_cls, Renderer):
+            self_or_cls.last_hover_metadata = hover_meta
 
         if isinstance(plot, Viewable):
             from bokeh.resources import CDN, INLINE, Resources
