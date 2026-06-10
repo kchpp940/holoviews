@@ -8,6 +8,14 @@ import pytest
 import holoviews as hv
 
 
+_TOP_LEVEL_KEYS = frozenset(
+    {"version", "schema_version", "element_type", "backend", "kdims", "vdims", "notes"}
+)
+
+_NOTES_KEYS = frozenset(
+    {"field_order", "stats_keys", "gridded", "coord_dims"}
+)
+
 _BASE_FIELDS = frozenset(
     {"name", "dtype", "is_categorical", "is_datetime", "is_nullable",
      "range", "unique_count", "missing_count", "total_count"}
@@ -24,6 +32,13 @@ def _assert_schema_fields(schema_entry):
     for stat in ("range", "unique_count", "missing_count", "total_count"):
         missing = _STATS_KEYS - set(schema_entry[stat])
         assert not missing, f"Stat '{stat}' missing keys: {missing}"
+
+
+def _assert_top_level(schema):
+    missing = _TOP_LEVEL_KEYS - set(schema)
+    assert not missing, f"Top-level schema missing keys: {missing}"
+    missing = _NOTES_KEYS - set(schema["notes"])
+    assert not missing, f"Notes missing keys: {missing}"
 
 
 def _stats(stat):
@@ -46,8 +61,15 @@ class TestDatasetSchemaDictionary:
     def test_schema_basic_structure(self):
         ds = hv.Dataset({"x": [1, 2, 3], "y": [4.0, 5.0, 6.0]}, kdims=["x"], vdims=["y"])
         schema = ds.schema()
+        _assert_top_level(schema)
         assert "kdims" in schema
         assert "vdims" in schema
+        assert schema["version"] == "1.0.0"
+        assert schema["schema_version"] == 1
+        assert schema["element_type"] == "Dataset"
+        assert isinstance(schema["backend"], str)
+        assert schema["notes"]["gridded"] == False
+        assert schema["notes"]["coord_dims"] == []
         assert len(schema["kdims"]) == 1
         assert len(schema["vdims"]) == 1
 
@@ -620,3 +642,181 @@ class TestDatasetSchemaCrossInterfaceConsistency:
                 assert pd_rng is not None and nw_rng is not None
                 for a, b in zip(pd_rng, nw_rng):
                     assert float(a) == float(b)
+
+
+class TestSchemaPublicContract:
+    """Verify the versioned public contract — top-level fields,
+    notes, and element-type awareness."""
+
+    def setup_method(self):
+        self.restore_datatype = hv.Dataset.datatype
+        hv.Dataset.datatype = ["dictionary"]
+
+    def teardown_method(self):
+        hv.Dataset.datatype = self.restore_datatype
+
+    def test_version_and_schema_version(self):
+        ds = hv.Dataset({"x": [1, 2, 3], "y": [4.0, 5.0, 6.0]}, kdims=["x"], vdims=["y"])
+        schema = ds.schema()
+        assert schema["version"] == "1.0.0"
+        assert schema["schema_version"] == 1
+
+    def test_element_type_dataset(self):
+        ds = hv.Dataset({"x": [1, 2, 3], "y": [4.0, 5.0, 6.0]}, kdims=["x"], vdims=["y"])
+        assert ds.schema()["element_type"] == "Dataset"
+
+    def test_element_type_curve(self):
+        hv.Curve.datatype = ["dictionary"]
+        try:
+            c = hv.Curve({"x": [1, 2, 3], "y": [4.0, 5.0, 6.0]})
+            assert c.schema()["element_type"] == "Curve"
+        finally:
+            hv.Curve.datatype = self.restore_datatype
+
+    def test_element_type_table(self):
+        hv.Table.datatype = ["dictionary"]
+        try:
+            t = hv.Table({"a": [1, 2, 3], "b": [4.0, 5.0, 6.0]}, kdims=["a"], vdims=["b"])
+            assert t.schema()["element_type"] == "Table"
+        finally:
+            hv.Table.datatype = self.restore_datatype
+
+    def test_backend_field(self):
+        ds = hv.Dataset({"x": [1, 2, 3], "y": [4.0, 5.0, 6.0]}, kdims=["x"], vdims=["y"])
+        assert isinstance(ds.schema()["backend"], str)
+        assert len(ds.schema()["backend"]) > 0
+
+    def test_notes_field_order(self):
+        ds = hv.Dataset({"x": [1, 2, 3], "y": [4.0, 5.0, 6.0]}, kdims=["x"], vdims=["y"])
+        schema = ds.schema()
+        assert schema["notes"]["field_order"][0] == "name"
+        assert "range" in schema["notes"]["field_order"]
+        assert "total_count" in schema["notes"]["field_order"]
+
+    def test_notes_stats_keys(self):
+        ds = hv.Dataset({"x": [1, 2, 3], "y": [4.0, 5.0, 6.0]}, kdims=["x"], vdims=["y"])
+        schema = ds.schema()
+        assert set(schema["notes"]["stats_keys"]) == _STATS_KEYS
+
+    def test_notes_gridded_false_for_columnar(self):
+        ds = hv.Dataset({"x": [1, 2, 3], "y": [4.0, 5.0, 6.0]}, kdims=["x"], vdims=["y"])
+        schema = ds.schema()
+        assert schema["notes"]["gridded"] == False
+        assert schema["notes"]["coord_dims"] == []
+
+    def test_schema_version_stable_across_compute_modes(self):
+        ds = hv.Dataset({"x": [1, 2, 3], "y": [4.0, 5.0, 6.0]}, kdims=["x"], vdims=["y"])
+        assert ds.schema()["version"] == ds.schema(compute=False)["version"]
+        assert ds.schema()["schema_version"] == ds.schema(sample_size=2)["schema_version"]
+
+
+class TestSchemaImageGridded:
+    """Verify Image / xarray grid semantics: coord dims use raw axis
+    coordinates (not pixel-expanded arrays), so total_count/unique_count/
+    missing_count have axis-tick semantics for kdims and pixel semantics
+    for vdims.
+    """
+
+    def setup_method(self):
+        xr = pytest.importorskip("xarray")
+        self.xr = xr
+        self.restore_datatype = hv.Image.datatype
+        hv.Image.datatype = ["xarray"]
+
+    def teardown_method(self):
+        hv.Image.datatype = self.restore_datatype
+
+    def _make_image(self):
+        rng = np.random.default_rng(42)
+        data = rng.random((3, 4))
+        ds = self.xr.Dataset(
+            {"z": (["x", "y"], data)},
+            coords={"x": [0, 1, 2], "y": [10, 20, 30, 40]},
+        )
+        return hv.Image(ds, kdims=["x", "y"], vdims=["z"])
+
+    def test_image_element_type(self):
+        img = self._make_image()
+        assert img.schema()["element_type"] == "Image"
+
+    def test_image_notes_gridded(self):
+        img = self._make_image()
+        schema = img.schema()
+        assert schema["notes"]["gridded"] == True
+        assert schema["notes"]["coord_dims"] == ["x", "y"]
+
+    def test_coord_dim_total_count_is_axis_ticks(self):
+        img = self._make_image()
+        schema = img.schema()
+        x_dim = schema["kdims"][0]
+        y_dim = schema["kdims"][1]
+        assert x_dim["total_count"]["value"] == 3
+        assert y_dim["total_count"]["value"] == 4
+
+    def test_coord_dim_unique_count_equals_axis_ticks(self):
+        img = self._make_image()
+        schema = img.schema()
+        x_dim = schema["kdims"][0]
+        y_dim = schema["kdims"][1]
+        assert x_dim["unique_count"]["value"] == 3
+        assert y_dim["unique_count"]["value"] == 4
+
+    def test_coord_dim_missing_count_zero(self):
+        img = self._make_image()
+        schema = img.schema()
+        for kdim in schema["kdims"]:
+            assert kdim["missing_count"]["value"] == 0
+
+    def test_vdim_total_count_is_pixel_count(self):
+        img = self._make_image()
+        schema = img.schema()
+        z_dim = schema["vdims"][0]
+        assert z_dim["total_count"]["value"] == 12
+
+    def test_vdim_unique_count_is_pixel_values(self):
+        img = self._make_image()
+        schema = img.schema()
+        z_dim = schema["vdims"][0]
+        assert z_dim["unique_count"]["value"] == 12
+
+    def test_vdim_range_covers_all_pixels(self):
+        img = self._make_image()
+        schema = img.schema()
+        z_dim = schema["vdims"][0]
+        lo, hi = z_dim["range"]["value"]
+        assert lo < hi
+
+    def test_coord_dim_range_matches_axis(self):
+        img = self._make_image()
+        schema = img.schema()
+        x_dim = schema["kdims"][0]
+        y_dim = schema["kdims"][1]
+        assert x_dim["range"]["value"] == (0, 2)
+        assert y_dim["range"]["value"] == (10, 40)
+
+    def test_coord_dims_not_estimated_even_with_sample_size(self):
+        img = self._make_image()
+        schema = img.schema(sample_size=2)
+        for kdim in schema["kdims"]:
+            for stat in ("range", "unique_count", "missing_count", "total_count"):
+                assert kdim[stat]["estimated"] == False
+
+    def test_image_compute_false(self):
+        img = self._make_image()
+        schema = img.schema(compute=False)
+        for entry in schema["kdims"] + schema["vdims"]:
+            for stat_name in ("range", "unique_count", "missing_count", "total_count"):
+                assert entry[stat_name]["computed"] == False
+                assert entry[stat_name]["value"] is None
+
+    def test_image_with_nan_pixels(self):
+        data = np.array([[1.0, float("nan")], [3.0, 4.0]])
+        ds = self.xr.Dataset(
+            {"z": (["x", "y"], data)},
+            coords={"x": [0, 1], "y": [10, 20]},
+        )
+        img = hv.Image(ds, kdims=["x", "y"], vdims=["z"])
+        schema = img.schema()
+        z_dim = schema["vdims"][0]
+        assert z_dim["missing_count"]["value"] == 1
+        assert z_dim["total_count"]["value"] == 4

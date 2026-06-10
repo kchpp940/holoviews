@@ -78,6 +78,18 @@ def _count_missing(arr) -> int:
     return n
 
 
+_SCHEMA_VERSION = "1.0.0"
+
+_SCHEMA_FIELD_ORDER = (
+    "name", "dtype", "is_categorical", "is_datetime", "is_nullable",
+    "range", "unique_count", "missing_count", "total_count",
+)
+
+_SCHEMA_STATS_KEYS = (
+    "value", "computed", "estimated", "sample_size", "total_count",
+)
+
+
 class DataError(ValueError):
     """DataError is raised when the data cannot be interpreted"""
 
@@ -851,13 +863,30 @@ class Interface(param.Parameterized):
         the statistics fall back to exact computation and
         ``estimated`` stays ``False``.
 
+        **Gridded data (Image, QuadMesh, …)**
+
+        For gridded backends (``Interface.gridded == True``) the
+        coordinate dimensions (``kdims``) use the raw axis coordinates
+        as the population — *not* the pixel-expanded arrays.  That
+        means for a 3×4 xarray Image:
+
+        - x-axis coord dim:  ``total_count=3`` (axis ticks), not 12 pixels
+        - y-axis coord dim:  ``total_count=4``
+        - value dim (z):    ``total_count=12`` (pixel count)
+
+        ``unique_count`` on coord axes therefore equals
+        ``total_count`` unless duplicate coordinates are present, and
+        ``missing_count`` reports NaNs in the coordinate array itself,
+        not in the pixel values.  Coordinate axes are never sampled
+        because they are typically small.
+
         **Edge cases**
 
         - Empty column (``total_count == 0``):  ``range.value`` is
-          ``(None, None)``; counts are ``0``.
+          ``(None, None)``; all count stats are ``0``.
         - All-missing column:  ``missing_count.value == total_count.value``.
         - ``is_nullable`` reflects *structural* nullability from the
-          dtype kind only; it does **not** depend on whether missing
+          dtype only; it does **not** depend on whether missing
           values were actually observed, so it is stable across
           ``compute`` / ``sample_size`` settings.
 
@@ -893,6 +922,8 @@ class Interface(param.Parameterized):
             "is_nullable": _is_nullable_dtype(dt),
         }
 
+        is_coord_dim = cls.gridded and dim in dataset.kdims
+
         if not compute:
             return {
                 **base_info,
@@ -902,7 +933,10 @@ class Interface(param.Parameterized):
                 "total_count": cls._empty_stats(),
             }
 
-        values = cls.values(dataset, dim, compute=True)
+        if is_coord_dim:
+            values = cls.values(dataset, dim, expanded=False, compute=True)
+        else:
+            values = cls.values(dataset, dim, compute=True)
         total_count = len(values)
 
         total_count_stats = cls._stats(total_count, total_count)
@@ -915,7 +949,11 @@ class Interface(param.Parameterized):
             dim_range = cls.range(dataset, dim)
             range_stats = cls._stats(dim_range, total_count)
 
-            use_sampling = sample_size is not None and total_count > sample_size
+            use_sampling = (
+                sample_size is not None
+                and total_count > sample_size
+                and not is_coord_dim
+            )
 
             if use_sampling:
                 rng = np.random.default_rng()
@@ -940,7 +978,10 @@ class Interface(param.Parameterized):
                     estimated=True, sample_size=sample_size,
                 )
             else:
-                unique_count = len(cls.values(dataset, dim, expanded=False, compute=True))
+                if is_coord_dim:
+                    unique_count = len(np.unique(values))
+                else:
+                    unique_count = len(cls.values(dataset, dim, expanded=False, compute=True))
                 unique_stats = cls._stats(unique_count, total_count)
 
                 missing_count = _count_missing(values)

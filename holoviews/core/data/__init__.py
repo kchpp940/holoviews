@@ -566,7 +566,28 @@ class Dataset(Element, metaclass=PipelineMeta):
         return core_util.dimension_range(lower, upper, dim.range, dim.soft_range)
 
     def schema(self, sample_size=None, compute=True):
-        """Returns a structured schema of all dimensions in the Dataset.
+        """Returns a versioned, structured schema of all dimensions.
+
+        This is the **public contract** for HoloViews schema output.
+        The return dict is versioned so that downstream consumers can
+        reliably detect breaking vs. additive changes.
+
+        **Top-level output structure**::
+
+            {
+                "version": "1.0.0",
+                "schema_version": 1,
+                "element_type": "Dataset",
+                "backend": "PandasInterface",
+                "kdims": [...],
+                "vdims": [...],
+                "notes": {
+                    "field_order": ["name", "dtype", ...],
+                    "stats_keys": ["value", "computed", ...],
+                    "gridded": False,
+                    "coord_dims": [],
+                },
+            }
 
         Each dimension entry is split into *stable base info* (always
         available, inferred from dtype alone) and per-statistic stats
@@ -581,32 +602,50 @@ class Dataset(Element, metaclass=PipelineMeta):
         (pandas, dask, xarray, narwhals, etc.) produces a consistent
         field set without any per-backend schema logic.
 
-        **Output structure**::
+        **Versioning**
+
+        - ``version`` — a `semver <https://semver.org>`_ string.
+          **Breaking** changes (field removed/renamed, semantics
+          altered) bump the major version.  **Additive** changes (new
+          optional field) bump the minor version.  Patch fixes do not
+          change the schema.
+        - ``schema_version`` — integer derived from the major version.
+          Consumers can quickly check ``schema_version == N`` for
+          compatibility.
+
+        **Dimension entry structure**::
 
             {
-                "kdims": [
-                    {
-                        # Base info — always populated, dtype-derived
-                        "name": "x",
-                        "dtype": "int64",
-                        "is_categorical": False,
-                        "is_datetime": False,
-                        "is_nullable": False,
+                # Base info — always populated, dtype-derived
+                "name": "x",
+                "dtype": "int64",
+                "is_categorical": False,
+                "is_datetime": False,
+                "is_nullable": False,
 
-                        # Stats — each with independent provenance
-                        "range": {
-                            "value": (1, 3), "computed": True,
-                            "estimated": False,
-                            "sample_size": None, "total_count": 3,
-                        },
-                        "unique_count":  {"value": 3, "computed": True, ...},
-                        "missing_count": {"value": 0, "computed": True, ...},
-                        "total_count":   {"value": 3, "computed": True, ...},
-                    },
-                    ...
-                ],
-                "vdims": [...],
+                # Stats — each with independent provenance
+                "range": {
+                    "value": (1, 3), "computed": True,
+                    "estimated": False,
+                    "sample_size": None, "total_count": 3,
+                },
+                "unique_count":  {"value": 3, "computed": True, ...},
+                "missing_count": {"value": 0, "computed": True, ...},
+                "total_count":   {"value": 3, "computed": True, ...},
             }
+
+        **Gridded data (Image, QuadMesh, …)**
+
+        For gridded backends the coordinate dimensions (``kdims``) use
+        the raw axis coordinates as the population — *not* the
+        pixel-expanded arrays.  For a 3×4 xarray Image:
+
+        - x-axis coord dim: ``total_count=3`` (axis ticks)
+        - y-axis coord dim: ``total_count=4``
+        - value dim (z): ``total_count=12`` (pixel count)
+
+        ``notes.gridded`` is ``True`` for such backends and
+        ``notes.coord_dims`` lists the coordinate dimension names.
 
         Parameters
         ----------
@@ -675,9 +714,33 @@ class Dataset(Element, metaclass=PipelineMeta):
         >>> s_lazy["kdims"][0]["range"]["computed"]
         False
         """
+        from .interface import _SCHEMA_VERSION, _SCHEMA_FIELD_ORDER, _SCHEMA_STATS_KEYS
+
+        kdims_schemas = [
+            self.interface.dimension_schema(self, dim, sample_size=sample_size, compute=compute)
+            for dim in self.kdims
+        ]
+        vdims_schemas = [
+            self.interface.dimension_schema(self, dim, sample_size=sample_size, compute=compute)
+            for dim in self.vdims
+        ]
+
+        is_gridded = self.interface.gridded
+        coord_dims = [d.name for d in self.kdims] if is_gridded else []
+
         return {
-            "kdims": [self.interface.dimension_schema(self, dim, sample_size=sample_size, compute=compute) for dim in self.kdims],
-            "vdims": [self.interface.dimension_schema(self, dim, sample_size=sample_size, compute=compute) for dim in self.vdims],
+            "version": _SCHEMA_VERSION,
+            "schema_version": int(_SCHEMA_VERSION.split(".", 1)[0]),
+            "element_type": type(self).__name__,
+            "backend": type(self.interface).__name__,
+            "kdims": kdims_schemas,
+            "vdims": vdims_schemas,
+            "notes": {
+                "field_order": list(_SCHEMA_FIELD_ORDER),
+                "stats_keys": list(_SCHEMA_STATS_KEYS),
+                "gridded": is_gridded,
+                "coord_dims": coord_dims,
+            },
         }
 
     def add_dimension(self, dimension, dim_pos, dim_val, vdim=False, **kwargs):
