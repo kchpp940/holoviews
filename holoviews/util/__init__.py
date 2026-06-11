@@ -21,6 +21,16 @@ from ..core import (
     ViewableElement,
     util,
 )
+from ..core.theme import (
+    Theme,
+    get_active_theme,
+    get_default_theme,
+    list_themes,
+    register_theme,
+    set_default_theme,
+    theme_context,
+    unregister_theme,
+)
 from ..core.operation import Operation, OperationCallable
 from ..core.options import Keywords, Options, options_policy
 from ..core.overlay import Overlay
@@ -306,6 +316,164 @@ class opts(param.ParameterizedFunction, metaclass=OptsMeta):
         expanded = cls._expand_options(util.merge_options_to_dict(options), backend=backend)
         expanded = expanded or {}
         cls._linemagic(expanded, backend=backend)
+
+    @classmethod
+    def defaults_theme(cls, theme: str | Theme | None) -> None:
+        """Set a default theme for all subsequent plots.
+
+        This theme will apply globally to all plots unless overridden
+        by a context theme or a per-object theme.
+
+        Parameters
+        ----------
+        theme : str, Theme, or None
+            The theme to set as default. Can be a theme name string
+            (e.g. 'presentation', 'dark'), a Theme object, or None
+            to reset to no default theme.
+
+        Examples
+        --------
+        >>> hv.opts.defaults_theme("presentation")
+        >>> # ... all plots will use the presentation theme
+        >>> hv.opts.defaults_theme(None)  # reset to default
+        """
+        set_default_theme(theme)
+
+    @classmethod
+    def theme(cls, theme: str | Theme | None):
+        """Context manager to temporarily apply a theme.
+
+        The theme will apply to all plots created within the context,
+        overriding the global default theme but not any per-object themes.
+
+        Parameters
+        ----------
+        theme : str, Theme, or None
+            The theme to apply within the context. Can be a theme name
+            string (e.g. 'presentation', 'dark'), a Theme object,
+            or None to use the global default.
+
+        Yields
+        ------
+        None
+
+        Examples
+        --------
+        >>> with hv.opts.theme("presentation"):
+        ...     plot1 = hv.Curve([1, 2, 3])  # uses presentation theme
+        ...     plot2 = hv.Scatter([1, 2, 3])  # uses presentation theme
+        >>> # plots created here use global default theme
+        """
+        return theme_context(theme)
+
+    @classmethod
+    def list_themes(cls) -> list[str]:
+        """Return a list of all registered theme names.
+
+        Returns
+        -------
+        list[str]
+            Sorted list of registered theme names.
+
+        Examples
+        --------
+        >>> hv.opts.list_themes()
+        ['default', 'dark', 'presentation']
+        """
+        return list_themes()
+
+    @classmethod
+    def get_theme(cls, name: str) -> Theme:
+        """Get a theme by name.
+
+        Parameters
+        ----------
+        name : str
+            The name of the theme to retrieve.
+
+        Returns
+        -------
+        Theme
+            The theme object.
+
+        Raises
+        ------
+        ValueError
+            If no theme with the given name exists.
+
+        Examples
+        --------
+        >>> theme = hv.opts.get_theme("presentation")
+        >>> theme.name
+        'presentation'
+        """
+        from ..core.theme import get_theme as _get_theme
+
+        return _get_theme(name)
+
+    @classmethod
+    def register_theme(cls, theme: Theme) -> None:
+        """Register a new theme.
+
+        Parameters
+        ----------
+        theme : Theme
+            The theme object to register.
+
+        Raises
+        ------
+        ValueError
+            If a theme with the same name is already registered.
+
+        Examples
+        --------
+        >>> from holoviews.core.theme import Theme, ThemeStyles
+        >>> my_styles = ThemeStyles(font={"family": "Arial", "size": 14})
+        >>> my_theme = Theme("my_theme", {"bokeh": my_styles})
+        >>> hv.opts.register_theme(my_theme)
+        """
+        register_theme(theme)
+
+    @classmethod
+    def unregister_theme(cls, name: str) -> Theme | None:
+        """Unregister a theme by name.
+
+        Parameters
+        ----------
+        name : str
+            The name of the theme to unregister.
+
+        Returns
+        -------
+        Theme or None
+            The unregistered theme, or None if no theme with the
+            given name existed.
+
+        Examples
+        --------
+        >>> hv.opts.unregister_theme("my_theme")
+        """
+        return unregister_theme(name)
+
+    @classmethod
+    def current_theme(cls) -> Theme | None:
+        """Get the currently active theme.
+
+        Returns the theme from the innermost context, or the global
+        default theme if no context is active.
+
+        Returns
+        -------
+        Theme or None
+            The currently active theme, or None if no theme is active.
+
+        Examples
+        --------
+        >>> hv.opts.defaults_theme("presentation")
+        >>> hv.opts.current_theme().name
+        'presentation'
+        """
+        return get_active_theme()
 
     @classmethod
     def _expand_by_backend(cls, options, backend):
@@ -800,15 +968,7 @@ class extension(_pyviz_extension):
 
 
 def save(
-    obj,
-    filename,
-    fmt="auto",
-    backend=None,
-    resources="cdn",
-    toolbar=None,
-    title=None,
-    metadata=False,
-    **kwargs,
+    obj, filename, fmt="auto", backend=None, resources="cdn", toolbar=None, title=None, **kwargs
 ):
     """Saves the supplied object to file.
 
@@ -825,8 +985,8 @@ def save(
     ----------
     obj : HoloViews object
         The HoloViews object to save to file
-    filename : string, Path or IO object
-        The filename, pathlib.Path or BytesIO/StringIO object to save to
+    filename : string or IO object
+        The filename or BytesIO/StringIO object to save to
     fmt : string
         The format to save the object as, e.g. png, svg, html, or gif
         and if widgets are desired either 'widgets' or 'scrubber'
@@ -843,12 +1003,6 @@ def save(
         toolbar.
     title : string
         Custom title for exported HTML file
-    metadata : bool
-        If True, save a JSON sidecar file with export metadata.
-        For file outputs creates a ``.meta.json`` alongside the export.
-        For buffer outputs attaches a ``.metadata`` attribute to the buffer.
-        Metadata includes: object type, backend, renderer config, resource mode,
-        dimension schema, key dimensions, widget settings and export file info.
     **kwargs: dict
         Additional keyword arguments passed to the renderer,
         e.g. fps for animations
@@ -865,38 +1019,31 @@ def save(
             else:
                 obj = obj.opts(toolbar=None, backend="bokeh", clone=True)
         elif not toolbar and (
-            fmt == "png"
-            or (isinstance(filename, (str, Path)) and str(filename).endswith("png"))
+            fmt == "png" or (isinstance(filename, str) and filename.endswith("png"))
         ):
             obj = obj.opts(toolbar=None, backend="bokeh", clone=True)
     if kwargs:
         renderer_obj = renderer_obj.instance(**kwargs)
     if isinstance(filename, Path):
-        filename_str = str(filename.absolute())
-    else:
-        filename_str = filename
-    if isinstance(filename_str, str):
+        filename = str(filename.absolute())
+    if isinstance(filename, str):
         supported = [mfmt for tformats in renderer_obj.mode_formats.values() for mfmt in tformats]
-        formats = filename_str.split(".")
+        formats = filename.split(".")
         if fmt == "auto" and formats and formats[-1] != "html":
             fmt = formats[-1]
         if formats[-1] in supported:
-            if isinstance(filename, Path):
-                filename = filename.with_suffix("")
-            else:
-                filename = ".".join(formats[:-1])
+            filename = ".".join(formats[:-1])
     if backend == "bokeh":
+        # Suppress only the specific validator that warns when `sizing_mode='fixed'`
+        # but width/height are not both set on a Bokeh Plot, this happens in HoloViews
+        # when `.opts(fixed_{width,height}=...)` are set,  which sets width/height to `None`.
         from bokeh.core.validation.warnings import FIXED_SIZING_MODE
 
         from ..plotting.bokeh.util import silence_warnings
 
         with silence_warnings(FIXED_SIZING_MODE):
-            return renderer_obj.save(
-                obj, filename, fmt=fmt, resources=resources, title=title, metadata=metadata
-            )
-    return renderer_obj.save(
-        obj, filename, fmt=fmt, resources=resources, title=title, metadata=metadata
-    )
+            return renderer_obj.save(obj, filename, fmt=fmt, resources=resources, title=title)
+    return renderer_obj.save(obj, filename, fmt=fmt, resources=resources, title=title)
 
 
 def render(obj, backend: _BackendT | None = None, **kwargs):

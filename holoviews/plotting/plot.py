@@ -384,6 +384,16 @@ class DimensionedPlot(Plot):
 
     """
 
+    theme = param.Parameter(
+        default=None,
+        allow_None=True,
+        doc="""
+        Theme to apply to this plot. Can be either a theme name string
+        (e.g. 'presentation', 'dark') or a Theme object. This overrides
+        the global default theme and any context theme for this specific
+        plot.""",
+    )
+
     fontsize = param.Parameter(
         default=None,
         allow_None=True,

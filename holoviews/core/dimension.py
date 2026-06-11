@@ -1638,58 +1638,6 @@ class Dimensioned(LabelledData):
             tooltips.append((label, f"@{{{safe_name}}}"))
         return tooltips
 
-    def schema(self, dims: str | list[str] = "all") -> dict:
-        """Return a machine-readable schema describing the object's dimensions.
-
-        Provides a standardised JSON-serializable dictionary produced by
-        :func:`holoviews.core.util.build_dimension_schema`, containing
-        metadata about the key dimensions (kdims) and value dimensions
-        (vdims) of the object.  The returned dictionary always carries
-        the standardised top-level keys ``version``, ``schema_version``,
-        ``notes``, ``stats``, ``kdims`` and ``vdims``.
-
-        For :class:`Dataset` (and subclasses such as :class:`hv.Curve`,
-        :class:`hv.Image`, etc.) this method is overridden to include
-        the actual storage ``dtype``, ``datatype`` and data ``shape``
-        as reported by the active data interface.  This lightweight
-        fallback is used for ``Dimensioned`` objects that do not
-        expose a data interface.
-
-        Parameters
-        ----------
-        dims : str or list of str, optional
-            Which dimensions to include.  One of ``'all'`` (default),
-            ``'key'``/``'kdims'``, ``'value'``/``'vdims'``, or a list of
-            individual dimension names.
-
-        Returns
-        -------
-        dict
-            A dictionary produced by :func:`build_dimension_schema`
-            containing ``version``, ``schema_version``, ``notes``,
-            ``stats``, ``kdims`` and ``vdims``.
-
-        See Also
-        --------
-        Dataset.schema : versioned schema including actual dtypes,
-            datatype and shape for data-backed objects.
-        holoviews.core.util.build_dimension_schema : the unified
-            versioned schema builder.
-        """
-        from .spaces import DynamicMap, HoloMap
-        from .util import build_dimension_schema
-
-        unbounded_kdims = None
-        if isinstance(self, (DynamicMap, HoloMap)):
-            unbounded_kdims = list(getattr(self, "unbounded", []))
-
-        return build_dimension_schema(
-            list(self.kdims),
-            list(self.vdims),
-            unbounded_kdims=unbounded_kdims,
-            dims=dims,
-        )
-
     def __repr__(self):
         return PrettyPrinter.pprint(self)
 

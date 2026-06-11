@@ -6,12 +6,10 @@ regardless of plotting package or backend.
 from __future__ import annotations
 
 import base64
-import json
 import os
 from contextlib import contextmanager
 from functools import partial
 from io import BytesIO, StringIO
-from pathlib import Path
 
 import param
 from bokeh.document import Document
@@ -92,223 +90,6 @@ static_template = """
   </body>
 </html>
 """
-
-
-class ExportContext:
-    """Renderer-level export context that unifies metadata collection.
-
-    Captures all information about an export operation in a single
-    object, ensuring consistent metadata across all output formats
-    (html/png/svg/json) and all output targets (str path, Path,
-    BytesIO/StringIO).
-
-    Parameters
-    ----------
-    renderer : Renderer
-        The renderer instance performing the export.
-    obj : HoloViews object
-        The object being exported.
-    fmt : str
-        The resolved output format.
-    resources : str or Resources
-        The resource loading configuration.
-    basename : str, Path, or IO object
-        The actual output target after format resolution.
-    original_basename : str, Path, or IO object
-        The original output target as supplied by the user.
-    info : dict, optional
-        The renderer info dictionary from rendering.
-    widget_mode : str, optional
-        The widget mode used for dynamic exports.
-
-    Attributes
-    ----------
-    object_type : str
-        The type name of the exported object.
-    backend : str
-        The rendering backend name.
-    renderer_config : dict
-        Serialized renderer parameter configuration.
-    resource_mode : str
-        The resource loading mode.
-    dimension_schema : dict
-        Dimension schema from obj.schema().
-    key_dimensions : list
-        Key dimensions for DynamicMap/HoloMap objects.
-    frame_schema : dict or None
-        Schema of the sampled frame for dynamic objects.
-    widget_settings : dict
-        Widget and scrubber configuration.
-    export_info : dict
-        Final export file/buffer information.
-    """
-
-    def __init__(
-        self,
-        renderer,
-        obj,
-        fmt,
-        resources,
-        basename,
-        original_basename,
-        info=None,
-        widget_mode=None,
-        source_fmt=None,
-    ):
-        from ..core import DynamicMap, HoloMap
-
-        self.renderer = renderer
-        self.obj = obj
-        self.fmt = fmt
-        self.resources = resources
-        self.basename = basename
-        self.original_basename = original_basename
-        self.info = info
-        self.widget_mode = widget_mode
-        self.source_fmt = source_fmt
-
-        self.object_type = type(obj).__name__
-        self.backend = renderer.backend
-        self.renderer_config = self._collect_renderer_config(renderer)
-        self.resource_mode = self._resolve_resource_mode(resources)
-        self.dimension_schema = self._collect_dimension_schema(obj)
-        self.key_dimensions = self._collect_key_dimensions(obj)
-        self.frame_schema = self._collect_frame_schema(obj)
-        self.widget_settings = self._collect_widget_settings(renderer, widget_mode)
-        self.export_info = self._collect_export_info(
-            basename,
-            fmt,
-            info or {},
-            self.object_type,
-            source_fmt=source_fmt,
-            widgets_mode=widget_mode,
-        )
-
-    @staticmethod
-    def _collect_renderer_config(renderer):
-        config = {}
-        for pname in sorted(renderer.param):
-            if pname in ("name", "info_fn", "key_fn"):
-                continue
-            try:
-                val = getattr(renderer, pname)
-                if isinstance(val, (str, int, float, bool, type(None))):
-                    config[pname] = val
-                elif isinstance(val, (list, tuple)):
-                    config[pname] = list(val)
-                elif isinstance(val, dict):
-                    config[pname] = val
-            except Exception:
-                pass
-        return config
-
-    @staticmethod
-    def _resolve_resource_mode(resources):
-        if isinstance(resources, str):
-            return resources.lower()
-        elif hasattr(resources, "mode"):
-            return resources.mode
-        return str(resources)
-
-    @staticmethod
-    def _collect_dimension_schema(obj):
-        if hasattr(obj, "schema") and callable(getattr(obj, "schema", None)):
-            return obj.schema()
-        return {"kdims": [], "vdims": []}
-
-    @staticmethod
-    def _collect_key_dimensions(obj):
-        from ..core import DynamicMap, HoloMap
-
-        if not isinstance(obj, (DynamicMap, HoloMap)):
-            return []
-        key_schema = obj.schema(dims="key")
-        return key_schema.get("kdims", [])
-
-    @staticmethod
-    def _collect_frame_schema(obj):
-        from ..core import DynamicMap, HoloMap
-
-        if not isinstance(obj, (DynamicMap, HoloMap)):
-            return None
-
-        try:
-            if len(obj) > 0:
-                sample = obj[list(obj.keys())[0]]
-                if hasattr(sample, "schema") and callable(getattr(sample, "schema", None)):
-                    return sample.schema()
-        except Exception:
-            pass
-        return None
-
-    @staticmethod
-    def _collect_widget_settings(renderer, widget_mode):
-        settings = {
-            "holomap_mode": renderer.holomap,
-            "widget_mode": renderer.widget_mode,
-            "widget_location": renderer.widget_location,
-            "fps": renderer.fps,
-        }
-        if widget_mode is not None:
-            settings["widget_mode_used"] = widget_mode
-        return settings
-
-    @staticmethod
-    def _collect_export_info(basename, fmt, info, object_type, source_fmt=None, widgets_mode=None):
-        export_info = {
-            "format": fmt,
-            "mime_type": info.get("mime_type") if info else MIME_TYPES.get(fmt),
-            "object_type": object_type,
-        }
-        if source_fmt is not None:
-            export_info["source_format"] = source_fmt
-        if widgets_mode is not None:
-            export_info["widgets_mode"] = widgets_mode
-
-        if isinstance(basename, (BytesIO, StringIO)):
-            export_info["output_type"] = "buffer"
-            export_info["buffer_type"] = type(basename).__name__
-            current_pos = basename.tell()
-            basename.seek(0, os.SEEK_END)
-            export_info["size_bytes"] = basename.tell()
-            basename.seek(current_pos)
-        elif isinstance(basename, Path):
-            path = basename if basename.suffix else basename.with_suffix(f".{fmt}")
-            export_info["output_type"] = "file"
-            export_info["path"] = str(path.absolute())
-            export_info["filename"] = path.name
-            try:
-                export_info["size_bytes"] = path.stat().st_size
-            except OSError:
-                pass
-        elif isinstance(basename, str):
-            path_str = basename if basename.endswith(f".{fmt}") else f"{basename}.{fmt}"
-            path_obj = Path(path_str)
-            export_info["output_type"] = "file"
-            export_info["path"] = str(path_obj.absolute())
-            export_info["filename"] = path_obj.name
-            try:
-                export_info["size_bytes"] = path_obj.stat().st_size
-            except OSError:
-                pass
-
-        return export_info
-
-    def to_dict(self):
-        """Return the context as a JSON-serializable dictionary."""
-        result = {
-            "object_type": self.object_type,
-            "backend": self.backend,
-            "renderer_config": self.renderer_config,
-            "resource_mode": self.resource_mode,
-            "dimension_schema": self.dimension_schema,
-            "key_dimensions": self.key_dimensions,
-            "widget_settings": self.widget_settings,
-            "export_info": self.export_info,
-        }
-        if self.frame_schema is not None:
-            result["frame_schema"] = self.frame_schema
-        return result
 
 
 class Renderer(Exporter):
@@ -847,117 +628,6 @@ class Renderer(Exporter):
         raise NotImplementedError
 
     @bothmethod
-    def _create_export_context(
-        self_or_cls,
-        obj,
-        fmt,
-        resources,
-        basename,
-        original_basename,
-        info=None,
-        widget_mode=None,
-        source_fmt=None,
-    ):
-        """Create an ExportContext capturing all export metadata.
-
-        This is the renderer-level export context that unifies metadata
-        collection across all output formats and output targets.
-
-        Parameters
-        ----------
-        obj : HoloViews object
-            The object being exported.
-        fmt : str
-            The resolved output format (html/png/svg/json etc.).
-        resources : str or Resources
-            The resource loading configuration.
-        basename : str, Path, or IO object
-            The actual output target after format resolution.
-        original_basename : str, Path, or IO object
-            The original output target as supplied by the user.
-        info : dict, optional
-            The renderer info dictionary from rendering.
-        widget_mode : str, optional
-            The widget mode used for dynamic exports.
-        source_fmt : str, optional
-            The original format argument supplied by the user, e.g.
-            ``"widgets"`` or ``"scrubber"``.  Recorded in the metadata
-            as ``export_info["source_format"]`` alongside the resolved
-            ``export_info["format"]``.
-
-        Returns
-        -------
-        ExportContext
-            An ExportContext instance with all metadata resolved.
-        """
-        return ExportContext(
-            renderer=self_or_cls,
-            obj=obj,
-            fmt=fmt,
-            resources=resources,
-            basename=basename,
-            original_basename=original_basename,
-            info=info,
-            widget_mode=widget_mode,
-            source_fmt=source_fmt,
-        )
-
-    @bothmethod
-    def _finalize_metadata(self_or_cls, ctx):
-        """Finalize and write metadata from an ExportContext.
-
-        Unified metadata write path used for all output formats
-        (html/png/svg/json) and all output targets (str path, Path,
-        BytesIO/StringIO).
-
-        Metadata file naming follows the *resolved* filename so users
-        can unambiguously pair an export with its metadata:
-        - ``dmap_widgets.html``  →  ``dmap_widgets.html.meta.json``
-        - ``plot.svg``           →  ``plot.svg.meta.json``
-        - ``figure.png``         →  ``figure.png.meta.json``
-        - ``data.json``          →  ``data.json.meta.json``
-
-        In addition, the metadata itself records both ``source_format``
-        (the user's original ``fmt`` argument, e.g. ``"widgets"``) and
-        ``format`` (the actual on-disk file format, e.g. ``"html"``)
-        so the mapping is fully transparent even when the sidecar file
-        is separated from the export.
-        """
-        metadata = ctx.to_dict()
-
-        if isinstance(original := ctx.original_basename, (BytesIO, StringIO)):
-            original.metadata = metadata
-            return None
-
-        resolved = ctx.basename
-        if isinstance(resolved, Path):
-            if resolved.suffix:
-                meta_path = resolved.with_name(f"{resolved.name}.meta.json")
-            else:
-                fmt = ctx.export_info.get("format")
-                meta_path = resolved.with_suffix(
-                    f".{fmt}.meta.json" if fmt else ".meta.json"
-                )
-        else:
-            resolved_str = str(resolved)
-            fmt = ctx.export_info.get("format")
-            if fmt and resolved_str.endswith(f".{fmt}"):
-                meta_path = f"{resolved_str}.meta.json"
-            else:
-                if "." in os.path.basename(resolved_str):
-                    meta_path = f"{resolved_str}.meta.json"
-                elif fmt:
-                    meta_path = f"{resolved_str}.{fmt}.meta.json"
-                else:
-                    meta_path = f"{resolved_str}.meta.json"
-
-        meta_path = Path(meta_path)
-        meta_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(metadata, f, indent=2, ensure_ascii=False, default=str)
-        return meta_path
-
-    @bothmethod
     def save(
         self_or_cls,
         obj,
@@ -968,40 +638,10 @@ class Renderer(Exporter):
         options=None,
         resources="inline",
         title=None,
-        metadata=False,
         **kwargs,
     ):
         """Save a HoloViews object to file, either using an explicitly
         supplied format or to the appropriate default.
-
-        Parameters
-        ----------
-        obj : HoloViews object
-            The HoloViews object to save to file.
-        basename : string, Path or IO object
-            The filename/path or BytesIO/StringIO object to save to.
-        fmt : string
-            The format to save the object as, e.g. png, svg, html, json.
-        key : dict, optional
-            Metadata key dictionary (not supported by Renderer).
-        info : dict, optional
-            Metadata info dictionary (not supported by Renderer).
-        options : optional
-            Options to apply before saving.
-        resources : string or Resources
-            Resource loading mode for HTML output: 'cdn', 'inline'.
-        title : string, optional
-            Custom title for exported HTML file.
-        metadata : bool, optional
-            If True, save a JSON sidecar file with export metadata.
-            For file outputs creates a ``.meta.json`` alongside the export.
-            For buffer outputs attaches a ``.metadata`` attribute to the buffer.
-            Metadata includes: object type, backend, renderer config,
-            resource mode, dimension schema (via ``obj.schema()``),
-            key dimensions, sampled frame schema (for DynamicMap/HoloMap),
-            widget settings, and final export file info.
-        **kwargs : dict
-            Additional keyword arguments passed to the renderer.
 
         """
         if info is None:
@@ -1019,108 +659,10 @@ class Renderer(Exporter):
                 "the next minor release."
             )
 
-        original_basename = basename
-        original_fmt = fmt
-
-        # JSON format: serialise the object's metadata + optional data
-        # payload, all through the *same* ExportContext used for
-        # html/png/svg companion .meta.json files.  The JSON file
-        # is therefore 100 % structurally homologous to the sidecar
-        # metadata produced for every other format — no second schema.
-        #
-        # We short-circuit *after* preparing the common state but
-        # *before* ``_validate`` because backends do not declare
-        # ``json`` as a rendering format.  The ExportContext is,
-        # however, built in exactly the same way as for any other
-        # format.
-        is_json_export = isinstance(original_fmt, str) and original_fmt.lower() == "json"
-
         with StoreOptions.options(obj, options, **kwargs):
-            if is_json_export:
-                # JSON needs no rendering; build the context directly.
-                # We still honour ``resources`` and ``widget_mode``
-                # semantics so the resulting metadata is exactly what
-                # the user would get for an HTML export of the same
-                # object.
-                resolved_fmt = "json"
-                widget_mode = None
-                info_dict = {"mime_type": "application/json"}
-            else:
-                plot, fmt = self_or_cls._validate(obj, fmt)
-                resolved_fmt = fmt
-                info_dict = None
-                widget_mode = None
+            plot, fmt = self_or_cls._validate(obj, fmt)
 
-                # Determine the actual widget mode used (widgets/scrubber vs plain html)
-                if isinstance(original_fmt, str) and original_fmt in self_or_cls.widgets:
-                    widget_mode = original_fmt
-                elif original_fmt != fmt and fmt == "html":
-                    # _validate may have converted holomap format to html
-                    if original_fmt in ("scrubber", "widgets", "gif", "auto"):
-                        widget_mode = fmt if original_fmt == "auto" else original_fmt
-
-        # ----------------------------------------------------------------
-        # Write the primary output (html/png/svg/json).
-        #
-        # Every branch resolves ``basename`` to the *final* on-disk
-        # filename / buffer position so the ExportContext (built
-        # below) records the real output path for *all* formats —
-        # including json.
-        # ----------------------------------------------------------------
-        if is_json_export:
-            # JSON: serialise the full ExportContext (identical to
-            # what html/png/svg write as a sidecar .meta.json) plus
-            # an optional ``data`` payload for Dataset-backed objects.
-            # Reusing the same context guarantees the metadata is
-            # *fully homologous* across all four output formats.
-            if isinstance(basename, Path):
-                basename = basename if basename.suffix else basename.with_suffix(".json")
-            elif isinstance(basename, str):
-                if not basename.endswith(".json"):
-                    basename = f"{basename}.json"
-
-            # Build the context first — we then embed it in the JSON
-            # output, optionally enriched with a data payload.
-            ctx = self_or_cls._create_export_context(
-                obj=obj,
-                fmt=resolved_fmt,
-                resources=resources,
-                basename=basename,
-                original_basename=original_basename,
-                info=info_dict,
-                widget_mode=widget_mode,
-                source_fmt=original_fmt,
-            )
-
-            json_content = ctx.to_dict()
-
-            # Attach a data payload when the object exposes tabular data.
-            # This is the *only* thing that makes the JSON primary file
-            # different from the sidecar .meta.json; the metadata
-            # portion is bit-identical.
-            if hasattr(obj, "columns") and callable(getattr(obj, "columns", None)):
-                try:
-                    json_content["payload"] = {"data": obj.columns()}
-                except Exception as exc:
-                    json_content["payload"] = {"data": {"error": f"columns() failed: {exc!r}"}}
-
-            json_bytes = json.dumps(
-                json_content, indent=2, ensure_ascii=False, default=str
-            ).encode("utf-8")
-
-            if isinstance(basename, (BytesIO, StringIO)):
-                if isinstance(basename, BytesIO):
-                    basename.write(json_bytes)
-                else:
-                    basename.write(json_bytes.decode("utf-8"))
-                basename.seek(0)
-            elif isinstance(basename, Path):
-                with open(basename, "wb") as f:
-                    f.write(json_bytes)
-            else:
-                with open(basename, "wb") as f:
-                    f.write(json_bytes)
-        elif isinstance(plot, Viewable):
+        if isinstance(plot, Viewable):
             from bokeh.resources import CDN, INLINE, Resources
 
             if isinstance(resources, Resources):
@@ -1129,79 +671,29 @@ class Renderer(Exporter):
                 resources = CDN
             elif resources.lower() == "inline":
                 resources = INLINE
-            if isinstance(basename, Path):
-                basename_str = str(basename)
-            else:
-                basename_str = basename
-            if isinstance(basename_str, str):
+            if isinstance(basename, str):
                 if title is None:
-                    title = os.path.basename(basename_str)
+                    title = os.path.basename(basename)
                 if fmt in MIME_TYPES:
-                    if isinstance(basename, Path):
-                        basename = basename.with_suffix(f".{fmt}")
-                    else:
-                        basename = f"{basename}.{fmt}"
+                    basename = f"{basename}.{fmt}"
             plot.layout.save(basename, embed=True, resources=resources, title=title)
-            info_dict = {"mime_type": MIME_TYPES.get(fmt)}
-            # widget_mode was already determined before _validate for
-            # actual widgets/scrubber; only record fmt as widget_mode
-            # when it's genuinely a widget type (i.e. fmt is in widgets).
-            if widget_mode is None and fmt in self_or_cls.widgets:
-                widget_mode = fmt
+            return
+
+        rendered = self_or_cls(plot, fmt)
+        if rendered is None:
+            return
+        (_data, info) = rendered
+        encoded = self_or_cls.encode(rendered)
+        prefix = self_or_cls._save_prefix(info["file-ext"])
+        if prefix:
+            encoded = prefix + encoded
+        if isinstance(basename, (BytesIO, StringIO)):
+            basename.write(encoded)
+            basename.seek(0)
         else:
-            rendered = self_or_cls(plot, fmt)
-            if rendered is None:
-                return
-            (_data, info) = rendered
-            encoded = self_or_cls.encode(rendered)
-            prefix = self_or_cls._save_prefix(info["file-ext"])
-            if prefix:
-                encoded = prefix + encoded
-
-            resolved_fmt = info["file-ext"]
-            info_dict = info
-
-            if isinstance(basename, (BytesIO, StringIO)):
-                basename.write(encoded)
-                basename.seek(0)
-            elif isinstance(basename, Path):
-                filename = basename if basename.suffix else basename.with_suffix(f".{resolved_fmt}")
-                with open(filename, "wb") as f:
-                    f.write(encoded)
-                basename = filename
-            else:
-                filename = f"{basename}.{resolved_fmt}"
-                with open(filename, "wb") as f:
-                    f.write(encoded)
-                basename = filename
-
-        # ----------------------------------------------------------------
-        # Build the ExportContext and write sidecar metadata.
-        #
-        # For html/png/svg this writes ``<file>.<fmt>.meta.json``.
-        # For json the context was *already* built (and embedded in
-        # the primary output above); we still pass through the same
-        # ``_finalize_metadata`` code path so the sidecar file (if
-        # requested) is produced by exactly the same logic.
-        # ----------------------------------------------------------------
-        if metadata:
-            if is_json_export:
-                # Context was already built above; reuse it so the
-                # sidecar is bit-identical to the metadata embedded
-                # in the primary JSON output.
-                self_or_cls._finalize_metadata(ctx)
-            else:
-                ctx = self_or_cls._create_export_context(
-                    obj=obj,
-                    fmt=resolved_fmt,
-                    resources=resources,
-                    basename=basename,
-                    original_basename=original_basename,
-                    info=info_dict,
-                    widget_mode=widget_mode,
-                    source_fmt=original_fmt,
-                )
-                self_or_cls._finalize_metadata(ctx)
+            filename = f"{basename}.{info['file-ext']}"
+            with open(filename, "wb") as f:
+                f.write(encoded)
 
     @bothmethod
     def _save_prefix(self_or_cls, ext):

@@ -14,6 +14,7 @@ from .operation import Operation
 from .options import Store, StoreOptions
 from .overlay import CompositeOverlay, NdOverlay, Overlay
 from .sheetcoords import SheetCoordinateSystem
+from .theme import Theme, ThemeStyles
 from .spaces import DynamicMap, GridMatrix, GridSpace, HoloMap
 from .tree import AttrTree
 from .util import config

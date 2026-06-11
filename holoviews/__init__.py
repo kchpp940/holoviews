@@ -98,6 +98,7 @@ from .core.options import (
     Store,
     StoreOptions,
 )
+from .core.theme import Theme, ThemeStyles, list_themes
 from .core.overlay import NdOverlay, Overlay
 from .core.spaces import Callable, DynamicMap, GridMatrix, GridSpace, HoloMap
 from .element import (
@@ -336,6 +337,9 @@ __all__ = [
     "Store",
     "StoreOptions",
     "Surface",
+    "Theme",
+    "ThemeStyles",
+    "list_themes",
     "Table",
     "Text",
     "Tiles",

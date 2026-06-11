@@ -48,12 +48,17 @@ import param
 
 from ..util.warnings import HoloviewsUserWarning, warn
 from .pprint import InfoPrinter
+from .theme import (
+    _merge_options_with_theme,
+    get_active_theme,
+)
 from .tree import AttrTree
 from .util import group_sanitizer, label_sanitizer, sanitize_identifier
 
 if t.TYPE_CHECKING:
     from ..util import _BackendT
     from ..util.settings import OutputSettings
+    from .theme import Theme
 
 
 def __getattr__(name):
@@ -113,12 +118,33 @@ def lookup_options(obj, group, backend):
         style_opts = None
 
     node = Store.lookup_options(backend, obj, group)
+
+    theme = _get_object_theme(obj) or get_active_theme()
+    node = _merge_options_with_theme(node, theme, backend, group)
+
     if group == "style" and style_opts is not None:
         return node.filtered(style_opts)
     elif group == "plot" and plot_class:
         return node.filtered(list(plot_class.param))
     else:
         return node
+
+
+def _get_object_theme(obj) -> Theme | None:
+    """Get theme set directly on the object via .opts(theme=...)."""
+    from .theme import get_theme as _get_theme
+
+    try:
+        opts_obj = obj.opts.get(group="plot", defaults=False)
+        theme_val = opts_obj.kwargs.get("theme")
+        if theme_val is None:
+            opts_obj = obj.opts.get(group="style", defaults=False)
+            theme_val = opts_obj.kwargs.get("theme")
+        if isinstance(theme_val, str):
+            return _get_theme(theme_val)
+        return theme_val
+    except Exception:
+        return None
 
 
 class CallbackError(RuntimeError):
@@ -1358,13 +1384,18 @@ class Store:
     def lookup_options(cls, backend, obj, group, defaults=True):
         # Current custom_options dict may not have entry for obj.id
         if obj.id in cls._custom_options[backend]:
-            return cls._custom_options[backend][obj.id].closest(
+            options = cls._custom_options[backend][obj.id].closest(
                 obj, group, defaults, backend=backend
             )
         elif not defaults:
-            return Options()
+            options = Options()
         else:
-            return cls._options[backend].closest(obj, group, defaults, backend=backend)
+            options = cls._options[backend].closest(obj, group, defaults, backend=backend)
+
+        theme = _get_object_theme(obj) or get_active_theme()
+        options = _merge_options_with_theme(options, theme, backend, group)
+
+        return options
 
     @classmethod
     def lookup(cls, backend, obj):
