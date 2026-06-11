@@ -269,12 +269,12 @@ class HeatMapMixin:
 
 class SpikesMixin:
     def _get_axis_dims(self, element):
-        if "spike_length" in self.lookup_options(element, "plot").options:
+        if "spike_length" in self._get_resolved(element).plot.options:
             return [element.dimensions()[0], None, None]
         return super()._get_axis_dims(element)
 
     def get_extents(self, element, ranges, range_type="combined", **kwargs):
-        opts = self.lookup_options(element, "plot").options
+        opts = self._get_resolved(element).plot.options
         if len(element.dimensions()) > 1 and "spike_length" not in opts:
             ydim = element.get_dimension(1)
             s0, s1 = ranges[ydim.label]["soft"]
@@ -291,7 +291,7 @@ class SpikesMixin:
                 # from position and length plot options
                 frame = self.current_frame or self.hmap.last
                 for el in frame.values():
-                    opts = self.lookup_options(el, "plot").options
+                    opts = self._get_resolved(el).plot.options
                     pos = opts.get("position", self.position)
                     bs.append(pos)
                     ts.append(pos + length)

@@ -615,7 +615,7 @@ class GridPlot(CompositePlot, GenericCompositePlot):
             # Create subplot
             if view is not None:
                 vtype = view.type if isinstance(view, HoloMap) else view.__class__
-                opts = self.lookup_options(view, "plot").options
+                opts = self._get_resolved(view).plot.options
             else:
                 vtype = None
 
@@ -917,7 +917,7 @@ class LayoutPlot(CompositePlot, GenericLayoutPlot):
 
             # Generate the AdjointLayoutsPlot which will coordinate
             # plotting of AdjointLayouts in the larger grid
-            plotopts = self.lookup_options(view, "plot").options
+            plotopts = self._get_resolved(view).plot.options
             layout_plot = AdjointLayoutPlot(adjoint_layout, layout_type, subplots, **plotopts)
             layout_subplots[(r, c)] = layout_plot
             if layout_key:
@@ -947,7 +947,7 @@ class LayoutPlot(CompositePlot, GenericLayoutPlot):
             # Options common for any subplot
             vtype = element.type if isinstance(element, HoloMap) else element.__class__
             plot_type = Store.registry[self.renderer.backend].get(vtype, None)
-            plotopts = self.lookup_options(element, "plot").options
+            plotopts = self._get_resolved(element).plot.options
             side_opts = {}
             if pos != "main":
                 plot_type = AdjointLayoutPlot.registry.get(vtype, plot_type)

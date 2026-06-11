@@ -550,7 +550,7 @@ class SideHistogramPlot(AdjoinedPlot, HistogramPlot):
         if isinstance(plot_type, PlotSelector):
             plot_type = plot_type.get_plot_class(range_item)
         if plot_type and issubclass(plot_type, ColorbarPlot):
-            opts = self.lookup_options(range_item, "style")
+            opts = self._get_resolved(range_item).style
             cidx = opts.kwargs.get("color", None)
             cdim = range_item.get_dimension(cidx) if cidx in range_item else None
         else:
@@ -558,7 +558,7 @@ class SideHistogramPlot(AdjoinedPlot, HistogramPlot):
 
         # Get colormapping options
         if isinstance(range_item, (HeatMap, Raster)) or (cdim and cdim in element):
-            style = self.lookup_options(range_item, "style")[self.cyclic_index]
+            style = self._get_resolved(range_item).style[self.cyclic_index]
             if MPL_GE_3_7_0:
                 # https://github.com/matplotlib/matplotlib/pull/28355
                 cmap = mpl.colormaps.get_cmap(style.get("cmap"))
@@ -1150,7 +1150,7 @@ class SpikesPlot(SpikesMixin, PathPlot, ColorbarPlot):
     def get_data(self, element, ranges, style):
         dimensions = element.dimensions(label=True)
         ndims = len(dimensions)
-        opts = self.lookup_options(element, "plot").options
+        opts = self._get_resolved(element).plot.options
 
         pos = self.position
         if ndims > 1 and "spike_length" not in opts:

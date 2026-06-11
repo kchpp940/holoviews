@@ -200,8 +200,10 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
         if element is None:
             return self.handles["fig"]
 
+        update_resolved = self.resolve_options(element)
+
         # Set plot options
-        plot_opts = self.lookup_options(element, "plot").options
+        plot_opts = update_resolved.plot.options
         self.param.update(**{k: v for k, v in plot_opts.items() if k in self.param})
 
         # Get ranges
@@ -209,7 +211,7 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
         ranges = util.match_spec(element, ranges)
 
         # Get style
-        self.style = self.lookup_options(element, "style")
+        self.style = update_resolved.style
         style = self.style[self.cyclic_index]
 
         # Validate style properties are supported in geo mode
@@ -846,7 +848,7 @@ class OverlayPlot(GenericOverlayPlot, ElementPlot):
         items = [] if element is None else list(element.data.items())
 
         # Update plot options
-        plot_opts = self.lookup_options(element, "plot").options
+        plot_opts = self.resolve_options(element).plot.options
         inherited = self._traverse_options(
             element, "plot", self._propagate_options, defaults=False
         )

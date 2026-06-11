@@ -661,7 +661,7 @@ class ElementPlot(GenericElementPlot, MPLPlot):
             self.current_frame = element
 
         if element is not None:
-            self._apply_plot_opts(self.lookup_options(element, "plot").options)
+            self._apply_plot_opts(self.resolve_options(element).plot.options)
         axis = self.handles["axis"]
 
         axes_visible = element is not None or self.overlaid
@@ -680,7 +680,7 @@ class ElementPlot(GenericElementPlot, MPLPlot):
         ranges = util.match_spec(element, ranges)
 
         max_cycles = self.style._max_cycles
-        style = self.lookup_options(element, "style")
+        style = self.resolve_options(element).style
         self.style = style.max_cycles(max_cycles) if max_cycles else style
 
         labels = getattr(self, "legend_labels", {})
@@ -1538,7 +1538,7 @@ class OverlayPlot(LegendPlot, GenericOverlayPlot):
             self._create_dynamic_subplots(key, items, ranges)
 
         # Update plot options
-        plot_opts = self.lookup_options(element, "plot").options
+        plot_opts = self.resolve_options(element).plot.options
         inherited = self._traverse_options(
             element, "plot", self._propagate_options, defaults=False
         )

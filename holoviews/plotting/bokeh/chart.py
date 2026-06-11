@@ -208,11 +208,11 @@ class PointPlot(SizebarMixin, ColorbarPlot):
         # marker in certain cases
         has_angles = False
         for (key, el), zorder in zip(element.data.items(), zorders, strict=None):
-            el_opts = self.lookup_options(el, "plot").options
+            el_opts = self._get_resolved(el).plot.options
             self.param.update(
                 **{k: v for k, v in el_opts.items() if k not in OverlayPlot._propagate_options}
             )
-            style = self.lookup_options(element.last, "style")
+            style = self._get_resolved(element.last).style
             style = style.max_cycles(len(self.ordering))[zorder]
             eldata, elmapping, style = self.get_data(el, ranges, style)
             style = mpl_to_bokeh(style)
@@ -434,11 +434,11 @@ class CurvePlot(ElementPlot):
 
         zorders = self._updated_zorders(overlay)
         for (key, el), zorder in zip(overlay.data.items(), zorders, strict=None):
-            el_opts = self.lookup_options(el, "plot").options
+            el_opts = self._get_resolved(el).plot.options
             self.param.update(
                 **{k: v for k, v in el_opts.items() if k not in OverlayPlot._propagate_options}
             )
-            style = self.lookup_options(el, "style")
+            style = self._get_resolved(el).style
             style = style.max_cycles(len(self.ordering))[zorder]
             eldata, elmapping, style = self.get_data(el, ranges, style)
 
@@ -795,7 +795,7 @@ class SpikesPlot(SpikesMixin, ColorbarPlot):
         data = {}
         pos = self.position
 
-        opts = self.lookup_options(element, "plot").options
+        opts = self._get_resolved(element).plot.options
         if len(element) == 0 or self.static_source:
             data = {"x": [], "y0": [], "y1": []}
         else:

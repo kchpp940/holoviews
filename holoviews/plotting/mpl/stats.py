@@ -261,7 +261,7 @@ class ViolinPlot(BoxPlot):
             groups = [(element.label, element)]
 
         data, labels, colors = [], [], []
-        elstyle = self.lookup_options(element, "style")
+        elstyle = self._get_resolved(element).style
         for i, (key, group) in enumerate(groups):
             if element.kdims:
                 label = ",".join(

@@ -63,7 +63,7 @@ class GraphPlot(GraphMixin, ColorbarPlot):
     filled = False
 
     def _compute_styles(self, element, ranges, style):
-        elstyle = self.lookup_options(element, "style")
+        elstyle = self._get_resolved(element).style
         color = elstyle.kwargs.get("node_color")
         if color and "node_color" in style:
             style["node_facecolors"] = style.pop("node_color")

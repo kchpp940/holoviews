@@ -512,7 +512,7 @@ class GridPlot(CompositePlot):
                 view = collate(view)
             if view is not None:
                 vtype = view.type if isinstance(view, HoloMap) else view.__class__
-                opts = self.lookup_options(view, "plot").options
+                opts = self.resolve_options(view).plot.options
             else:
                 vtype = None
 
@@ -950,7 +950,7 @@ class LayoutPlot(GenericLayoutPlot, CompositePlot):
             # Get aspects
             main = layout_view.main
             main = main.last if isinstance(main, HoloMap) else main
-            main_options = self.lookup_options(main, "plot").options if main else {}
+            main_options = self.resolve_options(main).plot.options if main else {}
             if main and not isinstance(main_options.get("aspect", 1), str):
                 main_aspect = np.nan if isinstance(main, Empty) else main_options.get("aspect", 1)
                 main_aspect = self.aspect_weight * main_aspect + 1 - self.aspect_weight
@@ -1123,7 +1123,7 @@ class LayoutPlot(GenericLayoutPlot, CompositePlot):
 
             # Generate the AdjointLayoutsPlot which will coordinate
             # plotting of AdjointLayouts in the larger grid
-            plotopts = self.lookup_options(view, "plot").options
+            plotopts = self.resolve_options(view).plot.options
             layout_plot = AdjointLayoutPlot(
                 adjoint_layout, layout_type, subaxes, subplots, fig=self.handles["fig"], **plotopts
             )
@@ -1209,7 +1209,7 @@ class LayoutPlot(GenericLayoutPlot, CompositePlot):
                 continue
 
             # Customize plotopts depending on position.
-            plotopts = self.lookup_options(view, "plot").options
+            plotopts = self.resolve_options(view).plot.options
 
             # Options common for any subplot
             override_opts = {}

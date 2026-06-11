@@ -173,11 +173,11 @@ class PathPlot(LegendPlot, ColorbarPlot):
 
         zorders = self._updated_zorders(element)
         for (key, el), zorder in zip(element.data.items(), zorders, strict=None):
-            el_opts = self.lookup_options(el, "plot").options
+            el_opts = self._get_resolved(el).plot.options
             self.param.update(
                 **{k: v for k, v in el_opts.items() if k not in OverlayPlot._propagate_options}
             )
-            style = self.lookup_options(el, "style")
+            style = self._get_resolved(el).style
             style = style.max_cycles(len(self.ordering))[zorder]
             self.overlay_dims = dict(zip(element.kdims, key, strict=None))
             eldata, elmapping, style = self.get_data(el, ranges, style)
@@ -326,7 +326,7 @@ class ContourPlot(PathPlot):
         self._get_hover_data(data, element)
 
         color, fill_color = style.get("color"), style.get("fill_color")
-        raw_color = self.lookup_options(element, "style").kwargs.get("color")
+        raw_color = self._get_resolved(element).style.kwargs.get("color")
         if (
             not element.vdims
             or (isinstance(color, dim) or color in element)

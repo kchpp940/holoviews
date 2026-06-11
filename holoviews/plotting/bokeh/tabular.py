@@ -85,7 +85,7 @@ class TablePlot(BokehPlot, GenericElementPlot):
         self.current_frame = element
         self.current_key = key
 
-        style = self.lookup_options(element, "style")[self.cyclic_index]
+        style = self._get_resolved(element).style[self.cyclic_index]
         data, _, style = self.get_data(element, ranges, style)
         if source is None:
             source = self._init_datasource(data)
@@ -150,7 +150,7 @@ class TablePlot(BokehPlot, GenericElementPlot):
 
         """
         element = self._get_frame(key)
-        self._apply_plot_opts(self.lookup_options(element, "plot").options)
+        self._apply_plot_opts(self._get_resolved(element).plot.options)
         self._get_title_div(key, "12pt")
 
         # Cache frame object id to skip updating data if unchanged
@@ -172,7 +172,7 @@ class TablePlot(BokehPlot, GenericElementPlot):
             if self.static_source and hasattr(self, "selected") and self.selected is not None:
                 self._update_selected(source)
             return
-        style = self.lookup_options(element, "style")[self.cyclic_index]
+        style = self._get_resolved(element).style[self.cyclic_index]
         data, _, style = self.get_data(element, ranges, style)
         columns = self._get_columns(element, data)
         self.handles["table"].columns = columns

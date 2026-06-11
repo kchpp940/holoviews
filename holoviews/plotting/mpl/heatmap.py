@@ -83,7 +83,7 @@ class HeatMapPlot(HeatMapMixin, QuadMeshPlot):
     @classmethod
     def is_radial(cls, heatmap):
         heatmap = heatmap.last if isinstance(heatmap, HoloMap) else heatmap
-        opts = cls.lookup_options(heatmap, "plot").options
+        opts = cls.resolve_options(heatmap).plot.options
         return (
             any(o in opts for o in ("start_angle", "radius_inner", "radius_outer"))
             and not (opts.get("radial") == False)
@@ -120,7 +120,7 @@ class HeatMapPlot(HeatMapMixin, QuadMeshPlot):
         if self.invert_axes:
             xdim, ydim = ydim, xdim
 
-        opts = self.lookup_options(element, "plot").options
+        opts = self._get_resolved(element).plot.options
 
         xticks = opts.get("xticks")
         if xticks is None:

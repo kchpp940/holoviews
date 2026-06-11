@@ -130,10 +130,10 @@ class MPLRenderer(Renderer):
 
         factor = percent_size / 100.0
         obj = obj.last if isinstance(obj, HoloMap) else obj
-        options = Store.lookup_options(cls.backend, obj, "plot").options
-        fig_size = options.get("fig_size", MPLPlot.fig_size) * factor
+        resolved = MPLPlot.resolve_options(obj)
+        fig_size = resolved.plot.options.get("fig_size", MPLPlot.fig_size) * factor
 
-        return dict({"fig_size": fig_size}, **MPLPlot.lookup_options(obj, "plot").options)
+        return dict({"fig_size": fig_size}, **resolved.plot.options)
 
     @bothmethod
     def get_size(self_or_cls, plot):

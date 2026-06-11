@@ -25,7 +25,7 @@ from ..core import traversal, util
 from ..core.data import Dataset, disable_pipeline, enable_pipeline
 from ..core.element import Element, Element3D
 from ..core.layout import Empty, Layout, NdLayout
-from ..core.options import Compositor, SkipRendering, Store, lookup_options
+from ..core.options import Compositor, SkipRendering, Store, lookup_options, resolve_options
 from ..core.overlay import CompositeOverlay, NdOverlay, Overlay
 from ..core.spaces import DynamicMap, HoloMap, get_nested_streams
 from ..core.util import dtype_kind, isfinite, stream_parameters, unique_iterator
@@ -298,6 +298,46 @@ class Plot(param.Parameterized):
     @classmethod
     def lookup_options(cls, obj, group):
         return lookup_options(obj, group, cls.backend)
+
+    @classmethod
+    def resolve_options(cls, obj, defaults=True):
+        """Resolve all option groups for an object through the full pipeline.
+
+        Returns a ResolvedOptions with plot/style/norm/output groups
+        and per-key provenance tracking. Rendering code should prefer
+        this over per-group lookup_options calls.
+        """
+        return resolve_options(obj, group=None, backend=cls.backend, defaults=defaults)
+
+    def _get_resolved(self, obj=None):
+        """Get ResolvedOptions with identity-based caching.
+
+        Cache strategy (for GenericElementPlot):
+        - If obj is None, return init-time self._resolved (for plot_element)
+        - If obj.id matches a previously resolved object, return cached result
+        - Otherwise resolve fresh and cache by obj.id
+
+        For composite plots (Layout, Grid, etc.), always resolves fresh since
+        they operate on multiple different objects.
+        """
+        if obj is None:
+            if not hasattr(self, "_resolved_cache"):
+                self._resolved_cache = {}
+            if hasattr(self, "_resolved"):
+                return self._resolved
+            # Fall back to current_frame if no _resolved yet
+            obj = self.current_frame
+
+        if not hasattr(self, "_resolved_cache"):
+            self._resolved_cache = {}
+
+        obj_id = getattr(obj, "id", id(obj))
+        if obj_id in self._resolved_cache:
+            return self._resolved_cache[obj_id]
+
+        resolved = self.resolve_options(obj)
+        self._resolved_cache[obj_id] = resolved
+        return resolved
 
 
 class PlotSelector:
@@ -838,9 +878,8 @@ class DimensionedPlot(Plot):
         for el in elements:
             if isinstance(el, (Empty, Table)):
                 continue
-            opts = cls.lookup_options(el, "style")
-            plot_opts = cls.lookup_options(el, "plot")
-            opt_kwargs = dict(opts.kwargs, **plot_opts.kwargs)
+            resolved = cls.resolve_options(el)
+            opt_kwargs = dict(resolved.style.kwargs, **resolved.plot.kwargs)
             if not opt_kwargs.get("apply_ranges", True):
                 continue
 
@@ -1408,8 +1447,10 @@ class GenericElementPlot(DimensionedPlot):
             dimensions = self.hmap.kdims
             keys = list(self.hmap.data.keys())
 
-        self.style = self.lookup_options(plot_element, "style") if style is None else style
-        plot_opts = self.lookup_options(plot_element, "plot").options
+        self._resolved = self.resolve_options(plot_element)
+        self._resolved_cache = {getattr(plot_element, "id", id(plot_element)): self._resolved}
+        self.style = self._resolved.style if style is None else style
+        plot_opts = self._resolved.plot.options
 
         propagate_options = self._propagate_options.copy()
         if self._multi_y_propagation:
@@ -1435,10 +1476,11 @@ class GenericElementPlot(DimensionedPlot):
         # Update plot and style options for batched plots
         if self.batched:
             self.ordering = util.layer_sort(self.hmap)
-            overlay_opts = self.lookup_options(self.hmap.last, "plot").options.items()
+            batched_resolved = self.resolve_options(self.hmap.last)
+            overlay_opts = batched_resolved.plot.options.items()
             opts = {k: v for k, v in overlay_opts if k in self.param}
             self.param.update(**opts)
-            self.style = self.lookup_options(plot_element, "style").max_cycles(len(self.ordering))
+            self.style = batched_resolved.style.max_cycles(len(self.ordering))
         else:
             self.ordering = []
 
@@ -1511,7 +1553,8 @@ class GenericElementPlot(DimensionedPlot):
     def get_padding(self, obj, extents):
         """Computes padding along the axes taking into account the plot aspect."""
         (x0, y0, _z0, x1, y1, _z1) = extents
-        padding_opt = self.lookup_options(obj, "plot").kwargs.get("padding")
+        resolved = self.resolve_options(obj)
+        padding_opt = resolved.plot.kwargs.get("padding")
         if self.overlaid:
             padding = 0
         elif padding_opt is None:
@@ -1656,7 +1699,8 @@ class GenericElementPlot(DimensionedPlot):
         """
         num = 6 if (isinstance(self.projection, str) and self.projection == "3d") else 4
         if self.apply_extents and range_type in ("combined", "extents"):
-            norm_opts = self.lookup_options(element, "norm").options
+            extents_resolved = self.resolve_options(element)
+            norm_opts = extents_resolved.norm.options
             if norm_opts.get("framewise", False) or self.dynamic:
                 extents = element.extents
             else:
@@ -2132,7 +2176,8 @@ class GenericOverlayPlot(GenericElementPlot):
             opts.update(propagate)
         if len(ordering) > self.legend_limit:
             opts["show_legend"] = False
-        style = self.lookup_options(obj.last, "style").max_cycles(group_length)
+        subplot_resolved = self.resolve_options(obj.last)
+        style = subplot_resolved.style.max_cycles(group_length)
         passed_handles = {k: v for k, v in self.handles.items() if k in self._passed_handles}
         plotopts = dict(
             opts,

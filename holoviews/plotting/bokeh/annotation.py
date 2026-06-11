@@ -153,7 +153,7 @@ class TextPlot(ElementPlot, AnnotationPlot):
         data = defaultdict(list)
         zorders = self._updated_zorders(element)
         for (_key, el), zorder in zip(element.data.items(), zorders, strict=None):
-            style = self.lookup_options(element.last, "style")
+            style = self._get_resolved(element.last).style
             style = style.max_cycles(len(self.ordering))[zorder]
             eldata, elmapping, style = self.get_data(el, ranges, style)
             for k, eld in eldata.items():

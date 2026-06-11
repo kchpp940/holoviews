@@ -148,7 +148,7 @@ class ContourPlot(PathPlot):
         with abbreviated_exception():
             style = self._apply_transforms(element, ranges, style)
 
-        raw_color = self.lookup_options(element, "style").kwargs.get("color")
+        raw_color = self._get_resolved(element).style.kwargs.get("color")
         cdim = (
             element.vdims[0]
             if element.vdims and isinstance(raw_color, (Cycle, NoneType))
