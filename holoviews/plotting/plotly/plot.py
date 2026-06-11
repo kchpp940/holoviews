@@ -6,6 +6,7 @@ from ...core import AdjointLayout, Empty, GridMatrix, GridSpace, HoloMap, NdLayo
 from ...core.options import Store
 from ...core.util import wrap_tuple
 from ...element import Histogram
+from ..lifecycle import LifecycleMixin
 from ..plot import (
     CallbackPlot,
     DimensionedPlot,
@@ -18,7 +19,7 @@ from ..util import attach_streams
 from .util import configure_matching_axes_from_dims, figure_grid
 
 
-class PlotlyPlot(DimensionedPlot, CallbackPlot):
+class PlotlyPlot(LifecycleMixin, DimensionedPlot, CallbackPlot):
     backend = "plotly"
 
     width = param.Integer(default=400)

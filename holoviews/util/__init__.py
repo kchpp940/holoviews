@@ -1115,10 +1115,8 @@ class Dynamic(param.ParameterizedFunction):
         def resolve(key, kwargs):
             if not isinstance(map_obj, HoloMap):
                 return key, map_obj
-            elif isinstance(map_obj, DynamicMap):
-                posarg_key = map_obj.context.resolve_posarg_key(kwargs)
-                if posarg_key and not key:
-                    key = posarg_key
+            elif isinstance(map_obj, DynamicMap) and map_obj._posarg_keys and not key:
+                key = tuple(kwargs[k] for k in map_obj._posarg_keys)
             return key, map_obj[key]
 
         def apply(element, *key, **kwargs):

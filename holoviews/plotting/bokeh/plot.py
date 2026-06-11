@@ -42,6 +42,7 @@ from ...core.util import (
 )
 from ...selection import NoOpSelectionDisplay
 from ..links import Link
+from ..lifecycle import LifecycleMixin
 from ..plot import (
     CallbackPlot,
     DimensionedPlot,
@@ -68,7 +69,7 @@ from .util import (
 )
 
 
-class BokehPlot(DimensionedPlot, CallbackPlot):
+class BokehPlot(LifecycleMixin, DimensionedPlot, CallbackPlot):
     """Plotting baseclass for the Bokeh backends, implementing the basic
     plotting interface for Bokeh based plots.
 

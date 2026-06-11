@@ -27,6 +27,7 @@ from ...core.util import dtype_kind
 from ...element import Graph, Path
 from ...streams import Stream
 from ...util.transform import dim
+from ..lifecycle import LifecycleContext, LifecyclePhase
 from ..plot import GenericElementPlot, GenericOverlayPlot
 from ..util import color_intervals, dim_range_key, process_cmap
 from .plot import MPLPlot, mpl_rc_context
@@ -178,6 +179,14 @@ class ElementPlot(GenericElementPlot, MPLPlot):
         axis = self.handles["axis"]
 
         subplots = list(self.subplots.values()) if self.subplots else []
+        ctx = LifecycleContext(
+            plot=self,
+            element=element,
+            ranges=ranges,
+            key=key,
+            axes=axis,
+            figure=axis.figure,
+        )
         if self.zorder == 0 and key is not None:
             if self.bgcolor:
                 if MPL_VERSION <= (1, 5, 9):
@@ -215,6 +224,7 @@ class ElementPlot(GenericElementPlot, MPLPlot):
                     if legend:
                         legend.set_visible(self.show_legend)
                         self.handles["bbox_extra_artists"] += [legend]
+                    ctx.legend = legend
                     # Apply grid settings
                     self._update_grid(axis)
 
@@ -240,6 +250,7 @@ class ElementPlot(GenericElementPlot, MPLPlot):
                     format_coord = self._get_mpl_format_coord(element)
                     if format_coord is not None:
                         axis.format_coord = format_coord
+                    ctx.tools = {"format_coord": format_coord}
 
             # Apply aspects
             if self.aspect is not None and self.projection != "polar" and not self.adjoined:
@@ -247,6 +258,10 @@ class ElementPlot(GenericElementPlot, MPLPlot):
 
         if not subplots and not self.drawn:
             self._finalize_artist(element)
+
+        if self.zorder == 0 and key is not None:
+            if "cax" in self.handles:
+                ctx.colorbar = self.handles.get("cax")
 
         self._execute_hooks(element)
         return super()._finalize_axis(key)
@@ -720,17 +735,51 @@ class ElementPlot(GenericElementPlot, MPLPlot):
 
         ranges = util.match_spec(element, ranges)
 
+        ctx = LifecycleContext(
+            plot=self,
+            element=element,
+            ranges=ranges,
+            key=key,
+            axes=ax,
+            figure=ax.figure,
+        )
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.PRE_INIT, ctx)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_FIGURE, ctx)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_AXES, ctx)
+
         style = dict(zorder=self.zorder, **self.style[self.cyclic_index])
         if self.show_legend:
             style["label"] = element.label
-        handles, axis_kwargs = self.render_artists(element, ranges, style, ax)
-        self.handles.update(handles)
+
+        def _create_glyphs(ctx: LifecycleContext) -> LifecycleContext:
+            handles, axis_kwargs = self.render_artists(element, ranges, style, ax)
+            self.handles.update(handles)
+            ctx.extra["axis_kwargs"] = axis_kwargs
+            return ctx.update(glyphs=handles.get("artist"))
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_GLYPHS, ctx)
+        ctx = _create_glyphs(ctx)
 
         trigger = self._trigger
         self._trigger = []
         Stream.trigger(trigger)
 
-        return self._finalize_axis(self.keys[-1], element=element, ranges=ranges, **axis_kwargs)
+        def _finalize_style(ctx: LifecycleContext) -> LifecycleContext:
+            axis_kwargs = ctx.extra.get("axis_kwargs", {})
+            result = self._finalize_axis(self.keys[-1], element=element, ranges=ranges, **axis_kwargs)
+            return ctx.update(state=result)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_LEGEND, ctx)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_COLORBAR, ctx)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_TOOLS, ctx)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.FINALIZE_STYLE, ctx)
+        ctx = _finalize_style(ctx)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.POST_INIT, ctx)
+
+        return ctx.state
 
     def init_artists(self, ax, plot_args, plot_kwargs):
         """Initializes the artist based on the plot method declared on

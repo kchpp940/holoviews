@@ -29,6 +29,7 @@ from ...core import (
 )
 from ...core.options import SkipRendering, Store
 from ...core.util import int_to_alpha, int_to_roman, wrap_tuple_streams
+from ..lifecycle import LifecycleMixin
 from ..plot import (
     DimensionedPlot,
     GenericAdjointLayoutPlot,
@@ -66,7 +67,7 @@ def mpl_rc_context(f):
     return wrapper
 
 
-class MPLPlot(DimensionedPlot):
+class MPLPlot(LifecycleMixin, DimensionedPlot):
     """An MPLPlot object draws a matplotlib figure object when called or
     indexed but can also return a matplotlib animation object as
     appropriate. MPLPlots take element objects such as Image, Contours

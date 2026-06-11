@@ -22,7 +22,6 @@ from .layout import AdjointLayout, Empty, Layout, Layoutable, NdLayout
 from .ndmapping import NdMapping, UniformNdMapping, item_check
 from .options import Store, StoreOptions
 from .overlay import CompositeOverlay, NdOverlay, Overlay, Overlayable
-from .runtime import DynamicMapContext
 from .util import dtype_kind
 
 NoNone = False
@@ -815,11 +814,8 @@ class periodic:
         def inner(i):
             kwargs = {} if param_fn is None else param_fn(i)
             if kwargs:
-                # 直接通过 context 接口处理事件，绕过 DynamicMap.event() 兼容层
-                self.dmap.context.handle_event(**kwargs)
+                self.dmap.event(**kwargs)
             else:
-                # 直接通过 context 记录事件原因，然后触发 streams
-                self.dmap.context.set_event_reason("periodic", count=i)
                 Stream.trigger(self.dmap.streams)
 
         instance = self._periodic_util(period, count, inner, timeout=timeout, block=block)
@@ -930,9 +926,6 @@ class DynamicMap(HoloMap):
 
         super().__init__(initial_items, callback=callback, streams=valid, **params)
 
-        # 运行时状态统一委托给 DynamicMapContext
-        self._context = DynamicMapContext(self)
-
         if self.callback.noargs:
             prefix = "DynamicMaps using generators (or callables without arguments)"
             if self.kdims:
@@ -943,11 +936,15 @@ class DynamicMap(HoloMap):
                     + " must have either streams=[] or a single, "
                     + "stream instance without any stream parameters"
                 )
-            if self._context.stream_parameters() != []:
+            if self._stream_parameters() != []:
                 raise ValueError(prefix + " cannot accept any stream parameters")
 
-        # 通过 context 初始化 callback 参数到 kdims 的映射
-        self._context.initialize_posarg_keys()
+        if self.positional_stream_args:
+            self._posarg_keys = None
+        else:
+            self._posarg_keys = util.validate_dynamic_argspec(
+                self.callback, self.kdims, self.streams
+            )
 
         # Set source to self if not already specified
         for stream in self.streams:
@@ -960,36 +957,7 @@ class DynamicMap(HoloMap):
 
         self.periodic = periodic(self)
 
-    @property
-    def context(self):
-        """Access the runtime context DynamicMapContext. All runtime state
-        and operations are recommended to go through this interface.
-        """
-        return self._context
-
-    # ---- Transition Layer ----
-    # The following attributes and methods are preserved for backward
-    # compatibility. New code should use dmap.context.* directly.
-
-    @property
-    def _posarg_keys(self):
-        """Transition: use DynamicMap.context.posarg_keys instead."""
-        return self._context.posarg_keys
-
-    @_posarg_keys.setter
-    def _posarg_keys(self, value):
-        """Transition: use DynamicMap.context.posarg_keys instead."""
-        self._context._posarg_keys = value
-
-    @property
-    def _current_key(self):
-        """Transition: use DynamicMap.context.current_key instead."""
-        return self._context.current_key
-
-    @_current_key.setter
-    def _current_key(self, value):
-        """Transition: use DynamicMap.context.current_key instead."""
-        self._context.current_key = value
+        self._current_key = None
 
     @property
     def opts(self):
@@ -1008,7 +976,7 @@ class DynamicMap(HoloMap):
         """
         unbounded_dims = []
         # Dimensioned streams do not need to be bounded
-        stream_params = set(self._context.stream_parameters())
+        stream_params = set(self._stream_parameters())
         for kdim in self.kdims:
             if str(kdim) in stream_params:
                 continue
@@ -1020,31 +988,62 @@ class DynamicMap(HoloMap):
 
     @property
     def current_key(self):
-        """Returns the current key value.
-
-        For runtime access, prefer DynamicMap.context.current_key.
-        """
-        return self._context.current_key
+        """Returns the current key value."""
+        return self._current_key
 
     def _stream_parameters(self):
-        """Transition: use DynamicMap.context.stream_parameters() instead."""
-        return self._context.stream_parameters()
+        return util.stream_parameters(self.streams, no_duplicates=not self.positional_stream_args)
 
     def _initial_key(self):
-        """Construct an initial key based on the lower range bounds or
+        """Construct an initial key for based on the lower range bounds or
         values on the key dimensions.
 
-        Transition note: use DynamicMap.context.initial_key() instead.
         """
-        return self._context.initial_key()
+        key = []
+        undefined = []
+        stream_params = set(self._stream_parameters())
+        for kdim in self.kdims:
+            if str(kdim) in stream_params:
+                key.append(None)
+            elif kdim.default is not None:
+                key.append(kdim.default)
+            elif kdim.values:
+                if all(util.isnumeric(v) for v in kdim.values):
+                    key.append(sorted(kdim.values)[0])
+                else:
+                    key.append(kdim.values[0])
+            elif kdim.range[0] is not None:
+                key.append(kdim.range[0])
+            else:
+                undefined.append(kdim)
+        if undefined:
+            msg = (
+                "Dimension(s) {undefined_dims} do not specify range or values needed "
+                "to generate initial key"
+            )
+            undefined_dims = ", ".join(f"{str(dim)!r}" for dim in undefined)
+            raise KeyError(msg.format(undefined_dims=undefined_dims))
+
+        return tuple(key)
 
     def _validate_key(self, key):
         """Make sure the supplied key values are within the bounds
         specified by the corresponding dimension range and soft_range.
 
-        Transition note: use DynamicMap.context.validate_key() instead.
         """
-        return self._context.validate_key(key)
+        if key == () and len(self.kdims) == 0:
+            return ()
+        key = util.wrap_tuple(key)
+        assert len(key) == len(self.kdims)
+        for ind, val in enumerate(key):
+            kdim = self.kdims[ind]
+            low, high = util.max_range([kdim.range, kdim.soft_range])
+            if util.is_number(low) and util.isfinite(low):
+                if val < low:
+                    raise KeyError(f"Key value {val} below lower bound {low}")
+            if util.is_number(high) and util.isfinite(high):
+                if val > high:
+                    raise KeyError(f"Key value {val} above upper bound {high}")
 
     def event(self, **kwargs):
         """Updates attached streams and triggers events
@@ -1052,28 +1051,72 @@ class DynamicMap(HoloMap):
         Automatically find streams matching the supplied kwargs to
         update and trigger events on them.
 
-        For internal runtime use, prefer DynamicMap.context.handle_event().
-
         Parameters
         ----------
         **kwargs
             Events to update streams with
         """
-        self._context.handle_event(**kwargs)
+        if self.callback.noargs and self.streams == []:
+            self.param.warning(
+                "No streams declared. To update a DynamicMaps using "
+                "generators (or callables without arguments) use streams=[Next()]"
+            )
+            return
+        if self.streams == []:
+            self.param.warning("No streams on DynamicMap, calling event will have no effect")
+            return
+
+        stream_params = set(self._stream_parameters())
+        invalid = [k for k in kwargs.keys() if k not in stream_params]
+        if invalid:
+            msg = "Key(s) {invalid} do not correspond to stream parameters"
+            raise KeyError(msg.format(invalid=", ".join(f"{i!r}" for i in invalid)))
+
+        streams = []
+        for stream in self.streams:
+            contents = stream.contents
+            applicable_kws = {k: v for k, v in kwargs.items() if k in set(contents.keys())}
+            if not applicable_kws and contents:
+                continue
+            streams.append(stream)
+            rkwargs = util.rename_stream_kwargs(stream, applicable_kws, reverse=True)
+            stream.update(**rkwargs)
+
+        Stream.trigger(streams)
 
     def _style(self, retval):
-        """Applies custom option tree to values return by the callback.
+        """Applies custom option tree to values return by the callback."""
+        from ..util import opts
 
-        Transition note: use DynamicMap.context._style() instead.
-        """
-        return self._context._style(retval)
+        if self.id not in Store.custom_options():
+            return retval
+        spec = StoreOptions.tree_to_dict(Store.custom_options()[self.id])
+        return opts.apply_groups(retval, options=spec)
 
     def _execute_callback(self, *args):
-        """Executes the callback with the appropriate args and kwargs.
+        """Executes the callback with the appropriate args and kwargs"""
+        self._validate_key(args)  # Validate input key
 
-        Transition note: use DynamicMap.context.execute_callback() instead.
-        """
-        return self._context.execute_callback(*args)
+        # Additional validation needed to ensure kwargs don't clash
+        kdims = [kdim.name for kdim in self.kdims]
+        kwarg_items = [s.contents.items() for s in self.streams]
+        hash_items = tuple(tuple(sorted(s.hashkey.items())) for s in self.streams) + args
+        flattened = [(k, v) for kws in kwarg_items for (k, v) in kws if k not in kdims]
+
+        if self.positional_stream_args:
+            kwargs = {}
+            args = args + tuple([s.contents for s in self.streams])
+        elif self._posarg_keys:
+            kwargs = dict(flattened, **dict(zip(self._posarg_keys, args, strict=False)))
+            args = ()
+        else:
+            kwargs = dict(flattened)
+        if not isinstance(self.callback, Generator):
+            kwargs["_memoization_hash_"] = hash_items
+
+        with dynamicmap_memoization(self.callback, self.streams):
+            retval = self.callback(*args, **kwargs)
+        return self._style(retval)
 
     def options(self, *args, **kwargs):
         """Applies simplified option definition returning a new object.
@@ -1198,9 +1241,9 @@ class DynamicMap(HoloMap):
             if key in cache:
                 val = cache[key]
             else:
-                val = self._context.execute_callback(*key)
+                val = self._execute_callback(*key)
                 if not self.unbounded:
-                    self._context.cache_value(key, val)
+                    self._cache(key, val)
             if data_slice:
                 val = self._dataslice(val, data_slice)
             data.append((key, val))
@@ -1278,7 +1321,7 @@ class DynamicMap(HoloMap):
         otherwise returns cloned DynamicMap containing the cross-
         product of evaluated items.
         """
-        self._context.current_key = key
+        self._current_key = key
 
         # Split key dimensions and data slices
         sample = False
@@ -1307,7 +1350,7 @@ class DynamicMap(HoloMap):
             dimensionless = util.dimensionless_contents(
                 get_nested_streams(self), self.kdims, no_duplicates=False
             )
-            empty = self._context.stream_parameters() == [] and self.kdims == []
+            empty = self._stream_parameters() == [] and self.kdims == []
             if dimensionless or empty:
                 raise KeyError("Using dimensionless streams disables DynamicMap cache")
             cache = super().__getitem__(key)
@@ -1322,10 +1365,10 @@ class DynamicMap(HoloMap):
         # Not a cross product and nothing cached so compute element.
         if cache is not None:
             return cache
-        val = self._context.execute_callback(*tuple_key)
+        val = self._execute_callback(*tuple_key)
         if data_slice:
             val = self._dataslice(val, data_slice)
-        self._context.cache_value(tuple_key, val)
+        self._cache(tuple_key, val)
         return val
 
     def select(self, selection_specs=None, **kwargs):
@@ -1390,11 +1433,18 @@ class DynamicMap(HoloMap):
             return dmap
 
     def _cache(self, key, val):
-        """Request that a key/value pair be considered for caching.
-
-        委托给 DynamicMapContext.cache_value()
-        """
-        self._context.cache_value(key, val)
+        """Request that a key/value pair be considered for caching."""
+        cache_size = (
+            1
+            if util.dimensionless_contents(
+                self.streams, self.kdims, no_duplicates=not self.positional_stream_args
+            )
+            else self.cache_size
+        )
+        if len(self) >= cache_size:
+            first_key = next(k for k in self.data)
+            self.data.pop(first_key)
+        self[key] = val
 
     def map(self, map_fn, specs=None, clone=True, link_inputs=True):
         """Map a function to all objects matching the specs
@@ -1541,7 +1591,7 @@ class DynamicMap(HoloMap):
             initialized = self
         else:
             initialized = self.clone()
-            initialized[initialized._context.initial_key()]
+            initialized[initialized._initial_key()]
 
         if not isinstance(initialized.last, (Layout, NdLayout, GridSpace)):
             return self

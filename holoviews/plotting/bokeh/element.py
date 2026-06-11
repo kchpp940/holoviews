@@ -59,6 +59,7 @@ from ...element import Annotation, Contours, Graph, Path, Tiles, VectorField
 from ...streams import Buffer, PlotSize, RangeXY
 from ...util.transform import dim
 from ...util.warnings import warn
+from ..lifecycle import LifecycleContext, LifecyclePhase
 from ..plot import GenericElementPlot, GenericOverlayPlot
 from ..util import color_intervals, dim_axis_label, dim_range_key, process_cmap
 from .plot import BokehPlot
@@ -2508,33 +2509,57 @@ class ElementPlot(BokehPlot, GenericElementPlot):
         self.current_key = key
         style_element = element.last if self.batched else element
         ranges = util.match_spec(style_element, ranges)
-        # Initialize plot, source and glyph
-        if plot is None:
-            plot = self._init_plot(key, style_element, ranges=ranges, plots=plots)
-            self._populate_axis_handles(plot)
-        else:
-            axes, plot_ranges = self._find_axes(plot, element)
-            self.handles["xaxis"], self.handles["yaxis"] = axes
-            self.handles["x_range"], self.handles["y_range"] = plot_ranges
-            if self._subcoord_overlaid:
-                if style_element.label in plot.extra_y_ranges:
-                    self.handles["subcoordinate_y_range"] = plot.y_range
-                    self.handles["y_range"] = plot.extra_y_ranges.pop(style_element.label)
-                elif self.overlay_dims:
-                    key = ", ".join(d.pprint_value(v) for d, v in self.overlay_dims.items())
-                    self.handles["y_range"] = plot.extra_y_ranges.pop(key)
 
-        if self.apply_hard_bounds:
-            self._apply_hard_bounds(element, ranges)
+        ctx = LifecycleContext(
+            plot=self,
+            element=element,
+            ranges=ranges,
+            key=key,
+            extra={"style_element": style_element, "plots": plots, "source": source},
+        )
 
-        self.handles["plot"] = plot
+        ctx = self.run_lifecycle_phase(LifecyclePhase.PRE_INIT, ctx)
 
-        if self.autorange:
-            self._setup_autorange()
-        self._init_glyphs(plot, element, ranges, source)
-        if not self.overlaid:
-            self._update_plot(key, plot, style_element)
-            self._update_ranges(style_element, ranges)
+        def _create_figure(ctx: LifecycleContext) -> LifecycleContext:
+            style_element = ctx.extra["style_element"]
+            plots = ctx.extra["plots"]
+            if plot is None:
+                fig = self._init_plot(ctx.key, style_element, ranges=ctx.ranges, plots=plots)
+                self._populate_axis_handles(fig)
+            else:
+                fig = plot
+                axes, plot_ranges = self._find_axes(fig, element)
+                self.handles["xaxis"], self.handles["yaxis"] = axes
+                self.handles["x_range"], self.handles["y_range"] = plot_ranges
+                if self._subcoord_overlaid:
+                    if style_element.label in fig.extra_y_ranges:
+                        self.handles["subcoordinate_y_range"] = fig.y_range
+                        self.handles["y_range"] = fig.extra_y_ranges.pop(style_element.label)
+                    elif self.overlay_dims:
+                        key = ", ".join(d.pprint_value(v) for d, v in self.overlay_dims.items())
+                        self.handles["y_range"] = fig.extra_y_ranges.pop(key)
+
+            if self.apply_hard_bounds:
+                self._apply_hard_bounds(element, ranges)
+
+            self.handles["plot"] = fig
+            return ctx.update(figure=fig, axes=(self.handles["xaxis"], self.handles["yaxis"]))
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_FIGURE, ctx)
+        ctx = _create_figure(ctx)
+
+        def _create_glyphs(ctx: LifecycleContext) -> LifecycleContext:
+            source = ctx.extra["source"]
+            if self.autorange:
+                self._setup_autorange()
+            glyphs = self._init_glyphs(ctx.figure, element, ctx.ranges, source)
+            if not self.overlaid:
+                self._update_plot(ctx.key, ctx.figure, style_element)
+                self._update_ranges(style_element, ctx.ranges)
+            return ctx.update(glyphs=glyphs)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_GLYPHS, ctx)
+        ctx = _create_glyphs(ctx)
 
         for cb in self.callbacks:
             cb.initialize()
@@ -2542,15 +2567,34 @@ class ElementPlot(BokehPlot, GenericElementPlot):
         if self.top_level:
             self.init_links()
 
-        if not self.overlaid:
-            self._set_active_tools(plot)
-            self._process_legend()
-            self._setup_data_callbacks(plot)
-        self._execute_hooks(element)
+        def _create_legend(ctx: LifecycleContext) -> LifecycleContext:
+            if not self.overlaid:
+                self._process_legend()
+            return ctx
 
-        self.drawn = True
+        def _create_tools(ctx: LifecycleContext) -> LifecycleContext:
+            if not self.overlaid:
+                self._set_active_tools(ctx.figure)
+                self._setup_data_callbacks(ctx.figure)
+            return ctx.update(tools=ctx.figure.tools)
 
-        return plot
+        def _finalize_style(ctx: LifecycleContext) -> LifecycleContext:
+            self._execute_hooks(element)
+            self.drawn = True
+            return ctx.update(state=ctx.figure)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_LEGEND, ctx)
+        ctx = _create_legend(ctx)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_TOOLS, ctx)
+        ctx = _create_tools(ctx)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.FINALIZE_STYLE, ctx)
+        ctx = _finalize_style(ctx)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.POST_INIT, ctx)
+
+        return ctx.state
 
     def _apply_hard_bounds(self, element, ranges):
         """Apply hard bounds to the x and y ranges of the plot. If xlim/ylim is set, limit the
