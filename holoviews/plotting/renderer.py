@@ -94,6 +94,212 @@ static_template = """
 """
 
 
+class ExportContext:
+    """Renderer-level export context that unifies metadata collection.
+
+    Captures all information about an export operation in a single
+    object, ensuring consistent metadata across all output formats
+    (html/png/svg/json) and all output targets (str path, Path,
+    BytesIO/StringIO).
+
+    Parameters
+    ----------
+    renderer : Renderer
+        The renderer instance performing the export.
+    obj : HoloViews object
+        The object being exported.
+    fmt : str
+        The resolved output format.
+    resources : str or Resources
+        The resource loading configuration.
+    basename : str, Path, or IO object
+        The actual output target after format resolution.
+    original_basename : str, Path, or IO object
+        The original output target as supplied by the user.
+    info : dict, optional
+        The renderer info dictionary from rendering.
+    widget_mode : str, optional
+        The widget mode used for dynamic exports.
+
+    Attributes
+    ----------
+    object_type : str
+        The type name of the exported object.
+    backend : str
+        The rendering backend name.
+    renderer_config : dict
+        Serialized renderer parameter configuration.
+    resource_mode : str
+        The resource loading mode.
+    dimension_schema : dict
+        Dimension schema from obj.schema().
+    key_dimensions : list
+        Key dimensions for DynamicMap/HoloMap objects.
+    frame_schema : dict or None
+        Schema of the sampled frame for dynamic objects.
+    widget_settings : dict
+        Widget and scrubber configuration.
+    export_info : dict
+        Final export file/buffer information.
+    """
+
+    def __init__(
+        self,
+        renderer,
+        obj,
+        fmt,
+        resources,
+        basename,
+        original_basename,
+        info=None,
+        widget_mode=None,
+    ):
+        from ..core import DynamicMap, HoloMap
+
+        self.renderer = renderer
+        self.obj = obj
+        self.fmt = fmt
+        self.resources = resources
+        self.basename = basename
+        self.original_basename = original_basename
+        self.info = info
+        self.widget_mode = widget_mode
+
+        self.object_type = type(obj).__name__
+        self.backend = renderer.backend
+        self.renderer_config = self._collect_renderer_config(renderer)
+        self.resource_mode = self._resolve_resource_mode(resources)
+        self.dimension_schema = self._collect_dimension_schema(obj)
+        self.key_dimensions = self._collect_key_dimensions(obj)
+        self.frame_schema = self._collect_frame_schema(obj)
+        self.widget_settings = self._collect_widget_settings(renderer, widget_mode)
+        self.export_info = self._collect_export_info(
+            basename, fmt, info or {}, self.object_type
+        )
+
+    @staticmethod
+    def _collect_renderer_config(renderer):
+        config = {}
+        for pname in sorted(renderer.param):
+            if pname in ("name", "info_fn", "key_fn"):
+                continue
+            try:
+                val = getattr(renderer, pname)
+                if isinstance(val, (str, int, float, bool, type(None))):
+                    config[pname] = val
+                elif isinstance(val, (list, tuple)):
+                    config[pname] = list(val)
+                elif isinstance(val, dict):
+                    config[pname] = val
+            except Exception:
+                pass
+        return config
+
+    @staticmethod
+    def _resolve_resource_mode(resources):
+        if isinstance(resources, str):
+            return resources.lower()
+        elif hasattr(resources, "mode"):
+            return resources.mode
+        return str(resources)
+
+    @staticmethod
+    def _collect_dimension_schema(obj):
+        if hasattr(obj, "schema") and callable(getattr(obj, "schema", None)):
+            return obj.schema()
+        return {"kdims": [], "vdims": []}
+
+    @staticmethod
+    def _collect_key_dimensions(obj):
+        from ..core import DynamicMap, HoloMap
+
+        if not isinstance(obj, (DynamicMap, HoloMap)):
+            return []
+        key_schema = obj.schema(dims="key")
+        return key_schema.get("kdims", [])
+
+    @staticmethod
+    def _collect_frame_schema(obj):
+        from ..core import DynamicMap, HoloMap
+
+        if not isinstance(obj, (DynamicMap, HoloMap)):
+            return None
+
+        try:
+            if len(obj) > 0:
+                sample = obj[list(obj.keys())[0]]
+                if hasattr(sample, "schema") and callable(getattr(sample, "schema", None)):
+                    return sample.schema()
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _collect_widget_settings(renderer, widget_mode):
+        settings = {
+            "holomap_mode": renderer.holomap,
+            "widget_mode": renderer.widget_mode,
+            "widget_location": renderer.widget_location,
+            "fps": renderer.fps,
+        }
+        if widget_mode is not None:
+            settings["widget_mode_used"] = widget_mode
+        return settings
+
+    @staticmethod
+    def _collect_export_info(basename, fmt, info, object_type):
+        export_info = {
+            "format": fmt,
+            "mime_type": info.get("mime_type") if info else MIME_TYPES.get(fmt),
+            "object_type": object_type,
+        }
+
+        if isinstance(basename, (BytesIO, StringIO)):
+            export_info["output_type"] = "buffer"
+            export_info["buffer_type"] = type(basename).__name__
+            current_pos = basename.tell()
+            basename.seek(0, os.SEEK_END)
+            export_info["size_bytes"] = basename.tell()
+            basename.seek(current_pos)
+        elif isinstance(basename, Path):
+            path = basename if basename.suffix else basename.with_suffix(f".{fmt}")
+            export_info["output_type"] = "file"
+            export_info["path"] = str(path.absolute())
+            export_info["filename"] = path.name
+            try:
+                export_info["size_bytes"] = path.stat().st_size
+            except OSError:
+                pass
+        elif isinstance(basename, str):
+            path_str = basename if basename.endswith(f".{fmt}") else f"{basename}.{fmt}"
+            path_obj = Path(path_str)
+            export_info["output_type"] = "file"
+            export_info["path"] = str(path_obj.absolute())
+            export_info["filename"] = path_obj.name
+            try:
+                export_info["size_bytes"] = path_obj.stat().st_size
+            except OSError:
+                pass
+
+        return export_info
+
+    def to_dict(self):
+        """Return the context as a JSON-serializable dictionary."""
+        result = {
+            "object_type": self.object_type,
+            "backend": self.backend,
+            "renderer_config": self.renderer_config,
+            "resource_mode": self.resource_mode,
+            "dimension_schema": self.dimension_schema,
+            "key_dimensions": self.key_dimensions,
+            "widget_settings": self.widget_settings,
+            "export_info": self.export_info,
+        }
+        if self.frame_schema is not None:
+            result["frame_schema"] = self.frame_schema
+        return result
+
+
 class Renderer(Exporter):
     """The job of a Renderer is to turn the plotting state held within
     Plot classes into concrete, visual output in the form of the PNG,
@@ -630,200 +836,83 @@ class Renderer(Exporter):
         raise NotImplementedError
 
     @bothmethod
-    def _collect_metadata(
-        self_or_cls, obj, fmt, resources, basename, info, plot, widget_mode=None
+    def _create_export_context(
+        self_or_cls,
+        obj,
+        fmt,
+        resources,
+        basename,
+        original_basename,
+        info=None,
+        widget_mode=None,
     ):
-        """Collect export metadata for the given object and configuration.
+        """Create an ExportContext capturing all export metadata.
 
-        Returns a dictionary with the following keys:
-        - object_type: the HoloViews object type name
-        - backend: the rendering backend
-        - renderer_config: renderer parameter configuration
-        - resource_mode: resource loading mode (cdn/inline etc.)
-        - dimension_schema: kdims and vdims schema
-        - key_dimensions: key dimensions for DynamicMap/HoloMap
-        - widget_settings: widget/scrubber configuration
-        - export_info: final export file information
+        This is the renderer-level export context that unifies metadata
+        collection across all output formats and output targets.
+
+        Parameters
+        ----------
+        obj : HoloViews object
+            The object being exported.
+        fmt : str
+            The resolved output format (html/png/svg/json etc.).
+        resources : str or Resources
+            The resource loading configuration.
+        basename : str, Path, or IO object
+            The actual output target after format resolution.
+        original_basename : str, Path, or IO object
+            The original output target as supplied by the user.
+        info : dict, optional
+            The renderer info dictionary from rendering.
+        widget_mode : str, optional
+            The widget mode used for dynamic exports.
+
+        Returns
+        -------
+        ExportContext
+            An ExportContext instance with all metadata resolved.
         """
-        from ..core import Dimensioned, DynamicMap, HoloMap
-
-        metadata = {}
-
-        metadata["object_type"] = type(obj).__name__
-        metadata["backend"] = self_or_cls.backend
-
-        renderer_config = {}
-        for pname in sorted(self_or_cls.param):
-            if pname in ("name", "info_fn", "key_fn"):
-                continue
-            try:
-                val = getattr(self_or_cls, pname)
-                if isinstance(val, (str, int, float, bool, type(None))):
-                    renderer_config[pname] = val
-                elif isinstance(val, (list, tuple)):
-                    renderer_config[pname] = list(val)
-                elif isinstance(val, dict):
-                    renderer_config[pname] = val
-            except Exception:
-                pass
-        metadata["renderer_config"] = renderer_config
-
-        if isinstance(resources, str):
-            metadata["resource_mode"] = resources.lower()
-        elif hasattr(resources, "mode"):
-            metadata["resource_mode"] = resources.mode
-        else:
-            metadata["resource_mode"] = str(resources)
-
-        dimension_schema = {"kdims": [], "vdims": []}
-        if isinstance(obj, Dimensioned):
-            for kd in obj.kdims:
-                dim_info = {
-                    "name": kd.name,
-                    "label": getattr(kd, "label", kd.name),
-                    "unit": getattr(kd, "unit", None),
-                }
-                if hasattr(kd, "range") and kd.range != (None, None):
-                    rng = kd.range
-                    try:
-                        dim_info["range"] = [
-                            float(rng[0]) if rng[0] is not None else None,
-                            float(rng[1]) if rng[1] is not None else None,
-                        ]
-                    except (TypeError, ValueError):
-                        dim_info["range"] = [
-                            rng[0] if rng[0] is not None else None,
-                            rng[1] if rng[1] is not None else None,
-                        ]
-                if hasattr(kd, "values") and kd.values is not None:
-                    vals = list(kd.values)
-                    try:
-                        dim_info["values"] = [float(v) for v in vals]
-                    except (TypeError, ValueError):
-                        dim_info["values"] = [str(v) for v in vals]
-                dimension_schema["kdims"].append(dim_info)
-            for vd in obj.vdims:
-                dim_info = {
-                    "name": vd.name,
-                    "label": getattr(vd, "label", vd.name),
-                    "unit": getattr(vd, "unit", None),
-                }
-                if hasattr(vd, "range") and vd.range != (None, None):
-                    rng = vd.range
-                    try:
-                        dim_info["range"] = [
-                            float(rng[0]) if rng[0] is not None else None,
-                            float(rng[1]) if rng[1] is not None else None,
-                        ]
-                    except (TypeError, ValueError):
-                        dim_info["range"] = [
-                            rng[0] if rng[0] is not None else None,
-                            rng[1] if rng[1] is not None else None,
-                        ]
-                dimension_schema["vdims"].append(dim_info)
-        metadata["dimension_schema"] = dimension_schema
-
-        key_dimensions = []
-        if isinstance(obj, (DynamicMap, HoloMap)):
-            for kd in obj.kdims:
-                kd_info = {
-                    "name": kd.name,
-                    "label": getattr(kd, "label", kd.name),
-                    "unit": getattr(kd, "unit", None),
-                }
-                if hasattr(kd, "values") and kd.values is not None:
-                    vals = list(kd.values)
-                    try:
-                        kd_info["values"] = [float(v) for v in vals]
-                    except (TypeError, ValueError):
-                        kd_info["values"] = [str(v) for v in vals]
-                if hasattr(kd, "range") and kd.range != (None, None):
-                    rng = kd.range
-                    try:
-                        kd_info["range"] = [
-                            float(rng[0]) if rng[0] is not None else None,
-                            float(rng[1]) if rng[1] is not None else None,
-                        ]
-                    except (TypeError, ValueError):
-                        kd_info["range"] = [
-                            rng[0] if rng[0] is not None else None,
-                            rng[1] if rng[1] is not None else None,
-                        ]
-                if isinstance(obj, DynamicMap):
-                    unbounded = list(getattr(obj, "unbounded", []))
-                    kd_info["unbounded"] = kd.name in [d.name for d in unbounded]
-                key_dimensions.append(kd_info)
-        metadata["key_dimensions"] = key_dimensions
-
-        widget_settings = {
-            "holomap_mode": self_or_cls.holomap,
-            "widget_mode": self_or_cls.widget_mode,
-            "widget_location": self_or_cls.widget_location,
-            "fps": self_or_cls.fps,
-        }
-        if widget_mode is not None:
-            widget_settings["widget_mode_used"] = widget_mode
-        metadata["widget_settings"] = widget_settings
-
-        export_info = {
-            "format": fmt,
-            "mime_type": info.get("mime_type") if info else MIME_TYPES.get(fmt),
-        }
-        if isinstance(basename, (BytesIO, StringIO)):
-            export_info["output_type"] = "buffer"
-            export_info["buffer_type"] = type(basename).__name__
-            current_pos = basename.tell()
-            basename.seek(0, os.SEEK_END)
-            export_info["size_bytes"] = basename.tell()
-            basename.seek(current_pos)
-        elif isinstance(basename, Path):
-            path = basename if basename.suffix else basename.with_suffix(f".{fmt}")
-            export_info["output_type"] = "file"
-            export_info["path"] = str(path.absolute())
-            export_info["filename"] = path.name
-            try:
-                export_info["size_bytes"] = path.stat().st_size
-            except OSError:
-                pass
-        elif isinstance(basename, str):
-            path_str = basename if basename.endswith(f".{fmt}") else f"{basename}.{fmt}"
-            path_obj = Path(path_str)
-            export_info["output_type"] = "file"
-            export_info["path"] = str(path_obj.absolute())
-            export_info["filename"] = path_obj.name
-            try:
-                export_info["size_bytes"] = path_obj.stat().st_size
-            except OSError:
-                pass
-        metadata["export_info"] = export_info
-
-        return metadata
+        return ExportContext(
+            renderer=self_or_cls,
+            obj=obj,
+            fmt=fmt,
+            resources=resources,
+            basename=basename,
+            original_basename=original_basename,
+            info=info,
+            widget_mode=widget_mode,
+        )
 
     @bothmethod
-    def _save_metadata(self_or_cls, basename, metadata, fmt):
-        """Save metadata as a JSON sidecar file.
+    def _finalize_metadata(self_or_cls, ctx):
+        """Finalize and write metadata from an ExportContext.
 
-        For file-based outputs, saves a .meta.json alongside the export file.
-        For buffer-based outputs, attaches metadata as the .metadata attribute.
+        Unified metadata write path used for all output formats
+        (html/png/svg/json) and all output targets (str path, Path,
+        BytesIO/StringIO).
         """
-        if isinstance(basename, (BytesIO, StringIO)):
-            basename.metadata = metadata
-            return
+        metadata = ctx.to_dict()
 
-        if isinstance(basename, Path):
-            if basename.suffix:
-                meta_path = basename.with_name(f"{basename.stem}.meta.json")
+        if isinstance(original := ctx.original_basename, (BytesIO, StringIO)):
+            original.metadata = metadata
+            return None
+
+        if isinstance(original, Path):
+            if original.suffix:
+                meta_path = original.with_name(f"{original.stem}.meta.json")
             else:
-                meta_path = basename.with_suffix(".meta.json")
+                meta_path = original.with_suffix(".meta.json")
         else:
-            base = basename
+            base = str(original)
+            fmt = ctx.export_info["format"]
             if base.endswith(f".{fmt}"):
                 base = base[: -len(f".{fmt}")]
             elif "." in os.path.basename(base):
                 base = os.path.splitext(base)[0]
             meta_path = f"{base}.meta.json"
 
-        meta_path = Path(meta_path) if not isinstance(meta_path, Path) else meta_path
+        meta_path = Path(meta_path)
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False, default=str)
         return meta_path
@@ -865,8 +954,12 @@ class Renderer(Exporter):
             Custom title for exported HTML file.
         metadata : bool, optional
             If True, save a JSON sidecar file with export metadata.
-            For file outputs creates a `.meta.json` alongside the export.
-            For buffer outputs attaches a `.metadata` attribute to the buffer.
+            For file outputs creates a ``.meta.json`` alongside the export.
+            For buffer outputs attaches a ``.metadata`` attribute to the buffer.
+            Metadata includes: object type, backend, renderer config,
+            resource mode, dimension schema (via ``obj.schema()``),
+            key dimensions, sampled frame schema (for DynamicMap/HoloMap),
+            widget settings, and final export file info.
         **kwargs : dict
             Additional keyword arguments passed to the renderer.
 
@@ -886,8 +979,14 @@ class Renderer(Exporter):
                 "the next minor release."
             )
 
+        original_basename = basename
+
         with StoreOptions.options(obj, options, **kwargs):
             plot, fmt = self_or_cls._validate(obj, fmt)
+
+        resolved_fmt = fmt
+        info_dict = None
+        widget_mode = None
 
         if isinstance(plot, Viewable):
             from bokeh.resources import CDN, INLINE, Resources
@@ -898,7 +997,6 @@ class Renderer(Exporter):
                 resources = CDN
             elif resources.lower() == "inline":
                 resources = INLINE
-            original_basename = basename
             if isinstance(basename, Path):
                 basename_str = str(basename)
             else:
@@ -912,43 +1010,46 @@ class Renderer(Exporter):
                     else:
                         basename = f"{basename}.{fmt}"
             plot.layout.save(basename, embed=True, resources=resources, title=title)
-            if metadata:
-                info_dict = {"mime_type": MIME_TYPES.get(fmt)}
-                meta = self_or_cls._collect_metadata(
-                    obj, fmt, resources, basename, info_dict, plot, widget_mode=fmt
-                )
-                self_or_cls._save_metadata(original_basename, meta, fmt)
-            return
-
-        rendered = self_or_cls(plot, fmt)
-        if rendered is None:
-            return
-        (_data, info) = rendered
-        encoded = self_or_cls.encode(rendered)
-        prefix = self_or_cls._save_prefix(info["file-ext"])
-        if prefix:
-            encoded = prefix + encoded
-
-        original_basename = basename
-        if isinstance(basename, (BytesIO, StringIO)):
-            basename.write(encoded)
-            basename.seek(0)
-        elif isinstance(basename, Path):
-            filename = basename if basename.suffix else basename.with_suffix(f".{info['file-ext']}")
-            with open(filename, "wb") as f:
-                f.write(encoded)
-            basename = filename
+            info_dict = {"mime_type": MIME_TYPES.get(fmt)}
+            widget_mode = fmt
         else:
-            filename = f"{basename}.{info['file-ext']}"
-            with open(filename, "wb") as f:
-                f.write(encoded)
-            basename = filename
+            rendered = self_or_cls(plot, fmt)
+            if rendered is None:
+                return
+            (_data, info) = rendered
+            encoded = self_or_cls.encode(rendered)
+            prefix = self_or_cls._save_prefix(info["file-ext"])
+            if prefix:
+                encoded = prefix + encoded
+
+            resolved_fmt = info["file-ext"]
+            info_dict = info
+
+            if isinstance(basename, (BytesIO, StringIO)):
+                basename.write(encoded)
+                basename.seek(0)
+            elif isinstance(basename, Path):
+                filename = basename if basename.suffix else basename.with_suffix(f".{resolved_fmt}")
+                with open(filename, "wb") as f:
+                    f.write(encoded)
+                basename = filename
+            else:
+                filename = f"{basename}.{resolved_fmt}"
+                with open(filename, "wb") as f:
+                    f.write(encoded)
+                basename = filename
 
         if metadata:
-            meta = self_or_cls._collect_metadata(
-                obj, info["file-ext"], resources, basename, info, plot
+            ctx = self_or_cls._create_export_context(
+                obj=obj,
+                fmt=resolved_fmt,
+                resources=resources,
+                basename=basename,
+                original_basename=original_basename,
+                info=info_dict,
+                widget_mode=widget_mode,
             )
-            self_or_cls._save_metadata(original_basename, meta, info["file-ext"])
+            self_or_cls._finalize_metadata(ctx)
 
     @bothmethod
     def _save_prefix(self_or_cls, ext):
