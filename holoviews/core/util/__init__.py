@@ -2733,7 +2733,7 @@ def build_dimension_schema(
     if datatype is not None:
         stats["datatype"] = datatype
     if shape is not None:
-        stats["shape"] = tuple(shape)
+        stats["shape"] = list(shape)
 
     return {
         "version": DIMENSION_SCHEMA_VERSION,

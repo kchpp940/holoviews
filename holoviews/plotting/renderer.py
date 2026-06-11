@@ -1022,49 +1022,91 @@ class Renderer(Exporter):
         original_basename = basename
         original_fmt = fmt
 
-        # JSON export: HoloViews object serialisation
+        # JSON format: serialise the object's metadata + optional data
+        # payload, all through the *same* ExportContext used for
+        # html/png/svg companion .meta.json files.  The JSON file
+        # is therefore 100 % structurally homologous to the sidecar
+        # metadata produced for every other format — no second schema.
         #
-        # ``fmt="json"`` is not a rendering format but a data + schema
-        # serialisation format.  Produces a self-describing JSON file
-        # containing:
-        #   - ``schema``: the versioned dimension schema (via obj.schema())
-        #   - ``data``:   Dataset-style data (columns/records dict) when
-        #                 available, or an empty dict for non-Data objects
-        #   - ``metadata``: supplementary information (object type, backend,
-        #                 renderer config, ...) when metadata=True is passed
-        #
-        # We short-circuit before ``_validate`` because renderers do not
-        # declare ``json`` as a rendering format (and the underlying
-        # backends would reject it).
-        if isinstance(original_fmt, str) and original_fmt.lower() == "json":
-            resolved_fmt = "json"
+        # We short-circuit *after* preparing the common state but
+        # *before* ``_validate`` because backends do not declare
+        # ``json`` as a rendering format.  The ExportContext is,
+        # however, built in exactly the same way as for any other
+        # format.
+        is_json_export = isinstance(original_fmt, str) and original_fmt.lower() == "json"
 
-            data_payload = {}
-            if hasattr(obj, "schema") and callable(getattr(obj, "schema", None)):
-                data_payload["schema"] = obj.schema()
+        with StoreOptions.options(obj, options, **kwargs):
+            if is_json_export:
+                # JSON needs no rendering; build the context directly.
+                # We still honour ``resources`` and ``widget_mode``
+                # semantics so the resulting metadata is exactly what
+                # the user would get for an HTML export of the same
+                # object.
+                resolved_fmt = "json"
+                widget_mode = None
+                info_dict = {"mime_type": "application/json"}
+            else:
+                plot, fmt = self_or_cls._validate(obj, fmt)
+                resolved_fmt = fmt
+                info_dict = None
+                widget_mode = None
+
+                # Determine the actual widget mode used (widgets/scrubber vs plain html)
+                if isinstance(original_fmt, str) and original_fmt in self_or_cls.widgets:
+                    widget_mode = original_fmt
+                elif original_fmt != fmt and fmt == "html":
+                    # _validate may have converted holomap format to html
+                    if original_fmt in ("scrubber", "widgets", "gif", "auto"):
+                        widget_mode = fmt if original_fmt == "auto" else original_fmt
+
+        # ----------------------------------------------------------------
+        # Write the primary output (html/png/svg/json).
+        #
+        # Every branch resolves ``basename`` to the *final* on-disk
+        # filename / buffer position so the ExportContext (built
+        # below) records the real output path for *all* formats —
+        # including json.
+        # ----------------------------------------------------------------
+        if is_json_export:
+            # JSON: serialise the full ExportContext (identical to
+            # what html/png/svg write as a sidecar .meta.json) plus
+            # an optional ``data`` payload for Dataset-backed objects.
+            # Reusing the same context guarantees the metadata is
+            # *fully homologous* across all four output formats.
+            if isinstance(basename, Path):
+                basename = basename if basename.suffix else basename.with_suffix(".json")
+            elif isinstance(basename, str):
+                if not basename.endswith(".json"):
+                    basename = f"{basename}.json"
+
+            # Build the context first — we then embed it in the JSON
+            # output, optionally enriched with a data payload.
+            ctx = self_or_cls._create_export_context(
+                obj=obj,
+                fmt=resolved_fmt,
+                resources=resources,
+                basename=basename,
+                original_basename=original_basename,
+                info=info_dict,
+                widget_mode=widget_mode,
+                source_fmt=original_fmt,
+            )
+
+            json_content = ctx.to_dict()
+
+            # Attach a data payload when the object exposes tabular data.
+            # This is the *only* thing that makes the JSON primary file
+            # different from the sidecar .meta.json; the metadata
+            # portion is bit-identical.
             if hasattr(obj, "columns") and callable(getattr(obj, "columns", None)):
                 try:
-                    data_payload["data"] = obj.columns()
+                    json_content["payload"] = {"data": obj.columns()}
                 except Exception as exc:
-                    data_payload["data"] = {"error": f"columns() failed: {exc!r}"}
-            else:
-                data_payload["data"] = {}
-            data_payload["object_type"] = type(obj).__name__
-            data_payload["backend"] = self_or_cls.backend
-
-            if metadata:
-                from .. import __version__ as _hv_version
-                data_payload["metadata"] = {
-                    "holoviews_version": _hv_version,
-                    "backend": self_or_cls.backend,
-                    "saved_at": __import__("datetime").datetime.now().isoformat(),
-                }
+                    json_content["payload"] = {"data": {"error": f"columns() failed: {exc!r}"}}
 
             json_bytes = json.dumps(
-                data_payload, indent=2, ensure_ascii=False, default=str
+                json_content, indent=2, ensure_ascii=False, default=str
             ).encode("utf-8")
-
-            info_dict = {"mime_type": "application/json"}
 
             if isinstance(basename, (BytesIO, StringIO)):
                 if isinstance(basename, BytesIO):
@@ -1073,46 +1115,12 @@ class Renderer(Exporter):
                     basename.write(json_bytes.decode("utf-8"))
                 basename.seek(0)
             elif isinstance(basename, Path):
-                filename = basename if basename.suffix else basename.with_suffix(".json")
-                with open(filename, "wb") as f:
+                with open(basename, "wb") as f:
                     f.write(json_bytes)
-                basename = filename
             else:
-                filename = f"{basename}.json" if not str(basename).endswith(".json") else str(basename)
-                with open(filename, "wb") as f:
+                with open(basename, "wb") as f:
                     f.write(json_bytes)
-                basename = filename
-
-            if metadata:
-                ctx = self_or_cls._create_export_context(
-                    obj=obj,
-                    fmt=resolved_fmt,
-                    resources=resources,
-                    basename=basename,
-                    original_basename=original_basename,
-                    info=info_dict,
-                    widget_mode=None,
-                    source_fmt=original_fmt,
-                )
-                self_or_cls._finalize_metadata(ctx)
-            return
-
-        with StoreOptions.options(obj, options, **kwargs):
-            plot, fmt = self_or_cls._validate(obj, fmt)
-
-        resolved_fmt = fmt
-        info_dict = None
-        widget_mode = None
-
-        # Determine the actual widget mode used (widgets/scrubber vs plain html)
-        if isinstance(original_fmt, str) and original_fmt in self_or_cls.widgets:
-            widget_mode = original_fmt
-        elif original_fmt != fmt and fmt == "html":
-            # _validate may have converted holomap format to html
-            if original_fmt in ("scrubber", "widgets", "gif", "auto"):
-                widget_mode = fmt if original_fmt == "auto" else original_fmt
-
-        if isinstance(plot, Viewable):
+        elif isinstance(plot, Viewable):
             from bokeh.resources import CDN, INLINE, Resources
 
             if isinstance(resources, Resources):
@@ -1135,8 +1143,10 @@ class Renderer(Exporter):
                         basename = f"{basename}.{fmt}"
             plot.layout.save(basename, embed=True, resources=resources, title=title)
             info_dict = {"mime_type": MIME_TYPES.get(fmt)}
-            # widget_mode was already determined before _validate, do not overwrite
-            if widget_mode is None:
+            # widget_mode was already determined before _validate for
+            # actual widgets/scrubber; only record fmt as widget_mode
+            # when it's genuinely a widget type (i.e. fmt is in widgets).
+            if widget_mode is None and fmt in self_or_cls.widgets:
                 widget_mode = fmt
         else:
             rendered = self_or_cls(plot, fmt)
@@ -1165,18 +1175,33 @@ class Renderer(Exporter):
                     f.write(encoded)
                 basename = filename
 
+        # ----------------------------------------------------------------
+        # Build the ExportContext and write sidecar metadata.
+        #
+        # For html/png/svg this writes ``<file>.<fmt>.meta.json``.
+        # For json the context was *already* built (and embedded in
+        # the primary output above); we still pass through the same
+        # ``_finalize_metadata`` code path so the sidecar file (if
+        # requested) is produced by exactly the same logic.
+        # ----------------------------------------------------------------
         if metadata:
-            ctx = self_or_cls._create_export_context(
-                obj=obj,
-                fmt=resolved_fmt,
-                resources=resources,
-                basename=basename,
-                original_basename=original_basename,
-                info=info_dict,
-                widget_mode=widget_mode,
-                source_fmt=original_fmt,
-            )
-            self_or_cls._finalize_metadata(ctx)
+            if is_json_export:
+                # Context was already built above; reuse it so the
+                # sidecar is bit-identical to the metadata embedded
+                # in the primary JSON output.
+                self_or_cls._finalize_metadata(ctx)
+            else:
+                ctx = self_or_cls._create_export_context(
+                    obj=obj,
+                    fmt=resolved_fmt,
+                    resources=resources,
+                    basename=basename,
+                    original_basename=original_basename,
+                    info=info_dict,
+                    widget_mode=widget_mode,
+                    source_fmt=original_fmt,
+                )
+                self_or_cls._finalize_metadata(ctx)
 
     @bothmethod
     def _save_prefix(self_or_cls, ext):
