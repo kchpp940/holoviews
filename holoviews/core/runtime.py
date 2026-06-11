@@ -337,3 +337,29 @@ def _get_generator_class():
     from .spaces import Generator
     return Generator
 
+
+def get_last_frame(obj):
+    """Get the last/current frame from a HoloMap or DynamicMap.
+
+    Unified accessor that routes DynamicMap through its runtime context
+    instead of relying on property forwarding. For plain HoloMaps and
+    other ViewableElement objects it returns the standard ``.last``
+    property.
+
+    Parameters
+    ----------
+    obj : ViewableElement
+        Typically a HoloMap or DynamicMap, but any object with a ``last``
+        property is accepted.
+
+    Returns
+    -------
+    ViewableElement or None
+        The most recently computed frame, or ``None`` if the DynamicMap
+        has not computed any frame yet.
+    """
+    from .spaces import DynamicMap
+    if isinstance(obj, DynamicMap):
+        return obj.context.last_frame
+    return obj.last
+

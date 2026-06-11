@@ -28,13 +28,13 @@ from ..core.layout import Empty, Layout, NdLayout
 from ..core.options import Compositor, SkipRendering, Store, lookup_options
 from ..core.overlay import CompositeOverlay, NdOverlay, Overlay
 from ..core.spaces import DynamicMap, HoloMap, get_nested_streams
+from ..core.runtime import get_last_frame
 from ..core.util import dtype_kind, isfinite, stream_parameters, unique_iterator
 from ..element import Graph, Table
 from ..selection import NoOpSelectionDisplay
 from ..streams import RangeX, RangeXY, RangeY, Stream
 from ..util.transform import dim
 from .util import (
-    _last_frame,
     attach_streams,
     compute_overlayable_zorders,
     dim_axis_label,
@@ -1111,7 +1111,7 @@ class CallbackPlot:
                     # Skip if Stream.source is an overlay but the plot isn't
                     # or if the source is an element but the plot isn't
                     src_el = (
-                        _last_frame(stream.source) if isinstance(stream.source, HoloMap) else stream.source
+                        get_last_frame(stream.source) if isinstance(stream.source, HoloMap) else stream.source
                     )
                     if not self._matching_plot_type(src_el):
                         continue
@@ -1137,13 +1137,13 @@ class CallbackPlot:
         if isinstance(self, GenericOverlayPlot):
             zorders = []
         elif self.batched:
-            zorders = list(range(self.zorder, self.zorder + len(_last_frame(self.hmap))))
+            zorders = list(range(self.zorder, self.zorder + len(get_last_frame(self.hmap))))
         else:
             zorders = [self.zorder]
 
         if isinstance(self, GenericOverlayPlot) and not self.batched:
             if self.overlaid:
-                sources = [_last_frame(self.hmap)]
+                sources = [get_last_frame(self.hmap)]
             else:
                 sources = [o for i, inputs in self.stream_sources.items() for o in inputs]
         elif not self.static or isinstance(self.hmap, DynamicMap):
@@ -1151,7 +1151,7 @@ class CallbackPlot:
                 o for i, inputs in self.stream_sources.items() for o in inputs if i in zorders
             ]
         else:
-            sources = [_last_frame(self.hmap)]
+            sources = [get_last_frame(self.hmap)]
         return sources
 
 

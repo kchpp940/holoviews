@@ -24,6 +24,7 @@ from ..core.ndmapping import item_check
 from ..core.operation import Operation
 from ..core.options import CallbackError, Cycle
 from ..core.spaces import get_nested_streams
+from ..core.runtime import get_last_frame
 from ..core.util import (
     arraylike_types,
     closest_match,
@@ -123,21 +124,10 @@ def collate(obj):
         raise TypeError(undisplayable_info(obj))
 
 
-def _last_frame(obj):
-    """Get the last frame from either a DynamicMap (via context) or HoloMap.
-
-    Unified accessor that routes DynamicMap through its runtime context
-    instead of relying on property forwarding.
-    """
-    if isinstance(obj, DynamicMap):
-        return obj.context.last_frame
-    return obj.last
-
-
 def isoverlay_fn(obj):
     """Determines whether object is a DynamicMap returning (Nd)Overlay types."""
     return isinstance(obj, CompositeOverlay) or (
-        isinstance(obj, DynamicMap) and (isinstance(_last_frame(obj), CompositeOverlay))
+        isinstance(obj, DynamicMap) and (isinstance(get_last_frame(obj), CompositeOverlay))
     )
 
 
@@ -147,7 +137,7 @@ def overlay_depth(obj):
 
     """
     if isinstance(obj, DynamicMap):
-        last = _last_frame(obj)
+        last = get_last_frame(obj)
         if isinstance(last, CompositeOverlay):
             return len(last)
         elif last is None:
@@ -189,7 +179,7 @@ def compute_overlayable_zorders(obj, path=None):
             zorder_map[0].append(obj)
         return zorder_map
 
-    isoverlay = isinstance(_last_frame(obj), CompositeOverlay)
+    isoverlay = isinstance(get_last_frame(obj), CompositeOverlay)
     isdynoverlay = obj.callback._is_overlay
     if obj not in zorder_map[0] and not isoverlay:
         zorder_map[0].append(obj)
@@ -199,7 +189,7 @@ def compute_overlayable_zorders(obj, path=None):
     dmap_inputs = obj.callback.inputs if obj.callback.link_inputs else []
     for z, inp in enumerate(dmap_inputs):
         no_zorder_increment = False
-        if any(not (isoverlay_fn(p) or _last_frame(p) is None) for p in path) and isoverlay_fn(inp):
+        if any(not (isoverlay_fn(p) or get_last_frame(p) is None) for p in path) and isoverlay_fn(inp):
             # If overlay has been collapsed do not increment zorder
             no_zorder_increment = True
 
@@ -226,7 +216,7 @@ def compute_overlayable_zorders(obj, path=None):
     linked = any(isinstance(s, (LinkedStream, Params)) and s.linked for s in obj.streams)
     if (found or linked) and isoverlay and not isdynoverlay:
         offset = max(zorder_map.keys())
-        for z, o in enumerate(_last_frame(obj)):
+        for z, o in enumerate(get_last_frame(obj)):
             if isoverlay and linked:
                 zorder_map[offset + z].append(obj)
             if o not in zorder_map[offset + z]:
@@ -261,7 +251,7 @@ def split_dmap_overlay(obj, depth=0):
     if isinstance(obj, DynamicMap):
         initialize_dynamic(obj)
         if issubclass(obj.type, NdOverlay) and not depth:
-            for _ in _last_frame(obj).values():
+            for _ in get_last_frame(obj).values():
                 layers.append(obj)
                 streams.append(obj.streams)
         elif issubclass(obj.type, Overlay):
@@ -271,7 +261,7 @@ def split_dmap_overlay(obj, depth=0):
                     layers += split
                     streams += [s + obj.streams for s in sub_streams]
             else:
-                for _ in _last_frame(obj).values():
+                for _ in get_last_frame(obj).values():
                     layers.append(obj)
                     streams.append(obj.streams)
         else:
@@ -339,7 +329,7 @@ def get_plot_frame(map_obj, key_map, cached=False):
         and map_obj.kdims[0] == "Frame"
     ):
         # Special handling for static plots
-        return _last_frame(map_obj)
+        return get_last_frame(map_obj)
     key = tuple(key_map[kd.name] for kd in map_obj.kdims if kd.name in key_map)
     if key in map_obj.data and cached:
         return map_obj.data[key]

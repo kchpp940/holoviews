@@ -14,7 +14,7 @@ import numpy as np
 import param
 
 from ..streams import Params, Stream, streams_list_from_dict
-from ..util.warnings import HoloviewsUserWarning, deprecated, warn
+from ..util.warnings import HoloviewsUserWarning, warn
 from . import traversal, util
 from .accessors import Opts, Redim
 from .dimension import Dimension, ViewableElement
@@ -962,30 +962,33 @@ class DynamicMap(HoloMap):
 
     @property
     def context(self):
-        """访问运行时上下文 DynamicMapContext。推荐所有运行时状态和操作通过此接口访问。"""
+        """Access the runtime context DynamicMapContext. All runtime state
+        and operations are recommended to go through this interface.
+        """
         return self._context
 
-    # ---- 兼容层 (Transition Layer) ----
-    # 以下属性和方法均为向后兼容保留，新代码应直接通过 dmap.context.* 访问
+    # ---- Transition Layer ----
+    # The following attributes and methods are preserved for backward
+    # compatibility. New code should use dmap.context.* directly.
 
     @property
     def _posarg_keys(self):
-        deprecated("2.0", "DynamicMap._posarg_keys", "DynamicMap.context.posarg_keys")
+        """Transition: use DynamicMap.context.posarg_keys instead."""
         return self._context.posarg_keys
 
     @_posarg_keys.setter
     def _posarg_keys(self, value):
-        deprecated("2.0", "DynamicMap._posarg_keys", "DynamicMap.context.posarg_keys")
+        """Transition: use DynamicMap.context.posarg_keys instead."""
         self._context._posarg_keys = value
 
     @property
     def _current_key(self):
-        deprecated("2.0", "DynamicMap._current_key", "DynamicMap.context.current_key")
+        """Transition: use DynamicMap.context.current_key instead."""
         return self._context.current_key
 
     @_current_key.setter
     def _current_key(self, value):
-        deprecated("2.0", "DynamicMap._current_key", "DynamicMap.context.current_key")
+        """Transition: use DynamicMap.context.current_key instead."""
         self._context.current_key = value
 
     @property
@@ -1024,25 +1027,23 @@ class DynamicMap(HoloMap):
         return self._context.current_key
 
     def _stream_parameters(self):
-        deprecated("2.0", "DynamicMap._stream_parameters()", "DynamicMap.context.stream_parameters()")
+        """Transition: use DynamicMap.context.stream_parameters() instead."""
         return self._context.stream_parameters()
 
     def _initial_key(self):
-        """Construct an initial key for based on the lower range bounds or
+        """Construct an initial key based on the lower range bounds or
         values on the key dimensions.
 
-        Deprecated: use DynamicMap.context.initial_key() instead.
+        Transition note: use DynamicMap.context.initial_key() instead.
         """
-        deprecated("2.0", "DynamicMap._initial_key()", "DynamicMap.context.initial_key()")
         return self._context.initial_key()
 
     def _validate_key(self, key):
         """Make sure the supplied key values are within the bounds
         specified by the corresponding dimension range and soft_range.
 
-        Deprecated: use DynamicMap.context.validate_key() instead.
+        Transition note: use DynamicMap.context.validate_key() instead.
         """
-        deprecated("2.0", "DynamicMap._validate_key()", "DynamicMap.context.validate_key()")
         return self._context.validate_key(key)
 
     def event(self, **kwargs):
@@ -1063,17 +1064,15 @@ class DynamicMap(HoloMap):
     def _style(self, retval):
         """Applies custom option tree to values return by the callback.
 
-        Deprecated: use DynamicMap.context._style() instead.
+        Transition note: use DynamicMap.context._style() instead.
         """
-        deprecated("2.0", "DynamicMap._style()", "DynamicMap.context._style()")
         return self._context._style(retval)
 
     def _execute_callback(self, *args):
         """Executes the callback with the appropriate args and kwargs.
 
-        Deprecated: use DynamicMap.context.execute_callback() instead.
+        Transition note: use DynamicMap.context.execute_callback() instead.
         """
-        deprecated("2.0", "DynamicMap._execute_callback()", "DynamicMap.context.execute_callback()")
         return self._context.execute_callback(*args)
 
     def options(self, *args, **kwargs):
