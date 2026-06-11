@@ -1035,6 +1035,91 @@ class DynamicMap(HoloMap):
         """
         return self.debug_context
 
+    def debug_latest_frame(self) -> dict | None:
+        """Get the latest debug frame as a normalized summary dict.
+
+        Returns a dict with the unified frame summary schema (same
+        fields as shown in the Bokeh side panel, hover tooltip, and
+        notebook HTML repr).  Returns ``None`` if no frames have
+        been collected or debug is disabled.
+
+        The returned dict has these top-level keys:
+        ``meta``, ``trigger``, ``cache``, ``operations``, ``render``,
+        ``timing``.
+
+        Returns
+        -------
+        dict or None
+        """
+        dctx = self.debug_context
+        if not dctx.enabled:
+            return None
+        frame = dctx.get_latest_frame(
+            owner_id=self._debug_owner_id, owner_type="DynamicMap"
+        )
+        if frame is None:
+            return None
+        return dctx.frame_summary(frame)
+
+    def debug_summary(self, n: int = 1) -> str:
+        """Return a human-readable text summary of debug frames.
+
+        Uses the same unified schema as the Bokeh side panel,
+        hover tooltip, and notebook HTML repr, so all three
+        surfaces show consistent fields.
+
+        Parameters
+        ----------
+        n : int, optional
+            Number of most recent frames to show (default 1).
+
+        Returns
+        -------
+        str
+            Text summary.
+        """
+        dctx = self.debug_context
+        if not dctx.enabled:
+            return "Debug disabled. Set dmap.debug_info.enabled = True to enable."
+        return dctx.summary(n, owner_id=self._debug_owner_id, owner_type="DynamicMap")
+
+    def _debug_repr_html_(self) -> str:
+        """HTML repr of the latest debug frame (for Jupyter notebooks).
+
+        Used internally so the DynamicMap's HTML repr can include
+        debug information when debug mode is enabled.  Uses the same
+        unified schema as the Bokeh side panel and Python API.
+        """
+        dctx = self.debug_context
+        if not dctx.enabled:
+            return ""
+        frames = dctx.get_frames(5, owner_id=self._debug_owner_id, owner_type="DynamicMap")
+        if not frames:
+            return (
+                "<div style='padding: 8px; background: #d1ecf1; "
+                "border: 1px solid #bee5eb; border-radius: 4px; "
+                "font-family: monospace; font-size: 11px;'>"
+                "<strong>Debug:</strong> No frames collected yet."
+                "</div>"
+            )
+        parts = [
+            "<div style='margin-top: 8px;'>"
+            "<div style='font-weight: 600; color: #495057; margin-bottom: 4px;'>"
+            f"Debug Info ({len(frames)} frames)"
+            "</div>"
+        ]
+        for i, frame in enumerate(reversed(frames)):
+            summary = dctx.frame_summary(frame)
+            parts.append(
+                f"<div style='margin: 4px 0; padding: 6px; "
+                f"background: {'#f8f9fa' if i % 2 == 0 else '#ffffff'}; "
+                f"border: 1px solid #dee2e6; border-radius: 4px;'>"
+            )
+            parts.append(dctx.format_summary_html(summary, compact=False))
+            parts.append("</div>")
+        parts.append("</div>")
+        return "".join(parts)
+
     def _stream_parameters(self):
         return util.stream_parameters(self.streams, no_duplicates=not self.positional_stream_args)
 

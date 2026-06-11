@@ -601,6 +601,422 @@ class DebugContext(param.Parameterized):
                 info["last_seen"] = f["timestamp"]
         return list(pairs.values())
 
+    # ------------------------------------------------------------------
+    # Unified frame summary schema
+    #
+    # Three display surfaces (Python API / Notebook repr / Bokeh hover)
+    # all consume the same normalized dict so the displayed fields stay
+    # in sync.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def frame_summary(frame: dict) -> dict:
+        """Normalize a raw frame dict into a stable summary schema.
+
+        The returned dict has well-known keys that every display surface
+        (Python summary, notebook HTML, Bokeh hover/side panel) can rely
+        on, so they all show the same information.
+
+        Schema::
+
+            {
+                "meta": {
+                    "frame_id": str,
+                    "frame_seq": int,
+                    "timestamp": float,
+                    "owner_id": str | None,
+                    "owner_type": str | None,
+                    "stream_event_id": str | None,
+                    "renderer_id": str | None,
+                    "total_time": float | None,
+                },
+                "trigger": {
+                    "reason": str | None,          # human-readable redraw reason
+                    "triggered_streams": list[str],  # stream names that triggered
+                    "has_trigger": bool,
+                },
+                "cache": {
+                    "hit": bool | None,             # last cache access
+                    "key": str | None,              # last cache key
+                    "reason": str | None,           # miss reason (if miss)
+                    "size": int | None,             # current cache size
+                    "n_accesses": int,              # number of cache accesses this frame
+                },
+                "operations": [
+                    # each operation record has stable keys:
+                    {
+                        "op_id": str,
+                        "name": str,
+                        "element_type": str | None,
+                        "aggregator": str | None,
+                        "data_points": int | None,
+                        "aggregation_size": tuple | None,  # (w, h)
+                        "sampling_resolution": tuple | None,
+                        "input_range": tuple | None,
+                        "clipped_range": tuple | None,
+                        "pixel_ratio": float | None,
+                        "precomputed": bool | None,
+                        "empty": bool,
+                        "empty_reason": str | None,
+                    },
+                    ...
+                ],
+                "render": {
+                    # keyed by backend name
+                    "<backend>": {
+                        "actual_range": dict | None,  # {"x": (lo, hi), "y": (lo, hi)}
+                        "plot_size": tuple | None,    # (w, h)
+                        "plot_type": str | None,
+                        "element_type": str | None,
+                        "frame_key": Any | None,
+                    },
+                    ...
+                },
+                "timing": dict,  # {stage_name: duration_seconds}
+            }
+
+        Parameters
+        ----------
+        frame : dict
+            A raw frame dict as stored internally.
+
+        Returns
+        -------
+        dict
+            Normalized summary dict with the schema above.
+        """
+        if not frame:
+            return {
+                "meta": {
+                    "frame_id": None,
+                    "frame_seq": None,
+                    "timestamp": None,
+                    "owner_id": None,
+                    "owner_type": None,
+                    "stream_event_id": None,
+                    "renderer_id": None,
+                    "total_time": None,
+                },
+                "trigger": {"reason": None, "triggered_streams": [], "has_trigger": False},
+                "cache": {
+                    "hit": None,
+                    "key": None,
+                    "reason": None,
+                    "size": None,
+                    "n_accesses": 0,
+                },
+                "operations": [],
+                "render": {},
+                "timing": {},
+            }
+
+        streams = frame.get("streams", {}) or {}
+        triggered = streams.get("triggered", []) or []
+        cache_hist = (frame.get("cache", {}) or {}).get("history", [])
+        last_cache = cache_hist[-1] if cache_hist else None
+
+        ops = []
+        for raw_op in (frame.get("operation", {}) or {}).get("operations", []):
+            ops.append(
+                {
+                    "op_id": raw_op.get("op_id"),
+                    "name": raw_op.get("name"),
+                    "element_type": raw_op.get("element_type"),
+                    "aggregator": raw_op.get("aggregator"),
+                    "aggregator_column": raw_op.get("aggregator_column"),
+                    "data_points": raw_op.get("data_points"),
+                    "aggregation_size": raw_op.get("aggregation_size"),
+                    "sampling_resolution": raw_op.get("sampling_resolution"),
+                    "input_range": raw_op.get("input_range"),
+                    "clipped_range": raw_op.get("clipped_range"),
+                    "pixel_ratio": raw_op.get("pixel_ratio"),
+                    "precomputed": raw_op.get("precomputed"),
+                    "glyph": raw_op.get("glyph"),
+                    "empty": bool(raw_op.get("empty", False)),
+                    "empty_reason": raw_op.get("empty_reason"),
+                }
+            )
+
+        timing = dict(frame.get("timing", {}) or {})
+
+        return {
+            "meta": {
+                "frame_id": frame.get("frame_id"),
+                "frame_seq": frame.get("frame_seq"),
+                "timestamp": frame.get("timestamp"),
+                "owner_id": frame.get("owner_id"),
+                "owner_type": frame.get("owner_type"),
+                "stream_event_id": frame.get("stream_event_id"),
+                "renderer_id": frame.get("renderer_id"),
+                "total_time": timing.get("total"),
+            },
+            "trigger": {
+                "reason": frame.get("redraw_reason"),
+                "triggered_streams": list(triggered),
+                "has_trigger": len(triggered) > 0 or frame.get("redraw_reason") is not None,
+            },
+            "cache": {
+                "hit": last_cache["hit"] if last_cache else None,
+                "key": last_cache["key"] if last_cache else None,
+                "reason": last_cache.get("reason") if last_cache else None,
+                "size": (frame.get("cache", {}) or {}).get("size"),
+                "n_accesses": len(cache_hist),
+            },
+            "operations": ops,
+            "render": dict(frame.get("render", {}) or {}),
+            "timing": timing,
+        }
+
+    def format_summary_text(self, summary: dict) -> str:
+        """Format a normalized frame summary as human-readable text.
+
+        Used by :meth:`summary` and as a stable text representation for
+        Python API consumers.
+        """
+        meta = summary["meta"]
+        trig = summary["trigger"]
+        cache = summary["cache"]
+        ops = summary["operations"]
+        render = summary["render"]
+        timing = summary["timing"]
+
+        lines = []
+        lines.append(f"Frame: {meta['frame_id']}")
+        if meta.get("owner_id"):
+            lines.append(
+                f"  Owner : {meta.get('owner_type', '?')}#{str(meta['owner_id'])[:8]}"
+            )
+        if meta.get("renderer_id"):
+            lines.append(f"  Renderer: {meta['renderer_id'][:8]}")
+        if meta.get("stream_event_id"):
+            lines.append(f"  Stream event: {meta['stream_event_id'][:8]}")
+        if meta.get("total_time") is not None:
+            lines.append(f"  Total time: {meta['total_time']:.4f}s")
+
+        if trig["has_trigger"]:
+            lines.append(f"  Trigger : {trig['reason'] or '(no reason text)'}")
+            if trig["triggered_streams"]:
+                lines.append(f"    Streams: {trig['triggered_streams']}")
+
+        if cache["n_accesses"] > 0:
+            status = "HIT" if cache["hit"] else "MISS"
+            lines.append(f"  Cache   : {status}  key={cache['key']}")
+            if not cache["hit"] and cache["reason"]:
+                lines.append(f"            reason: {cache['reason']}")
+            if cache["size"] is not None:
+                lines.append(f"            size: {cache['size']}")
+
+        if ops:
+            lines.append(f"  Operations ({len(ops)}):")
+            for op in ops:
+                parts = []
+                if op.get("element_type"):
+                    parts.append(f"el={op['element_type']}")
+                if op.get("aggregator"):
+                    parts.append(f"agg={op['aggregator']}")
+                if op.get("data_points") is not None:
+                    parts.append(f"n={op['data_points']}")
+                if op.get("aggregation_size"):
+                    parts.append(f"size={op['aggregation_size']}")
+                if op.get("clipped_range"):
+                    parts.append("clipped")
+                if op.get("empty"):
+                    parts.append("EMPTY")
+                lines.append(f"    {op.get('name', '?')} [{op.get('op_id', '?')[:6]}]  {'  '.join(parts)}")
+
+        if render:
+            lines.append(f"  Render ({len(render)} backends):")
+            for backend, info in render.items():
+                parts = []
+                rng = info.get("actual_range")
+                if rng:
+                    parts.append(f"range={rng}")
+                size = info.get("plot_size")
+                if size:
+                    parts.append(f"size={size}")
+                lines.append(f"    {backend}: {'  '.join(parts)}")
+
+        if timing:
+            lines.append("  Timing:")
+            for stage, dur in timing.items():
+                if stage == "total":
+                    continue
+                try:
+                    lines.append(f"    {stage}: {dur:.4f}s")
+                except (TypeError, ValueError):
+                    lines.append(f"    {stage}: {dur}")
+
+        return "\n".join(lines)
+
+    def format_summary_html(
+        self,
+        summary: dict,
+        *,
+        compact: bool = False,
+        title: str | None = None,
+    ) -> str:
+        """Format a normalized frame summary as HTML.
+
+        The same schema is used for side panels, hover tooltips, and
+        notebook repr, so the fields stay consistent.
+
+        Parameters
+        ----------
+        summary : dict
+            Output of :meth:`frame_summary`.
+        compact : bool
+            If True, produce a more compact rendering suitable for
+            hover tooltips (smaller fonts, fewer details).
+        title : str, optional
+            Optional title bar text.
+        """
+        meta = summary["meta"]
+        trig = summary["trigger"]
+        cache = summary["cache"]
+        ops = summary["operations"]
+        render = summary["render"]
+        timing = summary["timing"]
+
+        font_size = "10px" if compact else "11px"
+        pad = "4px" if compact else "6px"
+
+        html = []
+        html.append(
+            f"<div style='font-family: ui-monospace, SFMono-Regular, Menlo, monospace; "
+            f"font-size: {font_size}; line-height: 1.35; "
+            f"{'max-width: 280px;' if compact else 'max-width: 340px; '}"
+            f"color: #212529;'>"
+        )
+
+        if title:
+            html.append(
+                f"<div style='font-weight: 600; color: #007bff; "
+                f"margin-bottom: 4px;'>{title}</div>"
+            )
+        else:
+            html.append(
+                f"<div style='font-weight: 600; color: #007bff; "
+                f"margin-bottom: 2px;'>Frame {meta['frame_id']}</div>"
+            )
+
+        # Meta row
+        meta_parts = []
+        if meta.get("owner_id"):
+            meta_parts.append(
+                f"<span style='background: #e7f5ff; color: #1971c2; "
+                f"padding: 1px 5px; border-radius: 3px;'>"
+                f"{meta.get('owner_type', '?')}#{str(meta['owner_id'])[:6]}</span>"
+            )
+        if meta.get("renderer_id"):
+            meta_parts.append(f"rnd:{meta['renderer_id'][:6]}")
+        if meta.get("total_time") is not None:
+            meta_parts.append(f"{meta['total_time']:.3f}s")
+        if meta_parts:
+            html.append(
+                f"<div style='color: #868e96; font-size: 10px; "
+                f"margin-bottom: 4px;'>{' · '.join(meta_parts)}</div>"
+            )
+
+        # Trigger
+        if trig["has_trigger"]:
+            html.append(
+                f"<div style='margin: 3px 0; padding: {pad}; "
+                f"background: #fff9db; border-left: 3px solid #fcc419; "
+                f"border-radius: 2px;'>"
+                f"<span style='color: #e67700; font-weight: 600;'>Trigger:</span> "
+                f"{trig['reason'] or '(unknown)'}"
+                f"</div>"
+            )
+
+        # Cache
+        if cache["n_accesses"] > 0:
+            status_color = "#28a745" if cache["hit"] else "#dc3545"
+            status_text = "✓ HIT" if cache["hit"] else "✗ MISS"
+            html.append(
+                f"<div style='margin: 3px 0;'>"
+                f"<strong style='color: #495057;'>Cache</strong>: "
+                f"<span style='color: {status_color}; font-weight: 600;'>{status_text}</span>"
+            )
+            if cache["key"]:
+                html.append(f" <code>{cache['key']}</code>")
+            if not cache["hit"] and cache["reason"]:
+                html.append(
+                    f"<br><span style='color: #868e96;'>reason: {cache['reason']}</span>"
+                )
+            if cache["size"] is not None:
+                html.append(
+                    f"<br><span style='color: #868e96;'>size: {cache['size']}</span>"
+                )
+            html.append("</div>")
+
+        # Operations
+        if ops:
+            html.append("<div style='margin: 3px 0;'><strong style='color: #495057;'>Operations</strong>")
+            if not compact:
+                html.append(f" <span style='color: #868e96;'>({len(ops)})</span>")
+            html.append(":</div>")
+            for op in ops:
+                detail_parts = []
+                if op.get("data_points") is not None:
+                    detail_parts.append(f"n={op['data_points']}")
+                if op.get("aggregation_size"):
+                    detail_parts.append(f"size={op['aggregation_size']}")
+                if op.get("sampling_resolution") and any(op["sampling_resolution"]):
+                    detail_parts.append(f"res={op['sampling_resolution']}")
+                if op.get("clipped_range"):
+                    detail_parts.append("clipped")
+                if op.get("empty"):
+                    detail_parts.append("EMPTY")
+                details = " · ".join(detail_parts) if detail_parts else ""
+                html.append(
+                    f"<div style='margin: 2px 0 2px 10px; padding: 3px 5px; "
+                    f"background: #f1f3f5; border-radius: 3px;'>"
+                    f"<code>{op.get('name', '?')}</code> "
+                    f"<span style='color: #adb5bd; font-size: 9px;'>"
+                    f"[{op.get('op_id', '?')[:6]}]</span>"
+                )
+                if details:
+                    html.append(
+                        f"<br><span style='color: #495057; font-size: {font_size};'>"
+                        f"{details}</span>"
+                    )
+                html.append("</div>")
+
+        # Render
+        if render:
+            html.append("<div style='margin: 3px 0;'><strong style='color: #495057;'>Render</strong>:</div>")
+            for backend, info in render.items():
+                details = []
+                rng = info.get("actual_range")
+                if rng:
+                    details.append(f"range={rng}")
+                size = info.get("plot_size")
+                if size:
+                    details.append(f"size={size}")
+                ptype = info.get("plot_type")
+                if ptype and not compact:
+                    details.append(f"type={ptype}")
+                html.append(
+                    f"<div style='margin-left: 10px;'>"
+                    f"<strong>{backend}</strong>: "
+                    f"{' · '.join(details) if details else '—'}"
+                    f"</div>"
+                )
+
+        # Timing
+        if timing and not compact:
+            html.append("<div style='margin: 3px 0;'><strong style='color: #495057;'>Timing</strong>:</div>")
+            for stage, dur in timing.items():
+                if stage == "total":
+                    continue
+                try:
+                    html.append(f"<div style='margin-left: 10px;'>{stage}: {dur:.4f}s</div>")
+                except (TypeError, ValueError):
+                    html.append(f"<div style='margin-left: 10px;'>{stage}: {dur}</div>")
+
+        html.append("</div>")
+        return "".join(html)
+
     def clear(self, *, owner_id: str | None = None) -> None:
         """Clear collected debug information.
 
@@ -622,8 +1038,19 @@ class DebugContext(param.Parameterized):
     # Display – summary (text) / _repr_html_ (notebook)
     # ------------------------------------------------------------------
 
-    def summary(self, n: int = 1, *, owner_id: str | None = None, owner_type: str | None = None) -> str:
-        """Generate a human-readable summary of debug information."""
+    def summary(
+        self,
+        n: int = 1,
+        *,
+        owner_id: str | None = None,
+        owner_type: str | None = None,
+    ) -> str:
+        """Generate a human-readable summary of debug information.
+
+        Uses :meth:`frame_summary` and :meth:`format_summary_text` so the
+        displayed fields stay consistent with the notebook HTML and
+        Bokeh side panel.
+        """
         if not self.enabled:
             return "DebugContext is disabled. Set enabled=True to enable."
 
@@ -645,71 +1072,9 @@ class DebugContext(param.Parameterized):
 
         for i, frame in enumerate(reversed(frames)):
             idx = len(frames) - i
-            owner = (
-                f"{frame.get('owner_type', '?')}#{str(frame.get('owner_id', '?'))[:8]}"
-            )
-            lines.append(
-                f"Frame {idx}: {frame['frame_id']}  "
-                f"(owner={owner}  seq={frame.get('frame_seq', '?')})"
-            )
-            lines.append(f"  Timestamp : {time.ctime(frame['timestamp'])}")
-            lines.append(f"  Total time: {frame['timing'].get('total', 'N/A'):.4f}s")
-            if frame.get("stream_event_id"):
-                lines.append(f"  Stream evt: {frame['stream_event_id']}")
-            if frame.get("renderer_id"):
-                lines.append(f"  Renderer  : {frame['renderer_id']}")
-            if frame.get("redraw_reason"):
-                lines.append(f"  Redraw    : {frame['redraw_reason']}")
-
-            streams = frame.get("streams", {})
-            if streams.get("parameters"):
-                lines.append("  Streams:")
-                for sname, sinfo in streams["parameters"].items():
-                    lines.append(f"    {sname}: {sinfo}")
-                if streams.get("triggered"):
-                    lines.append(f"    Triggered: {streams['triggered']}")
-
-            cache = frame.get("cache", {})
-            history = cache.get("history", [])
-            if history:
-                lines.append("  Cache:")
-                last = history[-1]
-                lines.append(
-                    f"    Last: {'HIT' if last['hit'] else 'MISS'}  key={last['key']}"
-                )
-                if not last["hit"] and last.get("reason"):
-                    lines.append(f"      Reason: {last['reason']}")
-                if cache.get("size") is not None:
-                    lines.append(f"    Size: {cache['size']}")
-
-            ops = frame.get("operation", {}).get("operations", [])
-            if ops:
-                lines.append("  Operations:")
-                for op in ops:
-                    lines.append(f"    {op.get('op_id','?')} {op.get('name','?')}:")
-                    for k, v in op.items():
-                        if k in {"op_id", "name", "timestamp"}:
-                            continue
-                        lines.append(f"      {k}: {v}")
-
-            render = frame.get("render", {})
-            if render:
-                lines.append("  Render:")
-                for backend, rinfo in render.items():
-                    details = []
-                    if "actual_range" in rinfo:
-                        details.append(f"range={rinfo['actual_range']}")
-                    if "plot_size" in rinfo:
-                        details.append(f"size={rinfo['plot_size']}")
-                    details_str = ", ".join(details)
-                    lines.append(f"    {backend}: {details_str}")
-
-            timing = {k: v for k, v in frame.get("timing", {}).items() if k != "total"}
-            if timing:
-                lines.append("  Timing:")
-                for stage, duration in timing.items():
-                    lines.append(f"    {stage}: {duration:.4f}s")
-
+            lines.append(f"--- Frame {idx} / {len(frames)} ---")
+            summary = self.frame_summary(frame)
+            lines.append(self.format_summary_text(summary))
             lines.append("")
 
         return "\n".join(lines)
@@ -721,7 +1086,12 @@ class DebugContext(param.Parameterized):
         owner_type: str | None = None,
         title: str | None = None,
     ) -> str:
-        """HTML representation for Jupyter notebooks."""
+        """HTML representation for Jupyter notebooks.
+
+        Uses :meth:`frame_summary` and :meth:`format_summary_html` so the
+        displayed fields stay consistent with the Python API and Bokeh
+        side panel.
+        """
         if not self.enabled:
             return (
                 "<div style='padding: 12px; background: #fff3cd; "
@@ -740,7 +1110,7 @@ class DebugContext(param.Parameterized):
                 "</div>"
             )
 
-        title_str = title or "HoloViews DebugContext"
+        title_str = title or f"DebugContext: {self.name}"
         if owner_id:
             title_str += f" (owner {str(owner_id)[:8]}…)"
 
@@ -756,133 +1126,19 @@ class DebugContext(param.Parameterized):
         for i, frame in enumerate(reversed(frames)):
             frame_num = len(frames) - i
             bg = "#f8f9fa" if i % 2 == 0 else "#ffffff"
-            owner_tag = ""
-            if frame.get("owner_id"):
-                owner_tag = (
-                    f" <span style='background: #e7f5ff; color: #1971c2; "
-                    f"padding: 1px 6px; border-radius: 3px; "
-                    f"font-size: 11px;'>"
-                    f"{frame.get('owner_type', '?')}"
-                    f"#{str(frame['owner_id'])[:8]}</span>"
-                )
+            summary = self.frame_summary(frame)
             html.append(
-                f"<div style='padding: 10px; margin: 8px; "
+                f"<div style='padding: 8px; margin: 8px; "
                 f"background: {bg}; border: 1px solid #dee2e6; "
                 f"border-radius: 5px;'>"
             )
             html.append(
-                f"<div style='font-weight: 600; color: #007bff; "
-                f"margin-bottom: 4px;'>"
-                f"Frame {frame_num}: {frame['frame_id']}{owner_tag}</div>"
-            )
-            meta_parts = [
-                time.ctime(frame["timestamp"]),
-                f"total: {frame['timing'].get('total', 'N/A'):.4f}s",
-            ]
-            if frame.get("stream_event_id"):
-                meta_parts.append(f"stream: {frame['stream_event_id'][:8]}")
-            if frame.get("renderer_id"):
-                meta_parts.append(f"renderer: {frame['renderer_id'][:8]}")
-            html.append(
-                f"<div style='color: #6c757d; font-size: 11px;'>"
-                f"{' | '.join(meta_parts)}</div>"
-            )
-
-            if frame.get("redraw_reason"):
-                html.append(
-                    f"<div style='margin-top: 6px; padding: 4px 6px; "
-                    f"background: #fff9db; border-left: 3px solid #fcc419; "
-                    f"border-radius: 2px;'>"
-                    f"<span style='color: #e67700; font-weight: 600;'>Redraw:</span> "
-                    f"{frame['redraw_reason']}</div>"
+                self.format_summary_html(
+                    summary,
+                    compact=False,
+                    title=f"Frame {frame_num}: {frame['frame_id']}",
                 )
-
-            streams = frame.get("streams", {})
-            if streams.get("parameters"):
-                html.append("<div style='margin-top: 6px;'><strong>Streams</strong></div>")
-                html.append("<ul style='margin: 2px 0 0 18px; padding: 0;'>")
-                for sname, sinfo in streams["parameters"].items():
-                    html.append(f"<li><code>{sname}</code>: {sinfo}</li>")
-                if streams.get("triggered"):
-                    html.append(
-                        f"<li style='color: #dc3545;'>"
-                        f"Triggered: {streams['triggered']}</li>"
-                    )
-                html.append("</ul>")
-
-            cache = frame.get("cache", {})
-            history = cache.get("history", [])
-            if history:
-                html.append("<div style='margin-top: 6px;'><strong>Cache</strong></div>")
-                html.append("<ul style='margin: 2px 0 0 18px; padding: 0;'>")
-                for entry in history[-3:]:
-                    status = "✓ HIT" if entry["hit"] else "✗ MISS"
-                    color = "#28a745" if entry["hit"] else "#dc3545"
-                    reason = f" ({entry['reason']})" if entry.get("reason") else ""
-                    html.append(
-                        f"<li><span style='color: {color}; font-weight: 600;'>"
-                        f"{status}</span> key: <code>{entry['key']}</code>{reason}</li>"
-                    )
-                if cache.get("size") is not None:
-                    html.append(f"<li>Cache size: {cache['size']}</li>")
-                html.append("</ul>")
-
-            ops = frame.get("operation", {}).get("operations", [])
-            if ops:
-                html.append("<div style='margin-top: 6px;'><strong>Operations</strong></div>")
-                for op in ops:
-                    op_id = op.get("op_id", "?")[:8]
-                    html.append(
-                        f"<div style='margin-left: 10px; margin-top: 3px; "
-                        f"padding: 5px 7px; background: #e9ecef; "
-                        f"border-radius: 3px;'>"
-                        f"<div><code>{op.get('name', '?')}</code> "
-                        f"<span style='font-size: 10px; color: #868e96;'>"
-                        f"id={op_id}</span></div>"
-                    )
-                    details = []
-                    if "input_range" in op:
-                        details.append(f"Input: {op['input_range']}")
-                    if "clipped_range" in op:
-                        details.append(f"Clipped: {op['clipped_range']}")
-                    if "sampling_resolution" in op and any(op["sampling_resolution"]):
-                        details.append(f"Res: {op['sampling_resolution']}")
-                    if "aggregation_size" in op:
-                        details.append(f"Size: {op['aggregation_size']}")
-                    if "aggregator" in op:
-                        details.append(f"Agg: {op['aggregator']}")
-                    if "data_points" in op:
-                        details.append(f"Data: {op['data_points']}")
-                    if details:
-                        html.append(
-                            f"<div style='font-size: 11px; color: #495057; "
-                            f"margin-top: 2px;'>{' | '.join(details)}</div>"
-                        )
-                    html.append("</div>")
-
-            render = frame.get("render", {})
-            if render:
-                html.append("<div style='margin-top: 6px;'><strong>Render</strong></div>")
-                html.append("<ul style='margin: 2px 0 0 18px; padding: 0;'>")
-                for backend, rinfo in render.items():
-                    details = []
-                    if "actual_range" in rinfo:
-                        details.append(f"range={rinfo['actual_range']}")
-                    if "plot_size" in rinfo:
-                        details.append(f"size={rinfo['plot_size']}")
-                    if "plot_type" in rinfo:
-                        details.append(f"type={rinfo['plot_type']}")
-                    html.append(f"<li><strong>{backend}</strong>: {' | '.join(details)}</li>")
-                html.append("</ul>")
-
-            timing = {k: v for k, v in frame.get("timing", {}).items() if k != "total"}
-            if timing:
-                html.append("<div style='margin-top: 6px;'><strong>Timing</strong></div>")
-                html.append("<ul style='margin: 2px 0 0 18px; padding: 0;'>")
-                for stage, duration in timing.items():
-                    html.append(f"<li>{stage}: {duration:.4f}s</li>")
-                html.append("</ul>")
-
+            )
             html.append("</div>")
 
         html.append("</div>")

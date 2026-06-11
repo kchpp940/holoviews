@@ -452,6 +452,17 @@ class ElementPlot(BokehPlot, GenericElementPlot):
         and rendering ranges when HoloViews debug mode is enabled.""",
     )
 
+    show_debug_hover = param.Boolean(
+        default=False,
+        doc="""
+        Whether to show debug frame summary in a hover tooltip.
+        When enabled (or debug_context is enabled), hovering over data
+        glyphs shows a compact summary of the current debug frame
+        (trigger reason, cache status, operations, render range).
+        The data comes from the same DebugContext as the side panel
+        and Python API, so all three surfaces show consistent fields.""",
+    )
+
     xticks = param.ClassSelector(
         class_=(int, list, tuple, np.ndarray, Ticker),
         default=None,
@@ -2592,6 +2603,9 @@ class ElementPlot(BokehPlot, GenericElementPlot):
 
         self.drawn = True
 
+        if not self.overlaid and (self.show_debug_hover or self.debug_context.enabled):
+            self._init_debug_hover(plot)
+
         if not self.overlaid and (self.show_debug_panel or self.debug_context.enabled):
             debug_panel = self._create_debug_panel(plot)
             if debug_panel is not None:
@@ -2661,7 +2675,6 @@ class ElementPlot(BokehPlot, GenericElementPlot):
 
         frame = dctx.get_latest_frame(owner_id=owner_id, owner_type=owner_type)
         if frame is None:
-            # If no frame for our owner, fall back to latest overall
             frame = dctx.get_latest_frame()
         if frame is None:
             return (
@@ -2673,124 +2686,73 @@ class ElementPlot(BokehPlot, GenericElementPlot):
                 "</div>"
             )
 
-        html_parts = [
-            "<div style='font-family: monospace; font-size: 11px; "
-            "max-width: 320px; max-height: 500px; overflow-y: auto;'>",
-            "<div style='font-weight: bold; color: #007bff; margin-bottom: 5px;'>"
-            f"Frame: {frame['frame_id']}</div>",
-        ]
+        summary = dctx.frame_summary(frame)
+        return dctx.format_summary_html(summary, compact=False)
 
-        # Show correlation ids if present
-        id_parts = []
-        if frame.get("owner_id"):
-            who = frame.get("owner_type", "?")
-            id_parts.append(f"{who}#{frame['owner_id'][:6]}")
-        if frame.get("renderer_id"):
-            id_parts.append(f"rnd:{frame['renderer_id'][:6]}")
-        if frame.get("stream_event_id"):
-            id_parts.append(f"evt:{frame['stream_event_id'][:6]}")
-        if id_parts:
-            html_parts.append(
-                f"<div style='font-size: 10px; color: #868e96; "
-                f"margin-bottom: 4px;'>{' | '.join(id_parts)}</div>"
+    def _init_debug_hover(self, plot):
+        """Initialize a hover tool that shows current debug frame summary.
+
+        The hover is attached to all glyph renderers so hovering over
+        any data shows the compact debug summary.  Uses the same
+        DebugContext and normalized schema as the side panel and
+        Python API.
+        """
+        if not (self.show_debug_hover or self.debug_context.enabled):
+            return
+
+        dctx = self.debug_context
+        if not dctx.enabled and not self.show_debug_hover:
+            return
+
+        frame = dctx.get_latest_frame(
+            owner_id=getattr(self, "_debug_owner_id", None),
+            owner_type=getattr(self, "_debug_owner_type", None),
+        )
+        if frame is not None:
+            summary = dctx.frame_summary(frame)
+            tooltip_html = dctx.format_summary_html(summary, compact=True)
+        else:
+            tooltip_html = (
+                "<div style='font-family: monospace; font-size: 10px; "
+                "color: #868e96; padding: 4px;'>"
+                "No debug frame collected yet.</div>"
             )
 
-        if frame.get("redraw_reason"):
-            html_parts.append(
-                "<div style='margin: 4px 0; padding: 4px; background: #fff3cd; "
-                "border-radius: 3px;'><strong>Redraw:</strong> "
-                f"{frame['redraw_reason']}</div>"
-            )
+        hover = tools.HoverTool(
+            tooltips=tooltip_html,
+            mode="mouse",
+            tags=["hv_debug"],
+            name="Debug Hover",
+        )
+        self.handles["debug_hover"] = hover
+        plot.add_tools(hover)
 
-        if frame["streams"]:
-            html_parts.append(
-                "<div style='margin: 4px 0;'><strong style='color: #6c757d;'>Streams:</strong></div>"
-            )
-            html_parts.append("<ul style='margin: 2px 0 4px 16px; padding: 0;'>")
-            for sname, sinfo in frame["streams"].get("parameters", {}).items():
-                html_parts.append(f"<li><code>{sname}</code>: {sinfo}</li>")
-            triggered = frame["streams"].get("triggered", [])
-            if triggered:
-                html_parts.append(
-                    f"<li style='color: #dc3545;'>Triggered: {triggered}</li>"
-                )
-            html_parts.append("</ul>")
+        # Attach to existing glyph renderers
+        glyph_renderer = self.handles.get("glyph_renderer")
+        if glyph_renderer is not None and isinstance(glyph_renderer, Renderer):
+            if hover.renderers == "auto":
+                hover.renderers = []
+            if glyph_renderer not in hover.renderers:
+                hover.renderers.append(glyph_renderer)
 
-        if frame["cache"].get("history"):
-            html_parts.append(
-                "<div style='margin: 4px 0;'><strong style='color: #6c757d;'>Cache:</strong></div>"
-            )
-            html_parts.append("<ul style='margin: 2px 0 4px 16px; padding: 0;'>")
-            for entry in frame["cache"]["history"][-3:]:
-                status = "✓ HIT" if entry["hit"] else "✗ MISS"
-                color = "#28a745" if entry["hit"] else "#dc3545"
-                reason = f" ({entry['reason']})" if entry.get("reason") else ""
-                html_parts.append(
-                    f"<li><span style='color: {color};'>{status}</span> "
-                    f"key: {entry['key']}{reason}</li>"
-                )
-            html_parts.append("</ul>")
+    def _update_debug_hover(self):
+        """Update the debug hover tooltip with the latest frame summary."""
+        hover = self.handles.get("debug_hover")
+        if hover is None:
+            return
 
-        if frame["operation"].get("operations"):
-            html_parts.append(
-                "<div style='margin: 4px 0;'><strong style='color: #6c757d;'>Operations:</strong></div>"
-            )
-            for op in frame["operation"]["operations"]:
-                html_parts.append(
-                    "<div style='margin: 2px 0; padding: 4px; background: #e9ecef; "
-                    "border-radius: 3px;'>"
-                )
-                op_id_str = f"<span style='font-size:10px;color:#868e96;'>id={op.get('op_id','?')[:6]}</span>"
-                html_parts.append(f"<div><code>{op.get('name', 'Unknown')}</code> {op_id_str}</div>")
-                details = []
-                if "aggregation_size" in op:
-                    details.append(f"Size: {op['aggregation_size']}")
-                if "sampling_resolution" in op and any(op["sampling_resolution"]):
-                    details.append(f"Res: {op['sampling_resolution']}")
-                if op.get("clipped_range"):
-                    details.append("Clipped")
-                if "aggregator" in op:
-                    details.append(f"Agg: {op['aggregator']}")
-                if "data_points" in op:
-                    details.append(f"Data: {op['data_points']}")
-                if details:
-                    html_parts.append(
-                        "<div style='font-size: 10px; color: #495057;'>"
-                        f"{' | '.join(details)}</div>"
-                    )
-                html_parts.append("</div>")
+        dctx = self.debug_context
+        if not dctx.enabled:
+            return
 
-        if frame["render"]:
-            html_parts.append(
-                "<div style='margin: 4px 0;'><strong style='color: #6c757d;'>Render:</strong></div>"
-            )
-            html_parts.append("<ul style='margin: 2px 0 4px 16px; padding: 0;'>")
-            for backend, rinfo in frame["render"].items():
-                details = []
-                if "actual_range" in rinfo:
-                    details.append(f"Range: {rinfo['actual_range']}")
-                if "plot_size" in rinfo:
-                    details.append(f"Size: {rinfo['plot_size']}")
-                html_parts.append(
-                    f"<li><strong>{backend}</strong>: {' | '.join(details)}</li>"
-                )
-            html_parts.append("</ul>")
+        owner_id = getattr(self, "_debug_owner_id", None)
+        owner_type = getattr(self, "_debug_owner_type", None)
+        frame = dctx.get_latest_frame(owner_id=owner_id, owner_type=owner_type)
+        if frame is None:
+            return
 
-        timing = frame.get("timing", {})
-        if timing:
-            html_parts.append(
-                "<div style='margin: 4px 0;'><strong style='color: #6c757d;'>Timing:</strong></div>"
-            )
-            html_parts.append("<ul style='margin: 2px 0 4px 16px; padding: 0;'>")
-            for stage, duration in timing.items():
-                try:
-                    html_parts.append(f"<li>{stage}: {duration:.4f}s</li>")
-                except (TypeError, ValueError):
-                    html_parts.append(f"<li>{stage}: {duration}</li>")
-            html_parts.append("</ul>")
-
-        html_parts.append("</div>")
-        return "".join(html_parts)
+        summary = dctx.frame_summary(frame)
+        hover.tooltips = dctx.format_summary_html(summary, compact=True)
 
     def _create_debug_panel(self, plot):
         """Create a side panel containing debug information."""
@@ -2940,6 +2902,7 @@ class ElementPlot(BokehPlot, GenericElementPlot):
         self._update_glyphs(element, ranges, self.style[self.cyclic_index])
         self._execute_hooks(element)
         self._update_debug_panel()
+        self._update_debug_hover()
 
     def _execute_hooks(self, element):
         dtype_fix_hook(self, element)
