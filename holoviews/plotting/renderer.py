@@ -34,7 +34,7 @@ from pyviz_comms import CommManager
 
 from ..core import AdjointLayout, DynamicMap, HoloMap, Layout
 from ..core.data import disable_pipeline
-from ..core.debug import debug
+from ..core.debug import DebugContext, _short_id, debug, resolve_context
 from ..core.io import Exporter
 from ..core.options import Compositor, SkipRendering, Store, StoreOptions
 from ..core.util import unbound_dimensions
@@ -274,11 +274,37 @@ class Renderer(Exporter):
             if not isinstance(self_or_cls, Renderer):
                 renderer = self_or_cls.instance()
 
-        # Start a debug frame if enabled
+        # --- DebugContext plumbing -----------------------------------------
+        # Try to find a debug context that is already bound to the input
+        # object (e.g. a DynamicMap with dmap.debug_context.enabled=True).
+        # Otherwise fall back to the currently-active contextvar, and
+        # finally the global `debug` singleton.
+        resolved_ctx: DebugContext | None = None
+        resolved_owner_id: str | None = None
+        resolved_owner_type: str | None = None
+
+        for candidate in obj.traverse(lambda x: x):
+            dctx = getattr(candidate, "_debug_context", None)
+            if dctx is not None and isinstance(dctx, DebugContext):
+                # Pick the first DynamicMap with an explicit context set
+                resolved_ctx = dctx
+                resolved_owner_id = getattr(candidate, "_debug_owner_id", None)
+                resolved_owner_type = type(candidate).__name__
+                break
+        if resolved_ctx is None:
+            resolved_ctx = resolve_context()
+
+        renderer_id: str | None = None
         ctx_mgr = None
-        if debug.enabled:
-            ctx_mgr = debug.frame(f"render_{id(obj)}")
+        if resolved_ctx.enabled:
+            renderer_id = f"rnd_{_short_id()}"
+            ctx_mgr = resolved_ctx.frame(
+                owner_id=resolved_owner_id,
+                owner_type=resolved_owner_type,
+                renderer_id=renderer_id,
+            )
             ctx_mgr.__enter__()
+        # -------------------------------------------------------------------
 
         try:
             if not isinstance(obj, Plot):
@@ -299,6 +325,12 @@ class Renderer(Exporter):
                 plot.update(init_key)
             else:
                 plot = obj
+
+            # Attach the resolved debug context to the Plot so side panels
+            # / hover tools / repr can all read from the same source.
+            plot._debug_context = resolved_ctx
+            plot._debug_owner_id = resolved_owner_id
+            plot._debug_renderer_id = renderer_id
 
             # Trigger streams which were marked as requiring an update
             triggers = []
@@ -323,13 +355,16 @@ class Renderer(Exporter):
                     doc = Document() if self_or_cls.notebook_context else curdoc()
                 plot.document = doc
 
-            if debug.enabled:
-                debug.record_render(
+            if resolved_ctx.enabled:
+                resolved_ctx.record_render(
                     backend=self_or_cls.backend,
                     render_info={
                         "plot_type": type(plot).__name__,
                         "plot_id": getattr(plot, "id", None),
                     },
+                    renderer_id=renderer_id,
+                    owner_id=resolved_owner_id,
+                    owner_type=resolved_owner_type,
                 )
         finally:
             if ctx_mgr is not None:

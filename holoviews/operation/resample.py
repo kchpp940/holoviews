@@ -5,7 +5,7 @@ import param
 from param.parameterized import bothmethod
 
 from ..core import Dataset, Operation
-from ..core.debug import debug
+from ..core.debug import resolve_context
 from ..core.util import datetime_types, dt_to_int, isfinite, max_range
 from ..element import Image
 from ..streams import PlotSize, RangeX, RangeXY
@@ -260,13 +260,15 @@ class ResampleOperation2D(ResampleOperation1D):
             np.linspace(ystart + yunit / 2.0, yend - yunit / 2.0, height),
         )
 
-        if debug.enabled:
-            # Record sampling/operation debug info
+        dctx = resolve_context()
+        if dctx.enabled:
+            # Record sampling/operation debug info into the *active* context
+            # (which may be a DynamicMap-bound context set via as_active()).
             clipped = (
                 (input_x_range is not None and tuple(input_x_range) != (xstart, xend))
                 or (input_y_range is not None and tuple(input_y_range) != (ystart, yend))
             )
-            debug.record_operation(
+            dctx.record_operation(
                 op_name=type(self).__name__,
                 op_info={
                     "element_type": type(element).__name__,

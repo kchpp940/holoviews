@@ -17,7 +17,7 @@ from ..streams import Params, Stream, streams_list_from_dict
 from ..util.warnings import HoloviewsUserWarning, warn
 from . import traversal, util
 from .accessors import Opts, Redim
-from .debug import debug
+from .debug import DebugContext, debug, _short_id
 from .dimension import Dimension, ViewableElement
 from .layout import AdjointLayout, Empty, Layout, Layoutable, NdLayout
 from .ndmapping import NdMapping, UniformNdMapping, item_check
@@ -960,6 +960,11 @@ class DynamicMap(HoloMap):
 
         self._current_key = None
 
+        # Per-instance debug context – lazily created if/when enabled,
+        # or assigned explicitly. Propagates to the global debug context.
+        self._debug_context: DebugContext | None = None
+        self._debug_owner_id: str = _short_id()
+
     @property
     def opts(self):
         return Opts(self, mode="dynamicmap")
@@ -993,24 +998,42 @@ class DynamicMap(HoloMap):
         return self._current_key
 
     @property
-    def debug_info(self):
-        """Returns the global debug context.
+    def debug_context(self) -> DebugContext:
+        """The :class:`DebugContext` bound to this DynamicMap.
 
-        Convenience property to access the debug context for
-        inspection and configuration.
+        Lazily creates a per-instance context on first access (with
+        ``hv.debug`` as its ``parent`` so frames are also aggregated
+        globally). You can also assign your own context explicitly::
 
-        Returns
-        -------
-        DebugContext
-            The global debug context instance.
+            custom_ctx = hv.DebugContext(name="my_dmap", max_frames=20)
+            dmap.debug_context = custom_ctx
+            dmap.debug_context.enabled = True
+        """
+        if self._debug_context is None:
+            self._debug_context = DebugContext(
+                name=f"dmap_{self._debug_owner_id[:6]}",
+                parent=debug,
+            )
+        return self._debug_context
+
+    @debug_context.setter
+    def debug_context(self, ctx: DebugContext | None) -> None:
+        self._debug_context = ctx
+
+    @property
+    def debug_info(self) -> DebugContext:
+        """Alias for :attr:`debug_context` – returns the bound
+        :class:`DebugContext` for this DynamicMap.
 
         Examples
         --------
         >>> dmap.debug_info.enabled = True
-        >>> print(dmap.debug_info.summary())
-        >>> latest_frame = dmap.debug_info.get_latest_frame()
+        >>> dmap.debug_info.summary()
+        >>> latest = dmap.debug_info.get_latest_frame()
+        >>> # Filter only frames owned by *this* dmap:
+        >>> dmap.debug_info.get_frames(owner_id=dmap._debug_owner_id)
         """
-        return debug
+        return self.debug_context
 
     def _stream_parameters(self):
         return util.stream_parameters(self.streams, no_duplicates=not self.positional_stream_args)
@@ -1105,12 +1128,24 @@ class DynamicMap(HoloMap):
             rkwargs = util.rename_stream_kwargs(stream, applicable_kws, reverse=True)
             stream.update(**rkwargs)
 
-        if debug.enabled and updated_streams:
-            debug.record_streams({"triggered": list(updated_streams.keys())})
-            debug.record_redraw_reason(
-                f"event() called with updates: "
-                + ", ".join(f"{k}={v}" for k, v in kwargs.items())
-            )
+        # Resolve the bound context. Using .as_active ensures downstream
+        # record_* calls inside Stream.trigger / callback also find it.
+        dctx = self.debug_context
+        if dctx.enabled and updated_streams:
+            event_id = f"evt_{_short_id()}"
+            with dctx.as_active(owner_id=self._debug_owner_id, owner_type="DynamicMap"):
+                dctx.record_streams(
+                    {"triggered": list(updated_streams.keys())},
+                    event_id=event_id,
+                    owner_id=self._debug_owner_id,
+                    owner_type="DynamicMap",
+                )
+                dctx.record_redraw_reason(
+                    f"event() called with updates: "
+                    + ", ".join(f"{k}={v}" for k, v in kwargs.items()),
+                    owner_id=self._debug_owner_id,
+                    owner_type="DynamicMap",
+                )
 
         Stream.trigger(streams)
 
@@ -1144,21 +1179,36 @@ class DynamicMap(HoloMap):
         if not isinstance(self.callback, Generator):
             kwargs["_memoization_hash_"] = hash_items
 
-        if debug.enabled:
+        dctx = self.debug_context
+        t0: float | None = None
+        if dctx.enabled:
             import time
 
             t0 = time.time()
             triggered_streams = [s.name for s in self.streams if getattr(s, "_triggering", False)]
             if triggered_streams:
-                debug.record_redraw_reason(
-                    f"streams triggered: {', '.join(triggered_streams)}"
+                dctx.record_redraw_reason(
+                    f"streams triggered: {', '.join(triggered_streams)}",
+                    owner_id=self._debug_owner_id,
+                    owner_type="DynamicMap",
                 )
 
-        with dynamicmap_memoization(self.callback, self.streams):
-            retval = self.callback(*args, **kwargs)
+        # Activate *this* DynamicMap's context while the callback runs.
+        # Any rasterize/datashade operations invoked inside will pick it
+        # up via get_active_context() and record into the same owner.
+        with dctx.as_active(owner_id=self._debug_owner_id, owner_type="DynamicMap"):
+            with dynamicmap_memoization(self.callback, self.streams):
+                retval = self.callback(*args, **kwargs)
 
-        if debug.enabled:
-            debug.record_timing("callback_execution", time.time() - t0)
+        if dctx.enabled and t0 is not None:
+            import time
+
+            dctx.record_timing(
+                "callback_execution",
+                time.time() - t0,
+                owner_id=self._debug_owner_id,
+                owner_type="DynamicMap",
+            )
 
         return self._style(retval)
 
@@ -1407,7 +1457,10 @@ class DynamicMap(HoloMap):
             if cache_miss_reason is None:
                 cache_miss_reason = "key not in cache"
 
-        if debug.enabled:
+        # Resolve bound context; activate it for the rest of the call so
+        # _execute_callback downstream uses the same owner chain.
+        dctx = self.debug_context
+        if dctx.enabled:
             # Record stream parameters
             stream_params = {}
             for s in self.streams:
@@ -1415,19 +1468,46 @@ class DynamicMap(HoloMap):
                     stream_params[s.name] = dict(s.contents)
                 except Exception:
                     stream_params[s.name] = str(s.contents)
-            debug.record_streams({"parameters": stream_params})
 
-            # Record cache info
-            debug.record_cache(
-                key=str(tuple_key),
-                hit=cache_hit,
-                cache_size=len(self.data) if hasattr(self, "data") else None,
-                reason=cache_miss_reason if not cache_hit else None,
-            )
-            if not cache_hit:
-                debug.record_redraw_reason(
-                    f"cache miss for key {tuple_key}: {cache_miss_reason}"
+            # Activate the context so that _execute_callback and any
+            # operations called downstream automatically record into it
+            # with the correct owner_id/owner_type.
+            with dctx.as_active(owner_id=self._debug_owner_id, owner_type="DynamicMap"):
+                dctx.record_streams(
+                    {"parameters": stream_params},
+                    owner_id=self._debug_owner_id,
+                    owner_type="DynamicMap",
                 )
+
+                # Record cache info
+                dctx.record_cache(
+                    key=str(tuple_key),
+                    hit=cache_hit,
+                    cache_size=len(self.data) if hasattr(self, "data") else None,
+                    reason=cache_miss_reason if not cache_hit else None,
+                    owner_id=self._debug_owner_id,
+                    owner_type="DynamicMap",
+                )
+                if not cache_hit:
+                    dctx.record_redraw_reason(
+                        f"cache miss for key {tuple_key}: {cache_miss_reason}",
+                        owner_id=self._debug_owner_id,
+                        owner_type="DynamicMap",
+                    )
+
+                # If the key expresses a cross product, compute the elements and return
+                product = self._cross_product(tuple_key, cache.data if cache else {}, data_slice)
+                if product is not None:
+                    return product
+
+                # Not a cross product and nothing cached so compute element.
+                if cache is not None:
+                    return cache
+                val = self._execute_callback(*tuple_key)
+                if data_slice:
+                    val = self._dataslice(val, data_slice)
+                self._cache(tuple_key, val)
+                return val
 
         # If the key expresses a cross product, compute the elements and return
         product = self._cross_product(tuple_key, cache.data if cache else {}, data_slice)

@@ -92,7 +92,10 @@ from .core.debug import (
     debug_frame,
     disable_debug,
     enable_debug,
+    get_active_context,
+    get_active_owner,
     get_debug_context,
+    resolve_context,
 )
 from .core.dimension import Dimension
 from .core.element import Collator, Element
@@ -371,6 +374,8 @@ __all__ = [
     "enable_debug",
     "elements_list",
     "extension",
+    "get_active_context",
+    "get_active_owner",
     "get_debug_context",
     "help",
     "link_selections",
@@ -381,6 +386,7 @@ __all__ = [
     "param",
     "render",
     "renderer",
+    "resolve_context",
     "save",
     "selection",
     "show_versions",

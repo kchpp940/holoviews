@@ -53,7 +53,7 @@ from bokeh.models.tickers import (
 from bokeh.models.tools import Tool
 
 from ...core import Dataset, Dimension, DynamicMap, Element, util
-from ...core.debug import debug
+from ...core.debug import debug, resolve_context
 from ...core.options import Keywords, SkipRendering, abbreviated_exception
 from ...core.overlay import CompositeOverlay, NdOverlay
 from ...core.util import dtype_kind
@@ -1639,7 +1639,8 @@ class ElementPlot(BokehPlot, GenericElementPlot):
 
         l, b, r, t = None, None, None, None
         if any(isinstance(r, (Range1d, DataRange1d)) for r in [x_range, y_range]):
-            if debug.enabled:
+            dctx = self.debug_context
+            if dctx.enabled:
                 try:
                     current_x = (
                         getattr(x_range, "start", None),
@@ -1653,7 +1654,10 @@ class ElementPlot(BokehPlot, GenericElementPlot):
                         getattr(plot, "frame_width", None) or getattr(plot, "width", None),
                         getattr(plot, "frame_height", None) or getattr(plot, "height", None),
                     )
-                    debug.record_render(
+                    owner_id = getattr(self, "_debug_owner_id", None)
+                    owner_type = getattr(self, "_debug_owner_type", type(element).__name__)
+                    renderer_id = getattr(self, "_debug_renderer_id", None)
+                    dctx.record_render(
                         backend="bokeh",
                         render_info={
                             "actual_range": {"x": current_x, "y": current_y},
@@ -1661,6 +1665,9 @@ class ElementPlot(BokehPlot, GenericElementPlot):
                             "plot_type": type(self).__name__,
                             "element_type": type(element).__name__,
                         },
+                        renderer_id=renderer_id,
+                        owner_id=owner_id,
+                        owner_type=owner_type,
                     )
                 except Exception:
                     pass
@@ -2585,7 +2592,7 @@ class ElementPlot(BokehPlot, GenericElementPlot):
 
         self.drawn = True
 
-        if not self.overlaid and (self.show_debug_panel or debug.enabled):
+        if not self.overlaid and (self.show_debug_panel or self.debug_context.enabled):
             debug_panel = self._create_debug_panel(plot)
             if debug_panel is not None:
                 combined = Row(plot, debug_panel)
@@ -2632,18 +2639,30 @@ class ElementPlot(BokehPlot, GenericElementPlot):
                     cds.js_on_change("data", cb)
 
     def _format_debug_info(self) -> str:
-        """Format the current debug information as HTML for the side panel."""
-        if not debug.enabled:
+        """Format the current debug information as HTML for the side panel.
+
+        Reads from the :class:`DebugContext` *bound to this Plot*
+        (``self.debug_context``) and filters frames to the owner id
+        that the renderer associated with this plot at creation time.
+        """
+        dctx = self.debug_context
+        owner_id = getattr(self, "_debug_owner_id", None)
+        owner_type = getattr(self, "_debug_owner_type", None)
+        if not dctx.enabled:
             return (
                 "<div style='padding: 10px; background: #fff3cd; "
                 "border: 1px solid #ffeeba; border-radius: 4px; "
                 "font-family: monospace; font-size: 11px;'>"
                 "<strong>Debug Mode:</strong> Disabled. "
-                "Set <code>hv.debug.enabled = True</code> to enable."
+                "Set <code>plot.debug_context.enabled = True</code> or "
+                "<code>hv.debug.enabled = True</code> to enable."
                 "</div>"
             )
 
-        frame = debug.get_latest_frame()
+        frame = dctx.get_latest_frame(owner_id=owner_id, owner_type=owner_type)
+        if frame is None:
+            # If no frame for our owner, fall back to latest overall
+            frame = dctx.get_latest_frame()
         if frame is None:
             return (
                 "<div style='padding: 10px; background: #d1ecf1; "
@@ -2660,6 +2679,21 @@ class ElementPlot(BokehPlot, GenericElementPlot):
             "<div style='font-weight: bold; color: #007bff; margin-bottom: 5px;'>"
             f"Frame: {frame['frame_id']}</div>",
         ]
+
+        # Show correlation ids if present
+        id_parts = []
+        if frame.get("owner_id"):
+            who = frame.get("owner_type", "?")
+            id_parts.append(f"{who}#{frame['owner_id'][:6]}")
+        if frame.get("renderer_id"):
+            id_parts.append(f"rnd:{frame['renderer_id'][:6]}")
+        if frame.get("stream_event_id"):
+            id_parts.append(f"evt:{frame['stream_event_id'][:6]}")
+        if id_parts:
+            html_parts.append(
+                f"<div style='font-size: 10px; color: #868e96; "
+                f"margin-bottom: 4px;'>{' | '.join(id_parts)}</div>"
+            )
 
         if frame.get("redraw_reason"):
             html_parts.append(
@@ -2706,7 +2740,8 @@ class ElementPlot(BokehPlot, GenericElementPlot):
                     "<div style='margin: 2px 0; padding: 4px; background: #e9ecef; "
                     "border-radius: 3px;'>"
                 )
-                html_parts.append(f"<div><code>{op.get('name', 'Unknown')}</code></div>")
+                op_id_str = f"<span style='font-size:10px;color:#868e96;'>id={op.get('op_id','?')[:6]}</span>"
+                html_parts.append(f"<div><code>{op.get('name', 'Unknown')}</code> {op_id_str}</div>")
                 details = []
                 if "aggregation_size" in op:
                     details.append(f"Size: {op['aggregation_size']}")
@@ -2748,7 +2783,10 @@ class ElementPlot(BokehPlot, GenericElementPlot):
             )
             html_parts.append("<ul style='margin: 2px 0 4px 16px; padding: 0;'>")
             for stage, duration in timing.items():
-                html_parts.append(f"<li>{stage}: {duration:.4f}s</li>")
+                try:
+                    html_parts.append(f"<li>{stage}: {duration:.4f}s</li>")
+                except (TypeError, ValueError):
+                    html_parts.append(f"<li>{stage}: {duration}</li>")
             html_parts.append("</ul>")
 
         html_parts.append("</div>")
@@ -2756,7 +2794,7 @@ class ElementPlot(BokehPlot, GenericElementPlot):
 
     def _create_debug_panel(self, plot):
         """Create a side panel containing debug information."""
-        if not (self.show_debug_panel or debug.enabled):
+        if not (self.show_debug_panel or self.debug_context.enabled):
             return None
 
         debug_div = DivWidget(

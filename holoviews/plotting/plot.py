@@ -23,7 +23,7 @@ from pyviz_comms import JupyterComm
 
 from ..core import traversal, util
 from ..core.data import Dataset, disable_pipeline, enable_pipeline
-from ..core.debug import debug
+from ..core.debug import DebugContext, debug
 from ..core.element import Element, Element3D
 from ..core.layout import Empty, Layout, NdLayout
 from ..core.options import Compositor, SkipRendering, Store, lookup_options
@@ -1909,6 +1909,25 @@ class GenericElementPlot(DimensionedPlot):
             self._prev_plot_opts = plot_opts
             self.param.update(**plot_opts)
 
+    @property
+    def debug_context(self) -> DebugContext:
+        """The :class:`DebugContext` bound to this Plot.
+
+        Usually set by the :class:`Renderer` at plot-creation time so
+        that the plot's side-panel / hover / notebook repr all read from
+        the same context that the DynamicMap / operation recorded into.
+        Falls back to the global ``hv.debug`` singleton.
+        """
+        ctx = getattr(self, "_debug_context", None)
+        if ctx is None:
+            ctx = debug
+            self._debug_context = ctx
+        return ctx
+
+    @debug_context.setter
+    def debug_context(self, ctx: DebugContext | None) -> None:
+        self._debug_context = ctx
+
     def update_frame(self, key, ranges=None):
         """Set the plot(s) to the given frame number.  Operates by
         manipulating the matplotlib objects held in the self._handles
@@ -1918,14 +1937,21 @@ class GenericElementPlot(DimensionedPlot):
         using the last available frame.
 
         """
-        if debug.enabled and ranges is not None:
-            debug.record_render(
+        dctx = self.debug_context
+        if dctx.enabled and ranges is not None:
+            owner_id = getattr(self, "_debug_owner_id", None)
+            owner_type = getattr(self, "_debug_owner_type", type(self.hmap).__name__)
+            renderer_id = getattr(self, "_debug_renderer_id", None)
+            dctx.record_render(
                 backend=getattr(self, "backend", "generic"),
                 render_info={
                     "frame_key": key,
                     "element_type": type(self.hmap).__name__,
                     "ranges": ranges,
                 },
+                renderer_id=renderer_id,
+                owner_id=owner_id,
+                owner_type=owner_type,
             )
 
 

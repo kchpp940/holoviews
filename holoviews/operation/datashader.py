@@ -32,7 +32,7 @@ from ..core.data import (
     XArrayInterface,
     cuDFInterface,
 )
-from ..core.debug import debug
+from ..core.debug import resolve_context
 from ..core.util import (
     cast_array_to_int64,
     cftime_to_timestamp,
@@ -590,7 +590,11 @@ class aggregate(LineAggregationOperation):
             )
             return overlay_aggregate(element, **params)
 
-        if debug.enabled:
+        # Resolve the appropriate context (prefer currently-active one
+        # from e.g. DynamicMap._execute_callback; fall back to global).
+        dctx = resolve_context()
+        t0: float | None = None
+        if dctx.enabled:
             t0 = time.time()
 
         if element._plot_id in self._precomputed:
@@ -610,8 +614,8 @@ class aggregate(LineAggregationOperation):
         params = self._get_agg_params(element, x, y, agg_fn, (x0, y0, x1, y1))
 
         if x is None or y is None or width == 0 or height == 0:
-            if debug.enabled:
-                debug.record_operation(
+            if dctx.enabled:
+                dctx.record_operation(
                     op_name=type(self).__name__,
                     op_info={
                         "aggregator": type(agg_fn).__name__,
@@ -623,8 +627,8 @@ class aggregate(LineAggregationOperation):
                 )
             return self._empty_agg(element, x, y, width, height, xs, ys, agg_fn, **params)
         elif getattr(data, "interface", None) is not DaskInterface and not len(data):
-            if debug.enabled:
-                debug.record_operation(
+            if dctx.enabled:
+                dctx.record_operation(
                     op_name=type(self).__name__,
                     op_info={
                         "aggregator": type(agg_fn).__name__,
@@ -647,12 +651,12 @@ class aggregate(LineAggregationOperation):
         dfdata = PandasInterface.as_dframe(data)
         cvs_fn = getattr(cvs, glyph)
 
-        if debug.enabled:
+        if dctx.enabled:
             try:
                 n_points = len(dfdata)
             except Exception:
                 n_points = None
-            debug.record_operation(
+            dctx.record_operation(
                 op_name=type(self).__name__,
                 op_info={
                     "aggregator": type(agg_fn).__name__,
@@ -681,8 +685,8 @@ class aggregate(LineAggregationOperation):
         elif agg_state == AggState.AGG_SEL_BY:
             params["vdims"] = [d for d in agg.data_vars if d not in agg.attrs["selector_columns"]]
 
-        if debug.enabled:
-            debug.record_timing("datashader_aggregation", time.time() - t0)
+        if dctx.enabled and t0 is not None:
+            dctx.record_timing("datashader_aggregation", time.time() - t0)
 
         return self.p.element_type(agg, **params)
 

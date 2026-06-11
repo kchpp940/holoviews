@@ -11,7 +11,10 @@ from .debug import (
     debug_frame,
     disable_debug,
     enable_debug,
+    get_active_context,
+    get_active_owner,
     get_debug_context,
+    resolve_context,
 )
 from .dimension import Dimension, Dimensioned, ViewableElement, ViewableTree
 from .element import Collator, Element, Element2D, Element3D, Tabular
@@ -94,11 +97,14 @@ __all__ = [
     "enable_debug",
     "dimension",
     "element",
+    "get_active_context",
+    "get_active_owner",
     "get_debug_context",
     "layout",
     "ndmapping",
     "operation",
     "options",
+    "resolve_context",
     "sheetcoords",
     "tree",
 ]
