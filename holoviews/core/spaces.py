@@ -1038,6 +1038,12 @@ class DynamicMap(HoloMap):
     def debug_latest_frame(self) -> dict | None:
         """Get the latest debug frame as a normalized summary dict.
 
+        Returns the *currently active* frame for this DynamicMap
+        (the most recently committed frame with matching
+        ``owner_id``).  All display surfaces (Bokeh side panel,
+        hover tooltip, Python API, notebook HTML) use this same frame
+        so the fields stay consistent.
+
         Returns a dict with the unified frame summary schema (same
         fields as shown in the Bokeh side panel, hover tooltip, and
         notebook HTML repr).  Returns ``None`` if no frames have
@@ -1054,12 +1060,7 @@ class DynamicMap(HoloMap):
         dctx = self.debug_context
         if not dctx.enabled:
             return None
-        frame = dctx.get_latest_frame(
-            owner_id=self._debug_owner_id, owner_type="DynamicMap"
-        )
-        if frame is None:
-            return None
-        return dctx.frame_summary(frame)
+        return dctx.get_current_summary(owner_id=self._debug_owner_id)
 
     def debug_summary(self, n: int = 1) -> str:
         """Return a human-readable text summary of debug frames.
@@ -1089,11 +1090,20 @@ class DynamicMap(HoloMap):
         Used internally so the DynamicMap's HTML repr can include
         debug information when debug mode is enabled.  Uses the same
         unified schema as the Bokeh side panel and Python API.
+
+        The returned HTML shows the *currently active* frame(s) for
+        this DynamicMap (filtered by ``owner_id``), ensuring stable
+        association between the displayed plot and its debug data.
         """
         dctx = self.debug_context
         if not dctx.enabled:
             return ""
-        frames = dctx.get_frames(5, owner_id=self._debug_owner_id, owner_type="DynamicMap")
+        current = dctx.get_current_summary(owner_id=self._debug_owner_id)
+        if current is None:
+            frames = dctx.get_frames(5, owner_id=self._debug_owner_id, owner_type="DynamicMap")
+        else:
+            frames = [dctx.get_current_frame(owner_id=self._debug_owner_id)]
+
         if not frames:
             return (
                 "<div style='padding: 8px; background: #d1ecf1; "
@@ -1105,7 +1115,7 @@ class DynamicMap(HoloMap):
         parts = [
             "<div style='margin-top: 8px;'>"
             "<div style='font-weight: 600; color: #495057; margin-bottom: 4px;'>"
-            f"Debug Info ({len(frames)} frames)"
+            f"Debug Info ({len(frames)} frame{'s' if len(frames) > 1 else ''})"
             "</div>"
         ]
         for i, frame in enumerate(reversed(frames)):

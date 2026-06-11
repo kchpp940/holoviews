@@ -131,6 +131,12 @@ class DebugContext(param.Parameterized):
         self._lock = threading.RLock()  # reentrant: recording may recurse via parent
         self._frame_counter = 0
 
+        # Track the most recently *committed* frame per owner, so display
+        # surfaces (plot, notebook repr, hover tooltip) can always find the
+        # same frame summary that corresponds to the current display.
+        self._current_frame: dict | None = None
+        self._current_frames_by_owner: dict[str, dict] = {}
+
         # Thread-local stack for nested .frame() / .as_active() calls.
         # Each thread gets its own stack so the contextvar restoration is
         # thread-safe even though ContextVar already handles concurrency.
@@ -263,6 +269,12 @@ class DebugContext(param.Parameterized):
             # FIFO eviction
             while len(self._frames) > self.max_frames:
                 self._frames.pop(0)
+            # Update current-frame tracking so display surfaces always
+            # have a stable reference to the most recently committed frame.
+            self._current_frame = frame_info
+            owner_id = frame_info.get("owner_id")
+            if owner_id is not None:
+                self._current_frames_by_owner[owner_id] = frame_info
         if self.propagate_to_parent and self.parent is not None:
             # Copy to parent but mark the source. Parent keeps its own lock.
             parent_frame = dict(frame_info)
@@ -577,6 +589,65 @@ class DebugContext(param.Parameterized):
         """Get the most recent frame, optionally filtered by owner."""
         frames = self.get_frames(owner_id=owner_id, owner_type=owner_type)
         return frames[-1] if frames else None
+
+    def get_current_frame(
+        self,
+        *,
+        owner_id: str | None = None,
+    ) -> dict | None:
+        """Get the *currently active* frame for display purposes.
+
+        Unlike :meth:`get_latest_frame` which scans the full frame list,
+        this method returns a stable reference to the most recently
+        *committed* frame.  All display surfaces (Python API, notebook
+        repr, Bokeh side panel, Bokeh hover) call this method so they
+        all show the exact same frame data.
+
+        Parameters
+        ----------
+        owner_id : str, optional
+            If provided, return the current frame for that specific
+            owner.  Otherwise return the global current frame (the most
+            recent across all owners).
+
+        Returns
+        -------
+        dict or None
+            The raw frame dict, or ``None`` if no frame has been
+            committed yet.
+        """
+        with self._lock:
+            if owner_id is not None:
+                return self._current_frames_by_owner.get(owner_id)
+            return self._current_frame
+
+    def get_current_summary(
+        self,
+        *,
+        owner_id: str | None = None,
+    ) -> dict | None:
+        """Get the currently active frame as a normalized summary dict.
+
+        This is the single entry point used by all three display
+        surfaces (Python API, notebook repr, Bokeh hover/side panel)
+        to ensure they all show identical fields.
+
+        Parameters
+        ----------
+        owner_id : str, optional
+            If provided, return the summary for that specific owner's
+            current frame.
+
+        Returns
+        -------
+        dict or None
+            Normalized summary dict (same schema as :meth:`frame_summary`),
+            or ``None`` if no frame is available.
+        """
+        frame = self.get_current_frame(owner_id=owner_id)
+        if frame is None:
+            return None
+        return self.frame_summary(frame)
 
     def get_owners(self) -> list[dict]:
         """Return the set of distinct (owner_id, owner_type) pairs seen so far."""
@@ -1029,10 +1100,17 @@ class DebugContext(param.Parameterized):
         with self._lock:
             if owner_id is None:
                 self._frames.clear()
+                self._current_frame = None
+                self._current_frames_by_owner.clear()
             else:
                 self._frames = [
                     f for f in self._frames if f.get("owner_id") != owner_id
                 ]
+                if owner_id in self._current_frames_by_owner:
+                    del self._current_frames_by_owner[owner_id]
+                if self._current_frame and self._current_frame.get("owner_id") == owner_id:
+                    remaining = [f for f in self._frames]
+                    self._current_frame = remaining[-1] if remaining else None
 
     # ------------------------------------------------------------------
     # Display – summary (text) / _repr_html_ (notebook)
