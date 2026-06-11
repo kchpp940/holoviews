@@ -24,7 +24,6 @@ from ..core import (
     NdLayout,
     ViewableElement,
 )
-from ..core.debug import DebugContext
 from ..core.io import FileArchive
 from ..core.options import AbbreviatedException, SkipRendering, Store, StoreOptions
 from ..core.traversal import unique_dimkeys
@@ -60,82 +59,7 @@ def render(obj, **kwargs):
     if renderer.fig == "pdf":
         renderer = renderer.instance(fig="png")
 
-    result = renderer.components(obj, **kwargs)
-    return _inject_debug_repr(obj, result)
-
-
-def _find_debug_context(obj):
-    """Traverse an object tree to find a bound DebugContext.
-
-    Returns the first DebugContext found (and its owner_id), or
-    ``(None, None)`` if no debug context is found.
-    """
-    if not isinstance(obj, Dimensioned):
-        return None, None
-
-    dctx = getattr(obj, "_debug_context", None)
-    if isinstance(dctx, DebugContext):
-        owner_id = getattr(obj, "_debug_owner_id", None)
-        return dctx, owner_id
-
-    for child in obj.traverse(lambda x: x):
-        dctx = getattr(child, "_debug_context", None)
-        if isinstance(dctx, DebugContext):
-            owner_id = getattr(child, "_debug_owner_id", None)
-            return dctx, owner_id
-
-    return None, None
-
-
-def _inject_debug_repr(obj, result):
-    """Inject a debug summary block into notebook HTML output.
-
-    If the rendered object has an enabled DebugContext, append a
-    compact debug summary to the ``text/html`` MIME type.  The
-    summary is automatically associated with the *current frame* of
-    the bound debug context, so the displayed plot and its debug
-    data always refer to the same render cycle.
-
-    Parameters
-    ----------
-    obj : Dimensioned
-        The HoloViews object being rendered.
-    result : tuple
-        The ``(data, metadata)`` tuple returned by
-        ``Renderer.components()``.
-
-    Returns
-    -------
-    tuple
-        The (possibly modified) ``(data, metadata)`` tuple.
-    """
-    data, metadata = result
-    if "text/html" not in data:
-        return result
-
-    dctx, owner_id = _find_debug_context(obj)
-    if dctx is None or not dctx.enabled:
-        return result
-
-    summary = dctx.get_current_summary(owner_id=owner_id)
-    if summary is None:
-        return result
-
-    debug_html = dctx.format_summary_html(
-        summary,
-        compact=False,
-        title="Debug Info",
-    )
-
-    wrapped_html = (
-        "<div style='margin-top: 10px;'>"
-        f"{debug_html}"
-        "</div>"
-    )
-
-    new_data = dict(data)
-    new_data["text/html"] = data["text/html"] + wrapped_html
-    return new_data, metadata
+    return renderer.components(obj, **kwargs)
 
 
 def single_frame_plot(obj):

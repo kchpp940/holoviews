@@ -86,17 +86,6 @@ from .__version import __version__
 from .core import archive, config
 from .core.boundingregion import BoundingBox
 from .core.data import Dataset
-from .core.debug import (
-    DebugContext,
-    debug,
-    debug_frame,
-    disable_debug,
-    enable_debug,
-    get_active_context,
-    get_active_owner,
-    get_debug_context,
-    resolve_context,
-)
 from .core.dimension import Dimension
 from .core.element import Collator, Element
 from .core.layout import AdjointLayout, Empty, Layout, NdLayout
@@ -292,7 +281,6 @@ __all__ = [
     "Curve",
     "Cycle",
     "Dataset",
-    "DebugContext",
     "Dendrogram",
     "Dimension",
     "Distribution",
@@ -366,17 +354,10 @@ __all__ = [
     "archive",
     "config",
     "core",
-    "debug",
-    "debug_frame",
     "dim",
-    "disable_debug",
     "element",
-    "enable_debug",
     "elements_list",
     "extension",
-    "get_active_context",
-    "get_active_owner",
-    "get_debug_context",
     "help",
     "link_selections",
     "notebook_extension",
@@ -386,7 +367,6 @@ __all__ = [
     "param",
     "render",
     "renderer",
-    "resolve_context",
     "save",
     "selection",
     "show_versions",

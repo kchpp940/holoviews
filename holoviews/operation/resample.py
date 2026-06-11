@@ -5,7 +5,6 @@ import param
 from param.parameterized import bothmethod
 
 from ..core import Dataset, Operation
-from ..core.debug import resolve_context
 from ..core.util import datetime_types, dt_to_int, isfinite, max_range
 from ..element import Image
 from ..streams import PlotSize, RangeX, RangeXY
@@ -166,9 +165,6 @@ class ResampleOperation2D(ResampleOperation1D):
         if not isinstance(y, list) and y is not None:
             y = [y]
 
-        input_x_range = self.p.x_range
-        input_y_range = self.p.y_range
-
         if target:
             x0, y0, x1, y1 = target.bounds.lbrt()
             x_range, y_range = (x0, x1), (y0, y1)
@@ -235,7 +231,6 @@ class ResampleOperation2D(ResampleOperation1D):
 
         # Adjust width and height depending on pixel ratio
         pixel_ratio = self._get_pixel_ratio()
-        orig_width, orig_height = width, height
         width = int(width * pixel_ratio)
         height = int(height * pixel_ratio)
 
@@ -259,30 +254,6 @@ class ResampleOperation2D(ResampleOperation1D):
             np.linspace(xstart + xunit / 2.0, xend - xunit / 2.0, width),
             np.linspace(ystart + yunit / 2.0, yend - yunit / 2.0, height),
         )
-
-        dctx = resolve_context()
-        if dctx.enabled:
-            # Record sampling/operation debug info into the *active* context
-            # (which may be a DynamicMap-bound context set via as_active()).
-            clipped = (
-                (input_x_range is not None and tuple(input_x_range) != (xstart, xend))
-                or (input_y_range is not None and tuple(input_y_range) != (ystart, yend))
-            )
-            dctx.record_operation(
-                op_name=type(self).__name__,
-                op_info={
-                    "element_type": type(element).__name__,
-                    "input_range": (input_x_range, input_y_range),
-                    "clipped_range": ((xstart, xend), (ystart, yend)) if clipped else None,
-                    "sampling_resolution": (xunit, yunit),
-                    "min_sampling": (self.p.x_sampling, self.p.y_sampling),
-                    "aggregation_size": (width, height),
-                    "original_size": (orig_width, orig_height),
-                    "pixel_ratio": pixel_ratio,
-                    "expand": self.p.expand,
-                },
-            )
-
         return ((xstart, xend), (ystart, yend)), (xs, ys), (width, height), (xtype, ytype)
 
     def _get_pixel_ratio(self):

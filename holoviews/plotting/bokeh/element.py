@@ -34,14 +34,13 @@ from bokeh.models.formatters import (
     MercatorTickFormatter,
     TickFormatter,
 )
-from bokeh.models.layouts import Column, Row, TabPanel, Tabs
+from bokeh.models.layouts import TabPanel, Tabs
 from bokeh.models.mappers import (
     CategoricalColorMapper,
     LinearColorMapper,
     LogColorMapper,
 )
 from bokeh.models.ranges import DataRange1d, FactorRange, Range1d
-from bokeh.models.widgets import Div as DivWidget
 from bokeh.models.scales import LogScale
 from bokeh.models.tickers import (
     BasicTicker,
@@ -53,7 +52,6 @@ from bokeh.models.tickers import (
 from bokeh.models.tools import Tool
 
 from ...core import Dataset, Dimension, DynamicMap, Element, util
-from ...core.debug import debug, resolve_context
 from ...core.options import Keywords, SkipRendering, abbreviated_exception
 from ...core.overlay import CompositeOverlay, NdOverlay
 from ...core.util import dtype_kind
@@ -443,55 +441,6 @@ class ElementPlot(BokehPlot, GenericElementPlot):
         objects=["mouse", "vline", "hline"],
         doc="The hover mode determines how the hover tool is activated.",
     )
-
-    show_debug_panel = param.Boolean(
-        default=False,
-        doc="""
-        Whether to show a debug information side panel alongside the plot.
-        The panel displays stream parameters, cache info, operation details,
-        and rendering ranges when HoloViews debug mode is enabled.""",
-    )
-
-    debug_hover = param.ObjectSelector(
-        default=False,
-        objects=[False, "append", "separate"],
-        doc="""
-        How to display debug frame summary in hover tooltips.
-
-        - ``False`` (default): No debug information in hover.
-        - ``"append"``: Append a "Debug Info" field to the *existing*
-          hover tool's tooltips. Does not create a new HoverTool,
-          so it won't conflict with user-configured hover. Only works
-          if the plot has a hover tool.  The debug field is appended
-          after user-defined tooltips and will never overwrite them.
-        - ``"separate"``: Create a *separate, named* HoverTool called
-          "Debug Hover" that shows only the debug summary.  This tool
-          is attached exclusively to this plot's glyph renderer(s) and
-          will not interfere with other hover tools.
-
-        When ``debug_context.enabled`` is True, the default behavior
-        (if ``debug_hover`` is not explicitly set) is ``"append"``.
-
-        The debug data comes from the same DebugContext as the side
-        panel and Python API, so all three surfaces show consistent
-        fields (trigger reason, cache status, operations, render range).
-        """,
-    )
-
-    def _should_append_debug_hover(self) -> bool:
-        """Check if we should append debug info to existing hover."""
-        if self.debug_hover == "append":
-            return True
-        if self.debug_hover is False and self.debug_context.enabled:
-            # Default behavior when debug is on: append if possible
-            return True
-        return False
-
-    def _should_separate_debug_hover(self) -> bool:
-        """Check if we should create a separate debug hover tool."""
-        if self.debug_hover == "separate":
-            return True
-        return False
 
     xticks = param.ClassSelector(
         class_=(int, list, tuple, np.ndarray, Ticker),
@@ -1680,38 +1629,6 @@ class ElementPlot(BokehPlot, GenericElementPlot):
 
         l, b, r, t = None, None, None, None
         if any(isinstance(r, (Range1d, DataRange1d)) for r in [x_range, y_range]):
-            dctx = self.debug_context
-            if dctx.enabled:
-                try:
-                    current_x = (
-                        getattr(x_range, "start", None),
-                        getattr(x_range, "end", None),
-                    )
-                    current_y = (
-                        getattr(y_range, "start", None),
-                        getattr(y_range, "end", None),
-                    )
-                    plot_size = (
-                        getattr(plot, "frame_width", None) or getattr(plot, "width", None),
-                        getattr(plot, "frame_height", None) or getattr(plot, "height", None),
-                    )
-                    owner_id = getattr(self, "_debug_owner_id", None)
-                    owner_type = getattr(self, "_debug_owner_type", type(element).__name__)
-                    renderer_id = getattr(self, "_debug_renderer_id", None)
-                    dctx.record_render(
-                        backend="bokeh",
-                        render_info={
-                            "actual_range": {"x": current_x, "y": current_y},
-                            "plot_size": plot_size,
-                            "plot_type": type(self).__name__,
-                            "element_type": type(element).__name__,
-                        },
-                        renderer_id=renderer_id,
-                        owner_id=owner_id,
-                        owner_type=owner_type,
-                    )
-                except Exception:
-                    pass
             if self.multi_y:
                 range_dim = x_range.name if self.invert_axes else y_range.name
             else:
@@ -2633,16 +2550,6 @@ class ElementPlot(BokehPlot, GenericElementPlot):
 
         self.drawn = True
 
-        if self._should_append_debug_hover() or self._should_separate_debug_hover():
-            self._init_debug_hover(plot)
-
-        if not self.overlaid and (self.show_debug_panel or self.debug_context.enabled):
-            debug_panel = self._create_debug_panel(plot)
-            if debug_panel is not None:
-                combined = Row(plot, debug_panel)
-                self.handles["combined_layout"] = combined
-                return combined
-
         return plot
 
     def _apply_hard_bounds(self, element, ranges):
@@ -2681,256 +2588,6 @@ class ElementPlot(BokehPlot, GenericElementPlot):
             for cb in self._js_on_data_callbacks:
                 if cb not in cds.js_property_callbacks.get("change:data", []):
                     cds.js_on_change("data", cb)
-
-    def _format_debug_info(self) -> str:
-        """Format the current debug information as HTML for the side panel.
-
-        Reads from the :class:`DebugContext` *bound to this Plot*
-        (``self.debug_context``) and filters frames to the owner id
-        that the renderer associated with this plot at creation time.
-        """
-        dctx = self.debug_context
-        owner_id = getattr(self, "_debug_owner_id", None)
-        owner_type = getattr(self, "_debug_owner_type", None)
-        if not dctx.enabled:
-            return (
-                "<div style='padding: 10px; background: #fff3cd; "
-                "border: 1px solid #ffeeba; border-radius: 4px; "
-                "font-family: monospace; font-size: 11px;'>"
-                "<strong>Debug Mode:</strong> Disabled. "
-                "Set <code>plot.debug_context.enabled = True</code> or "
-                "<code>hv.debug.enabled = True</code> to enable."
-                "</div>"
-            )
-
-        frame = dctx.get_current_frame(owner_id=owner_id)
-        if frame is None:
-            frame = dctx.get_current_frame()
-        if frame is None:
-            return (
-                "<div style='padding: 10px; background: #d1ecf1; "
-                "border: 1px solid #bee5eb; border-radius: 4px; "
-                "font-family: monospace; font-size: 11px;'>"
-                "<strong>Debug Info:</strong> No frames collected yet. "
-                "Interact with the plot to generate debug data."
-                "</div>"
-            )
-
-        summary = dctx.frame_summary(frame)
-        return dctx.format_summary_html(summary, compact=False)
-
-    def _get_element_identifier(self) -> str:
-        """Return a short human-readable identifier for the current element.
-
-        Used to label debug hover tooltips so users can tell which
-        element a debug tooltip belongs to in overlays / multi-glyph
-        plots.
-        """
-        element = self.current_frame
-        if element is None:
-            return type(self).__name__
-        label = getattr(element, "label", None)
-        if label:
-            return f"{type(element).__name__} ({label})"
-        return type(element).__name__
-
-    def _get_debug_tooltip_html(self) -> str:
-        """Generate the debug tooltip HTML for the current frame.
-
-        Includes an element identifier so users can tell which
-        element the debug info belongs to in overlay scenarios.
-        """
-        dctx = self.debug_context
-        if not dctx.enabled:
-            return ""
-
-        owner_id = getattr(self, "_debug_owner_id", None)
-        frame = dctx.get_current_frame(owner_id=owner_id)
-        if frame is None:
-            return (
-                "<div style='font-family: monospace; font-size: 10px; "
-                "color: #868e96; padding: 4px;'>"
-                "No debug frame collected yet.</div>"
-            )
-
-        summary = dctx.frame_summary(frame)
-        body_html = dctx.format_summary_html(summary, compact=True)
-
-        element_id = self._get_element_identifier()
-        header_html = (
-            f"<div style='font-weight: 600; font-size: 11px; "
-            f"color: #495057; margin-bottom: 4px; "
-            f"padding-bottom: 2px; border-bottom: 1px solid #dee2e6;'>"
-            f"Debug: {element_id}"
-            f"</div>"
-        )
-
-        return header_html + body_html
-
-    def _find_debug_hover_tools(self, plot=None):
-        """Find all debug hover tools on the plot.
-
-        Searches for both:
-        - "separate" mode: hover tools with the ``hv_debug`` tag
-        - "append" mode: hover tools whose tooltips contain a
-          ``"Debug Info"`` field
-
-        Returns a list of ``(hover_tool, mode)`` tuples where ``mode``
-        is ``"separate"`` or ``"append"``.
-        """
-        if plot is None:
-            plot = self.handles.get("plot")
-        if plot is None:
-            return []
-
-        results = []
-        for tool in plot.tools:
-            if not isinstance(tool, tools.HoverTool):
-                continue
-            if "hv_debug" in getattr(tool, "tags", []):
-                results.append((tool, "separate"))
-                continue
-            tooltips = getattr(tool, "tooltips", None)
-            if isinstance(tooltips, list):
-                for label, _ in tooltips:
-                    if label == "Debug Info":
-                        results.append((tool, "append"))
-                        break
-        return results
-
-    def _init_debug_hover(self, plot):
-        """Initialize debug hover integration for *this* element's data renderer.
-
-        In an overlay / multi-glyph scenario, *each* subplot (element)
-        initializes its own debug hover binding.  Hover tools with
-        identical content may be merged by the overlay's tool
-        collation, but the renderers list will still correctly
-        contain only data glyphs — never decorative or axis elements.
-
-        Supports two modes (controlled by ``debug_hover`` parameter):
-
-        - ``"append"``: Append a "Debug Info" field to this element's
-          existing hover tool's tooltips.  Does not create a new
-          HoverTool, so it won't conflict with user-configured hover.
-          The debug field is appended *after* user-defined tooltips
-          and will never overwrite them.
-        - ``"separate"``: Create a *separate, named* HoverTool called
-          "Debug Hover" that shows only the debug summary.  This tool
-          is attached exclusively to this plot's glyph renderer(s)
-          and will not interfere with other hover tools.
-
-        Uses the same DebugContext and normalized schema as the side
-        panel and Python API, so all three surfaces show consistent
-        fields.
-        """
-        if not (self._should_append_debug_hover() or self._should_separate_debug_hover()):
-            return
-
-        dctx = self.debug_context
-        if not dctx.enabled and self.debug_hover is False:
-            return
-
-        glyph_renderer = self.handles.get("glyph_renderer")
-        tooltip_html = self._get_debug_tooltip_html()
-
-        if self._should_separate_debug_hover():
-            hover = tools.HoverTool(
-                tooltips=tooltip_html,
-                mode="mouse",
-                tags=["hv_debug"],
-                name="Debug Hover",
-                description=(
-                    "Displays HoloViews debug information for the "
-                    "associated data glyph(s). Same data as the side "
-                    "panel and Python API."
-                ),
-            )
-            self.handles["debug_hover"] = hover
-            plot.add_tools(hover)
-
-            if glyph_renderer is not None and isinstance(glyph_renderer, Renderer):
-                if hover.renderers == "auto":
-                    hover.renderers = []
-                if glyph_renderer not in hover.renderers:
-                    hover.renderers.append(glyph_renderer)
-            return
-
-        if self._should_append_debug_hover():
-            existing_hover = self.handles.get("hover")
-            if existing_hover is None or not isinstance(existing_hover, tools.HoverTool):
-                return
-
-            current_tooltips = existing_hover.tooltips
-
-            if isinstance(current_tooltips, list):
-                debug_tooltip = ("Debug Info", tooltip_html)
-                existing_debug_idx = None
-                for i, (label, _) in enumerate(current_tooltips):
-                    if label == "Debug Info":
-                        existing_debug_idx = i
-                        break
-
-                if existing_debug_idx is not None:
-                    current_tooltips[existing_debug_idx] = debug_tooltip
-                else:
-                    current_tooltips.append(debug_tooltip)
-
-                existing_hover.tooltips = current_tooltips
-                self.handles["debug_hover_appended"] = True
-            elif isinstance(current_tooltips, (str, Div)):
-                return
-
-    def _update_debug_hover(self):
-        """Update all debug hover tooltips on the plot with the latest frame summary.
-
-        Works for both "append" and "separate" modes, and correctly
-        handles overlays where hover tools may have been merged.
-        """
-        dctx = self.debug_context
-        if not dctx.enabled:
-            return
-
-        tooltip_html = self._get_debug_tooltip_html()
-        if not tooltip_html:
-            return
-
-        debug_tools = self._find_debug_hover_tools()
-
-        for hover, mode in debug_tools:
-            if mode == "separate":
-                hover.tooltips = tooltip_html
-            elif mode == "append":
-                current_tooltips = hover.tooltips
-                if isinstance(current_tooltips, list):
-                    debug_tooltip = ("Debug Info", tooltip_html)
-                    for i, (label, _) in enumerate(current_tooltips):
-                        if label == "Debug Info":
-                            current_tooltips[i] = debug_tooltip
-                            hover.tooltips = current_tooltips
-                            break
-
-    def _create_debug_panel(self, plot):
-        """Create a side panel containing debug information."""
-        if not (self.show_debug_panel or self.debug_context.enabled):
-            return None
-
-        debug_div = DivWidget(
-            text=self._format_debug_info(),
-            styles={"white-space": "pre-wrap"},
-        )
-        self.handles["debug_panel"] = debug_div
-        self.handles["debug_container"] = Column(
-            debug_div,
-            width=340,
-            margin=(5, 5, 5, 5),
-        )
-        return self.handles["debug_container"]
-
-    def _update_debug_panel(self):
-        """Update the debug panel with the latest frame information."""
-        if "debug_panel" not in self.handles:
-            return
-        self.handles["debug_panel"].text = self._format_debug_info()
 
     def _update_glyphs(self, element, ranges, style):
         plot = self.handles["plot"]
@@ -3056,8 +2713,6 @@ class ElementPlot(BokehPlot, GenericElementPlot):
 
         self._update_glyphs(element, ranges, self.style[self.cyclic_index])
         self._execute_hooks(element)
-        self._update_debug_panel()
-        self._update_debug_hover()
 
     def _execute_hooks(self, element):
         dtype_fix_hook(self, element)

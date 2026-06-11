@@ -5,24 +5,13 @@ import numpy as np
 from .accessors import Apply, Redim
 from .boundingregion import AARectangle, BoundingBox, BoundingEllipse
 from .data import Dataset, Interface
-from .debug import (
-    DebugContext,
-    debug,
-    debug_frame,
-    disable_debug,
-    enable_debug,
-    get_active_context,
-    get_active_owner,
-    get_debug_context,
-    resolve_context,
-)
 from .dimension import Dimension, Dimensioned, ViewableElement, ViewableTree
 from .element import Collator, Element, Element2D, Element3D, Tabular
 from .io import FileArchive
 from .layout import AdjointLayout, Empty, Layout, NdLayout
 from .ndmapping import MultiDimensionalMapping, NdMapping, UniformNdMapping
 from .operation import Operation
-from .options import Store, StoreOptions
+from .options import OptionResolver, Store, StoreOptions
 from .overlay import CompositeOverlay, NdOverlay, Overlay
 from .sheetcoords import SheetCoordinateSystem
 from .spaces import DynamicMap, GridMatrix, GridSpace, HoloMap
@@ -60,7 +49,6 @@ __all__ = [
     "Collator",
     "CompositeOverlay",
     "Dataset",
-    "DebugContext",
     "Dimension",
     "Dimensioned",
     "DynamicMap",
@@ -79,6 +67,7 @@ __all__ = [
     "NdMapping",
     "NdOverlay",
     "Operation",
+    "OptionResolver",
     "Overlay",
     "Redim",
     "SheetCoordinateSystem",
@@ -91,20 +80,12 @@ __all__ = [
     "archive",
     "boundingregion",
     "config",
-    "debug",
-    "debug_frame",
-    "disable_debug",
-    "enable_debug",
     "dimension",
     "element",
-    "get_active_context",
-    "get_active_owner",
-    "get_debug_context",
     "layout",
     "ndmapping",
     "operation",
     "options",
-    "resolve_context",
     "sheetcoords",
     "tree",
 ]

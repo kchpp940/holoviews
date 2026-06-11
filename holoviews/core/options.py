@@ -104,21 +104,26 @@ def lookup_options(obj, group, backend):
     """Given a HoloViews object, a plot option group (e.g. 'style') and
     backend, return the corresponding Options object.
 
+    Legacy entry point that delegates to OptionResolver for the full
+    resolution pipeline (inheritance → merging → backend filtering).
     """
-    plot_class = None
-    try:
-        plot_class = Store.renderers[backend].plotting_class(obj)
-        style_opts = plot_class.style_opts
-    except SkipRendering:
-        style_opts = None
+    return OptionResolver.resolve(obj, group, backend)
 
-    node = Store.lookup_options(backend, obj, group)
-    if group == "style" and style_opts is not None:
-        return node.filtered(style_opts)
-    elif group == "plot" and plot_class:
-        return node.filtered(list(plot_class.param))
+
+def lookup_options_raw(obj, group, backend, defaults=True):
+    """Legacy low-level lookup without backend filtering.
+
+    Used internally by Store.lookup_options for cases where the raw
+    unfiltered options are needed (e.g. for option transfer).
+    """
+    if obj.id in Store._custom_options[backend]:
+        return Store._custom_options[backend][obj.id].closest(
+            obj, group, defaults, backend=backend
+        )
+    elif not defaults:
+        return Options()
     else:
-        return node
+        return Store._options[backend].closest(obj, group, defaults, backend=backend)
 
 
 class CallbackError(RuntimeError):
@@ -889,6 +894,238 @@ class OptionTree(AttrTree):
 EMPTY_OPTIONS = Options()
 
 
+class OptionResolver:
+    """Unified option resolution pipeline with clear separation of concerns.
+
+    Responsibilities:
+    - Phase 1: Collect option sources in priority order
+    - Phase 2: Resolve OptionTree inheritance (parent → child)
+    - Phase 3: Cross-source merging (higher priority wins)
+    - Phase 4: Classify flat kwargs into plot/style/norm/output groups
+    - Phase 5: Backend-specific keyword filtering
+
+    Source priority (lowest → highest):
+    1. Global defaults (Store._options)
+    2. Theme/global config (extension point)
+    3. Object custom options (Store._custom_options)
+    4. User explicit overrides
+
+    This resolver is designed to be extensible for future global configs
+    like themes, hover, and debug settings without duplicating judgment logic.
+    """
+
+    _option_groups = ["plot", "style", "norm", "output"]
+
+    @classmethod
+    def resolve(cls, obj, group=None, backend=None, defaults=True, user_overrides=None):
+        """Main entry point: resolve options for an object through the full pipeline.
+
+        Parameters
+        ----------
+        obj : Dimensioned
+            The HoloViews object to resolve options for
+        group : str, optional
+            The option group ('plot', 'style', 'norm', 'output'). If None,
+            returns a dict of all groups.
+        backend : str, optional
+            Backend to use. Defaults to Store.current_backend.
+        defaults : bool, optional
+            Whether to include default option values
+        user_overrides : dict, optional
+            Explicit user overrides in grouped format {group: {kw: val}}
+
+        Returns
+        -------
+        Options or dict of Options
+            Resolved options for the specified group, or dict of all groups
+        """
+        backend = backend or Store.current_backend
+
+        sources = cls.collect_sources(obj, backend, defaults)
+
+        if user_overrides:
+            sources.append(("user", "user_override", user_overrides))
+
+        if group is not None:
+            resolved = cls._resolve_single_group(sources, obj, group, backend)
+            return cls.filter_by_backend(resolved, group, obj, backend)
+
+        result = {}
+        for g in cls._option_groups:
+            resolved = cls._resolve_single_group(sources, obj, g, backend)
+            result[g] = cls.filter_by_backend(resolved, g, obj, backend)
+        return result
+
+    @classmethod
+    def collect_sources(cls, obj, backend, defaults=True):
+        """Phase 1: Collect all option sources in priority order (lowest first).
+
+        Returns list of (priority_key, source_name, options_data) tuples.
+        Extension point: insert theme/global config sources here.
+        """
+        sources = []
+
+        if defaults:
+            sources.append(("global", "global_defaults", Store._options[backend]))
+
+        theme_config = cls._get_theme_config(obj, backend)
+        if theme_config:
+            sources.append(("theme", "theme_config", theme_config))
+
+        global_config = cls._get_global_config(obj, backend)
+        if global_config:
+            sources.append(("global_cfg", "global_config", global_config))
+
+        if obj.id in Store._custom_options.get(backend, {}):
+            sources.append(("custom", "custom_options", Store._custom_options[backend][obj.id]))
+
+        return sources
+
+    @classmethod
+    def _get_theme_config(cls, obj, backend):
+        """Extension point: get theme configuration.
+
+        Override or register hooks here to inject theme-based options.
+        """
+        _ = obj, backend
+        return None
+
+    @classmethod
+    def _get_global_config(cls, obj, backend):
+        """Extension point: get global configuration (hover, debug, etc.).
+
+        Override or register hooks here to inject global options.
+        """
+        _ = obj, backend
+        return None
+
+    @classmethod
+    def _resolve_single_group(cls, sources, obj, group, backend):
+        """Resolve a single option group through inheritance and merging."""
+        resolved_options = []
+        for _, _, source_data in sources:
+            if isinstance(source_data, OptionTree):
+                opts = cls.resolve_inheritance(source_data, obj, group, backend)
+                if opts and opts.kwargs:
+                    resolved_options.append(opts)
+            elif isinstance(source_data, dict):
+                group_opts = source_data.get(group)
+                if group_opts:
+                    opts = Options(group, **group_opts)
+                    resolved_options.append(opts)
+
+        if not resolved_options:
+            return Options(group, allowed_keywords=cls._get_allowed_keywords(obj, group, backend))
+
+        return cls.merge_options(resolved_options, group)
+
+    @classmethod
+    def resolve_inheritance(cls, tree, obj, group, backend=None):
+        """Phase 2: Walk OptionTree hierarchy and resolve parent→child inheritance.
+
+        Delegates to OptionTree.closest() for tree traversal.
+        """
+        return tree.closest(obj, group, defaults=True, backend=backend)
+
+    @classmethod
+    def merge_options(cls, options_list, group):
+        """Phase 3: Merge multiple Options objects, later entries override earlier ones.
+
+        This implements the priority ordering - sources added later in the
+        collection phase have higher priority.
+        """
+        if not options_list:
+            return Options(group)
+
+        merged_kwargs = {}
+        merged_allowed = Keywords()
+        for opts in options_list:
+            merged_kwargs.update(opts.kwargs)
+            if opts.allowed_keywords:
+                merged_allowed = merged_allowed + opts.allowed_keywords
+
+        return Options(group, allowed_keywords=merged_allowed, **merged_kwargs)
+
+    @classmethod
+    def classify_options(cls, obj, flat_kwargs, backend=None):
+        """Phase 4: Classify flat kwargs into plot/style/norm/output groups.
+
+        Moved from set-time to resolve-time so backend changes are handled
+        correctly. Uses backend-specific allowed_keywords for classification.
+        """
+        backend = backend or Store.current_backend
+        objtype = type(obj).__name__
+
+        try:
+            backend_options = Store.options(backend=backend)
+        except KeyError:
+            return {g: {} for g in cls._option_groups}
+
+        if objtype not in backend_options:
+            return {g: {} for g in cls._option_groups}
+
+        obj_options = backend_options[objtype]
+        classified = {g: {} for g in obj_options.groups}
+
+        for opt, value in flat_kwargs.items():
+            for g, group_opts in sorted(obj_options.groups.items()):
+                if opt in group_opts.allowed_keywords:
+                    classified[g][opt] = value
+                    break
+
+        return classified
+
+    @classmethod
+    def filter_by_backend(cls, options, group, obj, backend):
+        """Phase 5: Filter options by backend-specific allowed keywords.
+
+        - 'style': filter by plot_class.style_opts
+        - 'plot': filter by plot_class.param
+        - 'norm': filter by ['framewise', 'axiswise']
+        - 'output': filter by ['backend']
+        """
+        if not options or not options.kwargs:
+            return options
+
+        plot_class = None
+        try:
+            plot_class = Store.renderers[backend].plotting_class(obj)
+        except (SkipRendering, KeyError):
+            pass
+
+        allowed = None
+        if group == "style" and plot_class is not None:
+            allowed = plot_class.style_opts
+        elif group == "plot" and plot_class is not None:
+            allowed = list(plot_class.param)
+        elif group == "norm":
+            allowed = ["framewise", "axiswise"]
+        elif group == "output":
+            allowed = Options._output_allowed_kws
+
+        if allowed is not None:
+            return options.filtered(allowed)
+        return options
+
+    @classmethod
+    def _get_allowed_keywords(cls, obj, group, backend):
+        """Get allowed keywords for a group from the registered plot class."""
+        try:
+            plot_class = Store.renderers[backend].plotting_class(obj)
+        except (SkipRendering, KeyError):
+            return Keywords()
+
+        if group == "style":
+            return Keywords(plot_class.style_opts, target=type(obj).__name__)
+        elif group == "plot":
+            return Keywords([k for k in list(plot_class.param) if k != "name"], target=type(obj).__name__)
+        elif group == "norm":
+            return Keywords(["framewise", "axiswise"], target=type(obj).__name__)
+        elif group == "output":
+            return Keywords(Options._output_allowed_kws, target=type(obj).__name__)
+        return Keywords()
+
+
 class Compositor(param.Parameterized):
     """A Compositor is a way of specifying an operation to be automatically
     applied to Overlays that match a specified pattern upon display.
@@ -1356,15 +1593,21 @@ class Store:
 
     @classmethod
     def lookup_options(cls, backend, obj, group, defaults=True):
-        # Current custom_options dict may not have entry for obj.id
+        """Lookup options for the given object and group.
+
+        When defaults=True, runs the full OptionResolver pipeline
+        (inheritance → merging → backend filtering). When defaults=False,
+        returns only the custom options without defaults or filtering.
+
+        """
+        if defaults:
+            return OptionResolver.resolve(obj, group, backend, defaults=True)
+
         if obj.id in cls._custom_options[backend]:
             return cls._custom_options[backend][obj.id].closest(
-                obj, group, defaults, backend=backend
+                obj, group, defaults=False, backend=backend
             )
-        elif not defaults:
-            return Options()
-        else:
-            return cls._options[backend].closest(obj, group, defaults, backend=backend)
+        return Options()
 
     @classmethod
     def lookup(cls, backend, obj):
@@ -1387,6 +1630,9 @@ class Store:
         """Transfers options for all backends from one object to another.
         Drops any options defined in the supplied drop list.
 
+        Uses lookup_options_raw to get unfiltered options suitable for
+        re-application to a different object.
+
         """
         if obj is new_obj:
             return
@@ -1396,10 +1642,10 @@ class Store:
         spec = ".".join([s for s in (type_name, group, obj.label)[:level] if s])
         options = []
         for group in Options._option_groups:
-            opts = cls.lookup_options(backend, obj, group)
+            opts = lookup_options_raw(obj, group, backend)
             if not opts:
                 continue
-            new_opts = cls.lookup_options(backend, new_obj, group, defaults=False)
+            new_opts = lookup_options_raw(new_obj, group, backend, defaults=False)
             existing = new_opts.kwargs if new_opts else {}
             filtered = {
                 k: v

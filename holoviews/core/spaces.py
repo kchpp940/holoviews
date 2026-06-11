@@ -17,7 +17,6 @@ from ..streams import Params, Stream, streams_list_from_dict
 from ..util.warnings import HoloviewsUserWarning, warn
 from . import traversal, util
 from .accessors import Opts, Redim
-from .debug import DebugContext, debug, _short_id
 from .dimension import Dimension, ViewableElement
 from .layout import AdjointLayout, Empty, Layout, Layoutable, NdLayout
 from .ndmapping import NdMapping, UniformNdMapping, item_check
@@ -960,11 +959,6 @@ class DynamicMap(HoloMap):
 
         self._current_key = None
 
-        # Per-instance debug context – lazily created if/when enabled,
-        # or assigned explicitly. Propagates to the global debug context.
-        self._debug_context: DebugContext | None = None
-        self._debug_owner_id: str = _short_id()
-
     @property
     def opts(self):
         return Opts(self, mode="dynamicmap")
@@ -996,139 +990,6 @@ class DynamicMap(HoloMap):
     def current_key(self):
         """Returns the current key value."""
         return self._current_key
-
-    @property
-    def debug_context(self) -> DebugContext:
-        """The :class:`DebugContext` bound to this DynamicMap.
-
-        Lazily creates a per-instance context on first access (with
-        ``hv.debug`` as its ``parent`` so frames are also aggregated
-        globally). You can also assign your own context explicitly::
-
-            custom_ctx = hv.DebugContext(name="my_dmap", max_frames=20)
-            dmap.debug_context = custom_ctx
-            dmap.debug_context.enabled = True
-        """
-        if self._debug_context is None:
-            self._debug_context = DebugContext(
-                name=f"dmap_{self._debug_owner_id[:6]}",
-                parent=debug,
-            )
-        return self._debug_context
-
-    @debug_context.setter
-    def debug_context(self, ctx: DebugContext | None) -> None:
-        self._debug_context = ctx
-
-    @property
-    def debug_info(self) -> DebugContext:
-        """Alias for :attr:`debug_context` – returns the bound
-        :class:`DebugContext` for this DynamicMap.
-
-        Examples
-        --------
-        >>> dmap.debug_info.enabled = True
-        >>> dmap.debug_info.summary()
-        >>> latest = dmap.debug_info.get_latest_frame()
-        >>> # Filter only frames owned by *this* dmap:
-        >>> dmap.debug_info.get_frames(owner_id=dmap._debug_owner_id)
-        """
-        return self.debug_context
-
-    def debug_latest_frame(self) -> dict | None:
-        """Get the latest debug frame as a normalized summary dict.
-
-        Returns the *currently active* frame for this DynamicMap
-        (the most recently committed frame with matching
-        ``owner_id``).  All display surfaces (Bokeh side panel,
-        hover tooltip, Python API, notebook HTML) use this same frame
-        so the fields stay consistent.
-
-        Returns a dict with the unified frame summary schema (same
-        fields as shown in the Bokeh side panel, hover tooltip, and
-        notebook HTML repr).  Returns ``None`` if no frames have
-        been collected or debug is disabled.
-
-        The returned dict has these top-level keys:
-        ``meta``, ``trigger``, ``cache``, ``operations``, ``render``,
-        ``timing``.
-
-        Returns
-        -------
-        dict or None
-        """
-        dctx = self.debug_context
-        if not dctx.enabled:
-            return None
-        return dctx.get_current_summary(owner_id=self._debug_owner_id)
-
-    def debug_summary(self, n: int = 1) -> str:
-        """Return a human-readable text summary of debug frames.
-
-        Uses the same unified schema as the Bokeh side panel,
-        hover tooltip, and notebook HTML repr, so all three
-        surfaces show consistent fields.
-
-        Parameters
-        ----------
-        n : int, optional
-            Number of most recent frames to show (default 1).
-
-        Returns
-        -------
-        str
-            Text summary.
-        """
-        dctx = self.debug_context
-        if not dctx.enabled:
-            return "Debug disabled. Set dmap.debug_info.enabled = True to enable."
-        return dctx.summary(n, owner_id=self._debug_owner_id, owner_type="DynamicMap")
-
-    def _debug_repr_html_(self) -> str:
-        """HTML repr of the latest debug frame (for Jupyter notebooks).
-
-        Used internally so the DynamicMap's HTML repr can include
-        debug information when debug mode is enabled.  Uses the same
-        unified schema as the Bokeh side panel and Python API.
-
-        The returned HTML shows the *currently active* frame(s) for
-        this DynamicMap (filtered by ``owner_id``), ensuring stable
-        association between the displayed plot and its debug data.
-        """
-        dctx = self.debug_context
-        if not dctx.enabled:
-            return ""
-        current = dctx.get_current_summary(owner_id=self._debug_owner_id)
-        if current is None:
-            frames = dctx.get_frames(5, owner_id=self._debug_owner_id, owner_type="DynamicMap")
-        else:
-            frames = [dctx.get_current_frame(owner_id=self._debug_owner_id)]
-
-        if not frames:
-            return (
-                "<div style='padding: 8px; background: #d1ecf1; "
-                "border: 1px solid #bee5eb; border-radius: 4px; "
-                "font-family: monospace; font-size: 11px;'>"
-                "<strong>Debug:</strong> No frames collected yet."
-                "</div>"
-            )
-        parts = [
-            "<div style='margin-top: 8px;'>"
-            "<div style='font-weight: 600; color: #495057; margin-bottom: 4px;'>"
-            f"Debug Info ({len(frames)} frame{'s' if len(frames) > 1 else ''})"
-            "</div>"
-        ]
-        for i, frame in enumerate(reversed(frames)):
-            summary = dctx.frame_summary(frame)
-            parts.append(
-                f"<div style='margin: 4px 0; padding: 6px; "
-                f"background: {'#f8f9fa' if i % 2 == 0 else '#ffffff'}; "
-                f"border: 1px solid #dee2e6; border-radius: 4px;'>"
-            )
-            parts.append(dctx.format_summary_html(summary, compact=False))
-            parts.append("</div>")
-        parts.append("</div>")
-        return "".join(parts)
 
     def _stream_parameters(self):
         return util.stream_parameters(self.streams, no_duplicates=not self.positional_stream_args)
@@ -1212,35 +1073,14 @@ class DynamicMap(HoloMap):
             raise KeyError(msg.format(invalid=", ".join(f"{i!r}" for i in invalid)))
 
         streams = []
-        updated_streams = {}
         for stream in self.streams:
             contents = stream.contents
             applicable_kws = {k: v for k, v in kwargs.items() if k in set(contents.keys())}
             if not applicable_kws and contents:
                 continue
             streams.append(stream)
-            updated_streams[stream.name] = applicable_kws
             rkwargs = util.rename_stream_kwargs(stream, applicable_kws, reverse=True)
             stream.update(**rkwargs)
-
-        # Resolve the bound context. Using .as_active ensures downstream
-        # record_* calls inside Stream.trigger / callback also find it.
-        dctx = self.debug_context
-        if dctx.enabled and updated_streams:
-            event_id = f"evt_{_short_id()}"
-            with dctx.as_active(owner_id=self._debug_owner_id, owner_type="DynamicMap"):
-                dctx.record_streams(
-                    {"triggered": list(updated_streams.keys())},
-                    event_id=event_id,
-                    owner_id=self._debug_owner_id,
-                    owner_type="DynamicMap",
-                )
-                dctx.record_redraw_reason(
-                    f"event() called with updates: "
-                    + ", ".join(f"{k}={v}" for k, v in kwargs.items()),
-                    owner_id=self._debug_owner_id,
-                    owner_type="DynamicMap",
-                )
 
         Stream.trigger(streams)
 
@@ -1274,37 +1114,8 @@ class DynamicMap(HoloMap):
         if not isinstance(self.callback, Generator):
             kwargs["_memoization_hash_"] = hash_items
 
-        dctx = self.debug_context
-        t0: float | None = None
-        if dctx.enabled:
-            import time
-
-            t0 = time.time()
-            triggered_streams = [s.name for s in self.streams if getattr(s, "_triggering", False)]
-            if triggered_streams:
-                dctx.record_redraw_reason(
-                    f"streams triggered: {', '.join(triggered_streams)}",
-                    owner_id=self._debug_owner_id,
-                    owner_type="DynamicMap",
-                )
-
-        # Activate *this* DynamicMap's context while the callback runs.
-        # Any rasterize/datashade operations invoked inside will pick it
-        # up via get_active_context() and record into the same owner.
-        with dctx.as_active(owner_id=self._debug_owner_id, owner_type="DynamicMap"):
-            with dynamicmap_memoization(self.callback, self.streams):
-                retval = self.callback(*args, **kwargs)
-
-        if dctx.enabled and t0 is not None:
-            import time
-
-            dctx.record_timing(
-                "callback_execution",
-                time.time() - t0,
-                owner_id=self._debug_owner_id,
-                owner_type="DynamicMap",
-            )
-
+        with dynamicmap_memoization(self.callback, self.streams):
+            retval = self.callback(*args, **kwargs)
         return self._style(retval)
 
     def options(self, *args, **kwargs):
@@ -1535,74 +1346,16 @@ class DynamicMap(HoloMap):
                 return sliced
 
         # Cache lookup
-        cache_hit = False
-        cache_miss_reason = None
         try:
             dimensionless = util.dimensionless_contents(
                 get_nested_streams(self), self.kdims, no_duplicates=False
             )
             empty = self._stream_parameters() == [] and self.kdims == []
             if dimensionless or empty:
-                cache_miss_reason = "dimensionless streams disable cache"
                 raise KeyError("Using dimensionless streams disables DynamicMap cache")
             cache = super().__getitem__(key)
-            cache_hit = True
         except KeyError:
             cache = None
-            if cache_miss_reason is None:
-                cache_miss_reason = "key not in cache"
-
-        # Resolve bound context; activate it for the rest of the call so
-        # _execute_callback downstream uses the same owner chain.
-        dctx = self.debug_context
-        if dctx.enabled:
-            # Record stream parameters
-            stream_params = {}
-            for s in self.streams:
-                try:
-                    stream_params[s.name] = dict(s.contents)
-                except Exception:
-                    stream_params[s.name] = str(s.contents)
-
-            # Activate the context so that _execute_callback and any
-            # operations called downstream automatically record into it
-            # with the correct owner_id/owner_type.
-            with dctx.as_active(owner_id=self._debug_owner_id, owner_type="DynamicMap"):
-                dctx.record_streams(
-                    {"parameters": stream_params},
-                    owner_id=self._debug_owner_id,
-                    owner_type="DynamicMap",
-                )
-
-                # Record cache info
-                dctx.record_cache(
-                    key=str(tuple_key),
-                    hit=cache_hit,
-                    cache_size=len(self.data) if hasattr(self, "data") else None,
-                    reason=cache_miss_reason if not cache_hit else None,
-                    owner_id=self._debug_owner_id,
-                    owner_type="DynamicMap",
-                )
-                if not cache_hit:
-                    dctx.record_redraw_reason(
-                        f"cache miss for key {tuple_key}: {cache_miss_reason}",
-                        owner_id=self._debug_owner_id,
-                        owner_type="DynamicMap",
-                    )
-
-                # If the key expresses a cross product, compute the elements and return
-                product = self._cross_product(tuple_key, cache.data if cache else {}, data_slice)
-                if product is not None:
-                    return product
-
-                # Not a cross product and nothing cached so compute element.
-                if cache is not None:
-                    return cache
-                val = self._execute_callback(*tuple_key)
-                if data_slice:
-                    val = self._dataslice(val, data_slice)
-                self._cache(tuple_key, val)
-                return val
 
         # If the key expresses a cross product, compute the elements and return
         product = self._cross_product(tuple_key, cache.data if cache else {}, data_slice)

@@ -34,7 +34,6 @@ from pyviz_comms import CommManager
 
 from ..core import AdjointLayout, DynamicMap, HoloMap, Layout
 from ..core.data import disable_pipeline
-from ..core.debug import DebugContext, _short_id, debug, resolve_context
 from ..core.io import Exporter
 from ..core.options import Compositor, SkipRendering, Store, StoreOptions
 from ..core.util import unbound_dimensions
@@ -274,102 +273,47 @@ class Renderer(Exporter):
             if not isinstance(self_or_cls, Renderer):
                 renderer = self_or_cls.instance()
 
-        # --- DebugContext plumbing -----------------------------------------
-        # Try to find a debug context that is already bound to the input
-        # object (e.g. a DynamicMap with dmap.debug_context.enabled=True).
-        # Otherwise fall back to the currently-active contextvar, and
-        # finally the global `debug` singleton.
-        resolved_ctx: DebugContext | None = None
-        resolved_owner_id: str | None = None
-        resolved_owner_type: str | None = None
+        if not isinstance(obj, Plot):
+            if not displayable(obj):
+                obj = collate(obj)
+                initialize_dynamic(obj)
 
-        for candidate in obj.traverse(lambda x: x):
-            dctx = getattr(candidate, "_debug_context", None)
-            if dctx is not None and isinstance(dctx, DebugContext):
-                # Pick the first DynamicMap with an explicit context set
-                resolved_ctx = dctx
-                resolved_owner_id = getattr(candidate, "_debug_owner_id", None)
-                resolved_owner_type = type(candidate).__name__
-                break
-        if resolved_ctx is None:
-            resolved_ctx = resolve_context()
-
-        renderer_id: str | None = None
-        ctx_mgr = None
-        if resolved_ctx.enabled:
-            renderer_id = f"rnd_{_short_id()}"
-            ctx_mgr = resolved_ctx.frame(
-                owner_id=resolved_owner_id,
-                owner_type=resolved_owner_type,
-                renderer_id=renderer_id,
+            with disable_pipeline():
+                obj = Compositor.map(obj, mode="data", backend=self_or_cls.backend)
+            plot_opts = dict(self_or_cls.plot_options(obj, self_or_cls.size), **kwargs)
+            if isinstance(obj, AdjointLayout):
+                obj = Layout(obj)
+            plot = self_or_cls.plotting_class(obj)(obj, renderer=renderer, **plot_opts)
+            defaults = [kd.default for kd in plot.dimensions]
+            init_key = tuple(
+                v if d is None else d for v, d in zip(plot.keys[0], defaults, strict=None)
             )
-            ctx_mgr.__enter__()
-        # -------------------------------------------------------------------
+            plot.update(init_key)
+        else:
+            plot = obj
 
-        try:
-            if not isinstance(obj, Plot):
-                if not displayable(obj):
-                    obj = collate(obj)
-                    initialize_dynamic(obj)
+        # Trigger streams which were marked as requiring an update
+        triggers = []
+        for p in plot.traverse():
+            if not hasattr(p, "_trigger"):
+                continue
+            for trigger in p._trigger:
+                if trigger not in triggers:
+                    triggers.append(trigger)
+            p._trigger = []
+        for trigger in triggers:
+            Stream.trigger([trigger])
 
-                with disable_pipeline():
-                    obj = Compositor.map(obj, mode="data", backend=self_or_cls.backend)
-                plot_opts = dict(self_or_cls.plot_options(obj, self_or_cls.size), **kwargs)
-                if isinstance(obj, AdjointLayout):
-                    obj = Layout(obj)
-                plot = self_or_cls.plotting_class(obj)(obj, renderer=renderer, **plot_opts)
-                defaults = [kd.default for kd in plot.dimensions]
-                init_key = tuple(
-                    v if d is None else d for v, d in zip(plot.keys[0], defaults, strict=None)
-                )
-                plot.update(init_key)
-            else:
-                plot = obj
+        if isinstance(self_or_cls, Renderer):
+            self_or_cls.last_plot = plot
 
-            # Attach the resolved debug context to the Plot so side panels
-            # / hover tools / repr can all read from the same source.
-            plot._debug_context = resolved_ctx
-            plot._debug_owner_id = resolved_owner_id
-            plot._debug_renderer_id = renderer_id
+        if comm:
+            plot.comm = comm
 
-            # Trigger streams which were marked as requiring an update
-            triggers = []
-            for p in plot.traverse():
-                if not hasattr(p, "_trigger"):
-                    continue
-                for trigger in p._trigger:
-                    if trigger not in triggers:
-                        triggers.append(trigger)
-                p._trigger = []
-            for trigger in triggers:
-                Stream.trigger([trigger])
-
-            if isinstance(self_or_cls, Renderer):
-                self_or_cls.last_plot = plot
-
-            if comm:
-                plot.comm = comm
-
-            if comm or self_or_cls.mode == "server":
-                if doc is None:
-                    doc = Document() if self_or_cls.notebook_context else curdoc()
-                plot.document = doc
-
-            if resolved_ctx.enabled:
-                resolved_ctx.record_render(
-                    backend=self_or_cls.backend,
-                    render_info={
-                        "plot_type": type(plot).__name__,
-                        "plot_id": getattr(plot, "id", None),
-                    },
-                    renderer_id=renderer_id,
-                    owner_id=resolved_owner_id,
-                    owner_type=resolved_owner_type,
-                )
-        finally:
-            if ctx_mgr is not None:
-                ctx_mgr.__exit__(None, None, None)
-
+        if comm or self_or_cls.mode == "server":
+            if doc is None:
+                doc = Document() if self_or_cls.notebook_context else curdoc()
+            plot.document = doc
         return plot
 
     @bothmethod
