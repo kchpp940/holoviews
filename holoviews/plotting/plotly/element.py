@@ -282,75 +282,62 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
         return fig
 
     def _get_plotly_customdata_and_template(self, element):
-        """Generate customdata array and hovertemplate for Plotly backend.
-
-        Returns
-        -------
-        tuple
-            (customdata_array, hovertemplate, column_metadata).  ``column_metadata``
-            is a list of dicts with ``label``, ``formatter_kind`` and
-            ``needs_python_formatting`` flags per column, so downstream code
-            knows which columns need callable-formatting applied on the
-            Python side.
-        """
+        """Generate customdata array and hovertemplate for Plotly backend."""
         if element.hover_fields is None:
-            return None, None, []
+            return None, None
 
-        resolver = element._get_hover_resolver()
-        customdata, ordered_specs, column_meta = resolver.to_plotly_customdata()
-        hovertemplate = resolver.to_plotly_hovertemplate(ordered_specs)
+        hover_fields = element._get_hover_fields()
+        hover_data = element._get_hover_data()
+        sanitized_names = list(hover_data.keys())
+        n_points = len(next(iter(hover_data.values()))) if hover_data else 0
 
-        return customdata, hovertemplate, column_meta
+        customdata = np.column_stack([hover_data[k] for k in sanitized_names]) if sanitized_names else None
+
+        hovertemplate_parts = []
+        for i, field in enumerate(hover_fields):
+            label = element._get_hover_field_label(field)
+            formatter = element._get_hover_formatter(field)
+            if formatter is not None and callable(formatter):
+                hovertemplate_parts.append(f"<b>{label}</b>: %{{customdata[{i}]}}")
+            elif formatter is not None:
+                hovertemplate_parts.append(f"<b>{label}</b>: %{{customdata[{i}]:{formatter}}}")
+            else:
+                hovertemplate_parts.append(f"<b>{label}</b>: %{{customdata[{i}]}}")
+        hovertemplate = "<br>".join(hovertemplate_parts) + "<extra></extra>" if hovertemplate_parts else None
+
+        return customdata, hovertemplate
 
     def graph_options(self, element, ranges, style, is_geo=False, **kwargs):
-        if element.hover_fields is not None:
-            resolver = element._get_hover_resolver()
-            if self.overlay_dims:
-                base_legend = ", ".join([d.pprint_value_string(v) for d, v in self.overlay_dims.items()])
-            else:
-                base_legend = element.label
-            legend_parts = [base_legend] if base_legend else []
-            for dim in element.kdims:
-                alias_label = resolver.get_legend_label(dim)
-                if alias_label != dim.pprint_label:
-                    legend_parts.append(alias_label)
-            legend = " | ".join(legend_parts) if len(legend_parts) > 1 else (legend_parts[0] if legend_parts else element.label)
+        if self.overlay_dims:
+            legend = ", ".join([d.pprint_value_string(v) for d, v in self.overlay_dims.items()])
         else:
-            if self.overlay_dims:
-                legend = ", ".join([d.pprint_value_string(v) for d, v in self.overlay_dims.items()])
-            else:
-                legend = element.label
+            legend = element.label
 
         opts = dict(name=legend, **self.trace_kwargs(is_geo=is_geo))
 
         if self.trace_kwargs(is_geo=is_geo).get("type", None) in legend_trace_types:
             opts.update(
                 showlegend=self.show_legend, legendgroup=element.group + "_" + legend
-            )
+            )  # make legendgroup unique for single trace enable/disable
 
-        customdata, hovertemplate, column_meta = self._get_plotly_customdata_and_template(element)
+        customdata, hovertemplate = self._get_plotly_customdata_and_template(element)
         if customdata is not None:
             opts["customdata"] = customdata
         if hovertemplate is not None:
             opts["hovertemplate"] = hovertemplate
-        if column_meta:
-            # Store on the plot-level handles for later aggregation into
-            # layout.metadata; never set private keys on Plotly traces.
-            hover_trace_meta = self.handles.setdefault("_hv_hover_trace_meta", [])
-            hover_trace_meta.append({
-                "uid": self.trace_uid,
-                "element_type": type(element).__name__,
-                "columns": column_meta,
-            })
 
         if self._style_key is not None:
             styles = self._apply_transforms(element, ranges, style)
 
+            # If style starts with '{_style_key}_', remove the prefix.  This way
+            # a line_color property with self._style_key of 'line' doesn't end up
+            # as `line_line_color`
             key_prefix_re = re.compile("^" + self._style_key + "_")
             styles = {key_prefix_re.sub("", k): v for k, v in styles.items()}
 
             opts[self._style_key] = {STYLE_ALIASES.get(k, k): v for k, v in styles.items()}
 
+            # Move certain options from the style key back to root
             for k in ["selectedpoints", "visible"]:
                 if k in opts.get(self._style_key, {}):
                     opts[k] = opts[self._style_key].pop(k)

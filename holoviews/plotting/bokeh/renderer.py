@@ -68,19 +68,6 @@ class BokehRenderer(Renderer):
         return
 
     @bothmethod
-    def _attach_hover_metadata(self_or_cls, plot, state, merged_spec):
-        from ...core.hover import HoverResolver
-
-        payload = {HoverResolver.METADATA_KEY: merged_spec}
-        if hasattr(state, "tags"):
-            existing = [
-                t for t in state.tags
-                if not (isinstance(t, dict) and HoverResolver.METADATA_KEY in t)
-            ]
-            state.tags = existing + [payload]
-        return state
-
-    @bothmethod
     def get_plot(self_or_cls, obj, doc=None, renderer=None, **kwargs):
         """Given a HoloViews Viewable return a corresponding plot instance.
         Allows supplying a document attach the plot to, useful when

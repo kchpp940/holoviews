@@ -9,7 +9,6 @@ from param.parameterized import bothmethod
 
 from ...core import HoloMap
 from ...core.options import Store
-from ..plot import Plot
 from ..renderer import HTML_TAGS, MIME_TYPES, Renderer
 from .callbacks import callbacks
 from .util import (
@@ -82,14 +81,7 @@ class PlotlyRenderer(Renderer):
         Allows cleaning the dictionary of any internal properties that were added
 
         """
-        if not isinstance(obj, Plot):
-            plot = self_or_cls.get_plot(obj=obj, renderer=renderer, **kwargs)
-        else:
-            plot = obj
-
-        fig_dict = super(PlotlyRenderer, self_or_cls).get_plot_state(
-            plot, renderer=renderer, **kwargs
-        )
+        fig_dict = super().get_plot_state(obj, renderer, **kwargs)
         config = fig_dict.get("config", {})
 
         # Remove internal properties (e.g. '_id', '_dim')

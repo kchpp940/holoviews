@@ -256,8 +256,42 @@ class ElementPlot(GenericElementPlot, MPLPlot):
         if element.hover_fields is None:
             return None
 
-        resolver = element._get_hover_resolver()
-        return resolver.to_mpl_format_coord()
+        hover_fields = element._get_hover_fields()
+        hover_data = element._get_hover_data()
+        sanitized_names = list(hover_data.keys())
+        n_points = len(next(iter(hover_data.values()))) if hover_data else 0
+
+        if not n_points:
+            return None
+
+        try:
+            xdim = element.get_dimension(0)
+            ydim = element.get_dimension(1)
+            xname = element._resolve_hover_field_name(xdim) if xdim else None
+            yname = element._resolve_hover_field_name(ydim) if ydim else None
+        except Exception:
+            xname = None
+            yname = None
+
+        xvalues = hover_data.get(xname) if xname else None
+        yvalues = hover_data.get(yname) if yname else None
+
+        def format_coord(x, y):
+            parts = []
+            if xvalues is not None and yvalues is not None and len(xvalues) == len(yvalues):
+                distances = (xvalues - x) ** 2 + (yvalues - y) ** 2
+                idx = int(np.argmin(distances))
+                if 0 <= idx < n_points:
+                    for field, sname in zip(hover_fields, sanitized_names):
+                        label = element._get_hover_field_label(field)
+                        value = hover_data[sname][idx]
+                        formatted = element._format_hover_value(field, value)
+                        parts.append(f"{label}={formatted}")
+            if not parts:
+                parts = [f"x={x:.6g}", f"y={y:.6g}"]
+            return ", ".join(parts)
+
+        return format_coord
 
     def _execute_hooks(self, element):
         super()._execute_hooks(element)
@@ -796,17 +830,18 @@ class ElementPlot(GenericElementPlot, MPLPlot):
                     else:
                         factors = util.unique_array(val)
                     val = util.search_indices(val, factors)
+                    labels = getattr(self, "legend_labels", {})
                     dim_obj = element.get_dimension(v.dimension) if hasattr(element, "get_dimension") else None
-                    if dim_obj is not None:
-                        resolver = element._get_hover_resolver()
-                        legend_title = resolver.get_legend_label(dim_obj)
-                        formatted_factors = [
-                            resolver.get_legend_formatted_value(dim_obj, f) for f in factors
-                        ]
-                    else:
-                        legend_title = v.dimension
-                        labels = getattr(self, "legend_labels", {})
-                        formatted_factors = [labels.get(f, f) for f in factors]
+                    legend_title = element._get_hover_field_label(dim_obj) if dim_obj else v.dimension
+                    formatted_factors = []
+                    for f in factors:
+                        label = labels.get(f, f)
+                        if dim_obj:
+                            try:
+                                label = element._format_hover_value(dim_obj, f)
+                            except Exception:
+                                pass
+                        formatted_factors.append(label)
                     new_style["cat_legend"] = {
                         "title": legend_title,
                         "prop": "c",

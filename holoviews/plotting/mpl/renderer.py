@@ -141,16 +141,6 @@ class MPLRenderer(Renderer):
         dpi = self_or_cls.dpi if self_or_cls.dpi else plot.state.dpi
         return (int(w * dpi), int(h * dpi))
 
-    @bothmethod
-    def _attach_hover_metadata(self_or_cls, plot, state, merged_spec):
-        from ...core.hover import HoverResolver
-
-        try:
-            state._hv_hover_metadata = merged_spec
-        except Exception:
-            pass
-        return state
-
     def _figure_data(self, plot, fmt, bbox_inches="tight", as_script=False, **kwargs):
         """Render matplotlib figure object and return the corresponding
         data.  If as_script is True, the content will be split in an

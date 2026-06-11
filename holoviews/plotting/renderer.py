@@ -6,10 +6,12 @@ regardless of plotting package or backend.
 from __future__ import annotations
 
 import base64
+import json
 import os
 from contextlib import contextmanager
 from functools import partial
 from io import BytesIO, StringIO
+from pathlib import Path
 
 import param
 from bokeh.document import Document
@@ -235,51 +237,11 @@ class Renderer(Exporter):
 
     def __init__(self, **params):
         self.last_plot = None
-        self.last_hover_metadata = None
         super().__init__(**params)
-
-    @bothmethod
-    def _collect_hover_metadata(self_or_cls, obj):
-        """Collect and merge hover metadata from a HoloViews object or plot.
-
-        Accepts Plot instances, Viewable (panel) objects, or raw HoloViews
-        objects.  Returns the merged export spec dict, or None if no hover
-        config is present in any sub-element.
-        """
-        from ..core.hover import HoverResolver
-        from . import Plot
-
-        try:
-            if isinstance(obj, Plot):
-                specs = HoverResolver.collect_from_plot(obj)
-            elif hasattr(obj, "object") and hasattr(obj, "_repr_mimebundle_"):
-                specs = HoverResolver.collect_from_object(obj.object)
-            elif hasattr(obj, "hover_fields"):
-                specs = HoverResolver.collect_from_object(obj)
-            else:
-                return None
-        except Exception:
-            return None
-
-        if not specs:
-            return None
-
-        return HoverResolver.merge_export_specs(specs)
 
     def __call__(self, obj, fmt="auto", **kwargs):
         plot, fmt = self._validate(obj, fmt)
         info = {"file-ext": fmt, "mime_type": MIME_TYPES[fmt]}
-
-        # Attach aggregated hover metadata to the HoloViews-level info dict.
-        # This is the canonical export container — it is never stripped by
-        # backend schema validation, and is available across all save formats.
-        # We collect early so *every* return path (None / server / Viewable /
-        # figure_data) includes the metadata in `info`.
-        hover_source = plot if plot is not None else obj
-        hover_meta = self._collect_hover_metadata(hover_source)
-        if hover_meta is not None:
-            info["holoviews:hover"] = hover_meta
-            self.last_hover_metadata = hover_meta
 
         if plot is None:
             return None, info
@@ -360,27 +322,8 @@ class Renderer(Exporter):
     def get_plot_state(self_or_cls, obj, renderer=None, **kwargs):
         """Given a HoloViews Viewable return a corresponding plot state."""
         if not isinstance(obj, Plot):
-            plot = self_or_cls.get_plot(obj=obj, renderer=renderer, **kwargs)
-        else:
-            plot = obj
-        state = plot.state
-
-        merged = self_or_cls._collect_hover_metadata(plot)
-        if merged is not None:
-            if isinstance(self_or_cls, Renderer):
-                self_or_cls.last_hover_metadata = merged
-            state = self_or_cls._attach_hover_metadata(plot, state, merged)
-        return state
-
-    @bothmethod
-    def _attach_hover_metadata(self_or_cls, plot, state, merged_spec):
-        """Backend-specific hook to attach merged hover metadata to state.
-
-        Subclasses override this to write into backend-specific containers
-        (Bokeh figure.tags, etc.).  The *canonical* export container is the
-        ``info`` dict returned by ``__call__`` and ``last_hover_metadata``.
-        """
-        return state
+            obj = self_or_cls.get_plot(obj=obj, renderer=renderer, **kwargs)
+        return obj.state
 
     def _validate(self, obj, fmt, **kwargs):
         """Helper method to be used in the __call__ method to get a
@@ -687,6 +630,205 @@ class Renderer(Exporter):
         raise NotImplementedError
 
     @bothmethod
+    def _collect_metadata(
+        self_or_cls, obj, fmt, resources, basename, info, plot, widget_mode=None
+    ):
+        """Collect export metadata for the given object and configuration.
+
+        Returns a dictionary with the following keys:
+        - object_type: the HoloViews object type name
+        - backend: the rendering backend
+        - renderer_config: renderer parameter configuration
+        - resource_mode: resource loading mode (cdn/inline etc.)
+        - dimension_schema: kdims and vdims schema
+        - key_dimensions: key dimensions for DynamicMap/HoloMap
+        - widget_settings: widget/scrubber configuration
+        - export_info: final export file information
+        """
+        from ..core import Dimensioned, DynamicMap, HoloMap
+
+        metadata = {}
+
+        metadata["object_type"] = type(obj).__name__
+        metadata["backend"] = self_or_cls.backend
+
+        renderer_config = {}
+        for pname in sorted(self_or_cls.param):
+            if pname in ("name", "info_fn", "key_fn"):
+                continue
+            try:
+                val = getattr(self_or_cls, pname)
+                if isinstance(val, (str, int, float, bool, type(None))):
+                    renderer_config[pname] = val
+                elif isinstance(val, (list, tuple)):
+                    renderer_config[pname] = list(val)
+                elif isinstance(val, dict):
+                    renderer_config[pname] = val
+            except Exception:
+                pass
+        metadata["renderer_config"] = renderer_config
+
+        if isinstance(resources, str):
+            metadata["resource_mode"] = resources.lower()
+        elif hasattr(resources, "mode"):
+            metadata["resource_mode"] = resources.mode
+        else:
+            metadata["resource_mode"] = str(resources)
+
+        dimension_schema = {"kdims": [], "vdims": []}
+        if isinstance(obj, Dimensioned):
+            for kd in obj.kdims:
+                dim_info = {
+                    "name": kd.name,
+                    "label": getattr(kd, "label", kd.name),
+                    "unit": getattr(kd, "unit", None),
+                }
+                if hasattr(kd, "range") and kd.range != (None, None):
+                    rng = kd.range
+                    try:
+                        dim_info["range"] = [
+                            float(rng[0]) if rng[0] is not None else None,
+                            float(rng[1]) if rng[1] is not None else None,
+                        ]
+                    except (TypeError, ValueError):
+                        dim_info["range"] = [
+                            rng[0] if rng[0] is not None else None,
+                            rng[1] if rng[1] is not None else None,
+                        ]
+                if hasattr(kd, "values") and kd.values is not None:
+                    vals = list(kd.values)
+                    try:
+                        dim_info["values"] = [float(v) for v in vals]
+                    except (TypeError, ValueError):
+                        dim_info["values"] = [str(v) for v in vals]
+                dimension_schema["kdims"].append(dim_info)
+            for vd in obj.vdims:
+                dim_info = {
+                    "name": vd.name,
+                    "label": getattr(vd, "label", vd.name),
+                    "unit": getattr(vd, "unit", None),
+                }
+                if hasattr(vd, "range") and vd.range != (None, None):
+                    rng = vd.range
+                    try:
+                        dim_info["range"] = [
+                            float(rng[0]) if rng[0] is not None else None,
+                            float(rng[1]) if rng[1] is not None else None,
+                        ]
+                    except (TypeError, ValueError):
+                        dim_info["range"] = [
+                            rng[0] if rng[0] is not None else None,
+                            rng[1] if rng[1] is not None else None,
+                        ]
+                dimension_schema["vdims"].append(dim_info)
+        metadata["dimension_schema"] = dimension_schema
+
+        key_dimensions = []
+        if isinstance(obj, (DynamicMap, HoloMap)):
+            for kd in obj.kdims:
+                kd_info = {
+                    "name": kd.name,
+                    "label": getattr(kd, "label", kd.name),
+                    "unit": getattr(kd, "unit", None),
+                }
+                if hasattr(kd, "values") and kd.values is not None:
+                    vals = list(kd.values)
+                    try:
+                        kd_info["values"] = [float(v) for v in vals]
+                    except (TypeError, ValueError):
+                        kd_info["values"] = [str(v) for v in vals]
+                if hasattr(kd, "range") and kd.range != (None, None):
+                    rng = kd.range
+                    try:
+                        kd_info["range"] = [
+                            float(rng[0]) if rng[0] is not None else None,
+                            float(rng[1]) if rng[1] is not None else None,
+                        ]
+                    except (TypeError, ValueError):
+                        kd_info["range"] = [
+                            rng[0] if rng[0] is not None else None,
+                            rng[1] if rng[1] is not None else None,
+                        ]
+                if isinstance(obj, DynamicMap):
+                    unbounded = list(getattr(obj, "unbounded", []))
+                    kd_info["unbounded"] = kd.name in [d.name for d in unbounded]
+                key_dimensions.append(kd_info)
+        metadata["key_dimensions"] = key_dimensions
+
+        widget_settings = {
+            "holomap_mode": self_or_cls.holomap,
+            "widget_mode": self_or_cls.widget_mode,
+            "widget_location": self_or_cls.widget_location,
+            "fps": self_or_cls.fps,
+        }
+        if widget_mode is not None:
+            widget_settings["widget_mode_used"] = widget_mode
+        metadata["widget_settings"] = widget_settings
+
+        export_info = {
+            "format": fmt,
+            "mime_type": info.get("mime_type") if info else MIME_TYPES.get(fmt),
+        }
+        if isinstance(basename, (BytesIO, StringIO)):
+            export_info["output_type"] = "buffer"
+            export_info["buffer_type"] = type(basename).__name__
+            current_pos = basename.tell()
+            basename.seek(0, os.SEEK_END)
+            export_info["size_bytes"] = basename.tell()
+            basename.seek(current_pos)
+        elif isinstance(basename, Path):
+            path = basename if basename.suffix else basename.with_suffix(f".{fmt}")
+            export_info["output_type"] = "file"
+            export_info["path"] = str(path.absolute())
+            export_info["filename"] = path.name
+            try:
+                export_info["size_bytes"] = path.stat().st_size
+            except OSError:
+                pass
+        elif isinstance(basename, str):
+            path_str = basename if basename.endswith(f".{fmt}") else f"{basename}.{fmt}"
+            path_obj = Path(path_str)
+            export_info["output_type"] = "file"
+            export_info["path"] = str(path_obj.absolute())
+            export_info["filename"] = path_obj.name
+            try:
+                export_info["size_bytes"] = path_obj.stat().st_size
+            except OSError:
+                pass
+        metadata["export_info"] = export_info
+
+        return metadata
+
+    @bothmethod
+    def _save_metadata(self_or_cls, basename, metadata, fmt):
+        """Save metadata as a JSON sidecar file.
+
+        For file-based outputs, saves a .meta.json alongside the export file.
+        For buffer-based outputs, attaches metadata as the .metadata attribute.
+        """
+        if isinstance(basename, (BytesIO, StringIO)):
+            basename.metadata = metadata
+            return
+
+        if isinstance(basename, Path):
+            if basename.suffix:
+                meta_path = basename.with_name(f"{basename.stem}.meta.json")
+            else:
+                meta_path = basename.with_suffix(".meta.json")
+        else:
+            base = basename
+            if base.endswith(f".{fmt}"):
+                base = base[: -len(f".{fmt}")]
+            elif "." in os.path.basename(base):
+                base = os.path.splitext(base)[0]
+            meta_path = f"{base}.meta.json"
+
+        meta_path = Path(meta_path) if not isinstance(meta_path, Path) else meta_path
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2, ensure_ascii=False, default=str)
+        return meta_path
+
+    @bothmethod
     def save(
         self_or_cls,
         obj,
@@ -697,10 +839,36 @@ class Renderer(Exporter):
         options=None,
         resources="inline",
         title=None,
+        metadata=False,
         **kwargs,
     ):
         """Save a HoloViews object to file, either using an explicitly
         supplied format or to the appropriate default.
+
+        Parameters
+        ----------
+        obj : HoloViews object
+            The HoloViews object to save to file.
+        basename : string, Path or IO object
+            The filename/path or BytesIO/StringIO object to save to.
+        fmt : string
+            The format to save the object as, e.g. png, svg, html, json.
+        key : dict, optional
+            Metadata key dictionary (not supported by Renderer).
+        info : dict, optional
+            Metadata info dictionary (not supported by Renderer).
+        options : optional
+            Options to apply before saving.
+        resources : string or Resources
+            Resource loading mode for HTML output: 'cdn', 'inline'.
+        title : string, optional
+            Custom title for exported HTML file.
+        metadata : bool, optional
+            If True, save a JSON sidecar file with export metadata.
+            For file outputs creates a `.meta.json` alongside the export.
+            For buffer outputs attaches a `.metadata` attribute to the buffer.
+        **kwargs : dict
+            Additional keyword arguments passed to the renderer.
 
         """
         if info is None:
@@ -721,13 +889,6 @@ class Renderer(Exporter):
         with StoreOptions.options(obj, options, **kwargs):
             plot, fmt = self_or_cls._validate(obj, fmt)
 
-        # Collect hover metadata so it's available via last_hover_metadata
-        # even when saving in Viewable (panel) mode.
-        hover_source = plot if plot is not None else obj
-        hover_meta = self_or_cls._collect_hover_metadata(hover_source)
-        if hover_meta is not None and isinstance(self_or_cls, Renderer):
-            self_or_cls.last_hover_metadata = hover_meta
-
         if isinstance(plot, Viewable):
             from bokeh.resources import CDN, INLINE, Resources
 
@@ -737,12 +898,26 @@ class Renderer(Exporter):
                 resources = CDN
             elif resources.lower() == "inline":
                 resources = INLINE
-            if isinstance(basename, str):
+            original_basename = basename
+            if isinstance(basename, Path):
+                basename_str = str(basename)
+            else:
+                basename_str = basename
+            if isinstance(basename_str, str):
                 if title is None:
-                    title = os.path.basename(basename)
+                    title = os.path.basename(basename_str)
                 if fmt in MIME_TYPES:
-                    basename = f"{basename}.{fmt}"
+                    if isinstance(basename, Path):
+                        basename = basename.with_suffix(f".{fmt}")
+                    else:
+                        basename = f"{basename}.{fmt}"
             plot.layout.save(basename, embed=True, resources=resources, title=title)
+            if metadata:
+                info_dict = {"mime_type": MIME_TYPES.get(fmt)}
+                meta = self_or_cls._collect_metadata(
+                    obj, fmt, resources, basename, info_dict, plot, widget_mode=fmt
+                )
+                self_or_cls._save_metadata(original_basename, meta, fmt)
             return
 
         rendered = self_or_cls(plot, fmt)
@@ -753,13 +928,27 @@ class Renderer(Exporter):
         prefix = self_or_cls._save_prefix(info["file-ext"])
         if prefix:
             encoded = prefix + encoded
+
+        original_basename = basename
         if isinstance(basename, (BytesIO, StringIO)):
             basename.write(encoded)
             basename.seek(0)
+        elif isinstance(basename, Path):
+            filename = basename if basename.suffix else basename.with_suffix(f".{info['file-ext']}")
+            with open(filename, "wb") as f:
+                f.write(encoded)
+            basename = filename
         else:
             filename = f"{basename}.{info['file-ext']}"
             with open(filename, "wb") as f:
                 f.write(encoded)
+            basename = filename
+
+        if metadata:
+            meta = self_or_cls._collect_metadata(
+                obj, info["file-ext"], resources, basename, info, plot
+            )
+            self_or_cls._save_metadata(original_basename, meta, info["file-ext"])
 
     @bothmethod
     def _save_prefix(self_or_cls, ext):
