@@ -889,6 +889,10 @@ class ResolvedOptions:
     keyword filtering. Intended as the canonical return type for
     rendering paths.
 
+    Also carries per-key **provenance** information showing which
+    source (global_defaults, theme, global_config, custom, user_override)
+    contributed the final value of each option key.
+
     Attributes
     ----------
     plot : Options
@@ -901,23 +905,48 @@ class ResolvedOptions:
         Output/backend options (backend)
     backend : str
         The backend against which options were resolved and filtered
+    provenance : dict[str, dict[str, str]]
+        Per-group per-key source attribution: provenance[group][key] = source_name
     """
 
-    __slots__ = ("plot", "style", "norm", "output", "backend")
+    __slots__ = ("plot", "style", "norm", "output", "backend", "provenance")
 
-    def __init__(self, plot=None, style=None, norm=None, output=None, backend=None):
+    def __init__(self, plot=None, style=None, norm=None, output=None, backend=None, provenance=None):
         self.plot = plot or Options("plot")
         self.style = style or Options("style")
         self.norm = norm or Options("norm")
         self.output = output or Options("output")
         self.backend = backend
+        self.provenance = provenance or {"plot": {}, "style": {}, "norm": {}, "output": {}}
 
     def get(self, group):
         """Get options for a specific group name."""
         return getattr(self, group)
 
+    def get_provenance(self, group):
+        """Get provenance dict for a specific group.
+
+        Returns {key: source_name} mapping showing which source
+        contributed the final value of each option key.
+        """
+        return self.provenance.get(group, {})
+
+    def is_user_set(self, group, key):
+        """Check whether an option key was explicitly set by the user
+        (custom options or user override), as opposed to coming from
+        defaults or global config.
+
+        Useful for rendering code that needs to know if a value was
+        explicitly chosen vs inherited from defaults.
+        """
+        source = self.provenance.get(group, {}).get(key)
+        return source in ("custom", "user_override")
+
     def as_dict(self):
-        """Return a plain {group: Options} dict (legacy compatibility)."""
+        """Return a plain {group: Options} dict (legacy compatibility).
+
+        Does NOT include provenance — use get_provenance() instead.
+        """
         return {"plot": self.plot, "style": self.style, "norm": self.norm, "output": self.output}
 
     def __repr__(self):
@@ -985,18 +1014,22 @@ class OptionResolver:
         sources = cls.collect_sources(obj, backend, defaults)
 
         if user_overrides:
-            sources.append(("user", "user_override", user_overrides))
+            sources.append(("05_user", "user_override", user_overrides))
 
         if group is not None:
-            resolved = cls._resolve_single_group(sources, obj, group, backend)
-            return cls.filter_by_backend(resolved, group, obj, backend)
+            opts, prov = cls._resolve_single_group(sources, obj, group, backend)
+            filtered_opts, filtered_prov = cls.filter_by_backend(opts, group, obj, backend, prov)
+            return filtered_opts
 
         resolved_groups = {}
+        provenance = {}
         for g in cls._option_groups:
-            resolved = cls._resolve_single_group(sources, obj, g, backend)
-            resolved_groups[g] = cls.filter_by_backend(resolved, g, obj, backend)
+            opts, prov = cls._resolve_single_group(sources, obj, g, backend)
+            filtered_opts, filtered_prov = cls.filter_by_backend(opts, g, obj, backend, prov)
+            resolved_groups[g] = filtered_opts
+            provenance[g] = filtered_prov
 
-        return ResolvedOptions(backend=backend, **resolved_groups)
+        return ResolvedOptions(backend=backend, provenance=provenance, **resolved_groups)
 
     @classmethod
     def lookup_raw(cls, obj, group, backend, defaults=True):
@@ -1023,22 +1056,29 @@ class OptionResolver:
 
         Returns list of (priority_key, source_name, options_data) tuples.
         Extension point: insert theme/global config sources here.
+
+        Source identifiers (used in provenance):
+        - ``global_defaults`` — backend default options from Store._options
+        - ``theme`` — theme-based configuration (extension point)
+        - ``global_config`` — global config like hover/debug (extension point)
+        - ``custom`` — per-object custom options set via .opts()
+        - ``user_override`` — explicit overrides passed to resolve()
         """
         sources = []
 
         if defaults:
-            sources.append(("global", "global_defaults", Store._options[backend]))
+            sources.append(("01_global", "global_defaults", Store._options[backend]))
 
         theme_config = cls._get_theme_config(obj, backend)
         if theme_config:
-            sources.append(("theme", "theme_config", theme_config))
+            sources.append(("02_theme", "theme", theme_config))
 
         global_config = cls._get_global_config(obj, backend)
         if global_config:
-            sources.append(("global_cfg", "global_config", global_config))
+            sources.append(("03_global_cfg", "global_config", global_config))
 
         if obj.id in Store._custom_options.get(backend, {}):
-            sources.append(("custom", "custom_options", Store._custom_options[backend][obj.id]))
+            sources.append(("04_custom", "custom", Store._custom_options[backend][obj.id]))
 
         return sources
 
@@ -1062,50 +1102,95 @@ class OptionResolver:
 
     @classmethod
     def _resolve_single_group(cls, sources, obj, group, backend):
-        """Resolve a single option group through inheritance and merging."""
-        resolved_options = []
-        for _, _, source_data in sources:
+        """Resolve a single option group through inheritance and merging.
+
+        Returns (options, provenance) tuple where provenance is a
+        {key: source_name} dict tracking which source contributed each key.
+
+        For OptionTree sources:
+        - global_defaults source: uses defaults=True (full tree inheritance)
+        - other OptionTree sources: use defaults=False (only explicit settings,
+          no fallback to global tree) — merging with global defaults happens
+          at the OptionResolver cross-source merge phase instead, so that
+          provenance accurately tracks which source each key came from.
+        """
+        resolved_pairs = []  # list of (source_name, Options)
+        for _, source_name, source_data in sources:
             if isinstance(source_data, OptionTree):
-                opts = cls.resolve_inheritance(source_data, obj, group, backend)
+                tree_defaults = (source_name == "global_defaults")
+                opts = cls.resolve_inheritance(
+                    source_data, obj, group, backend, defaults=tree_defaults
+                )
                 if opts and opts.kwargs:
-                    resolved_options.append(opts)
+                    resolved_pairs.append((source_name, opts))
             elif isinstance(source_data, dict):
                 group_opts = source_data.get(group)
                 if group_opts:
                     opts = Options(group, **group_opts)
-                    resolved_options.append(opts)
+                    resolved_pairs.append((source_name, opts))
 
-        if not resolved_options:
-            return Options(group, allowed_keywords=cls._get_allowed_keywords(obj, group, backend))
+        if not resolved_pairs:
+            return Options(group, allowed_keywords=cls._get_allowed_keywords(obj, group, backend)), {}
 
-        return cls.merge_options(resolved_options, group)
+        return cls.merge_options(resolved_pairs, group)
 
     @classmethod
-    def resolve_inheritance(cls, tree, obj, group, backend=None):
+    def resolve_inheritance(cls, tree, obj, group, backend=None, defaults=True):
         """Phase 2: Walk OptionTree hierarchy and resolve parent→child inheritance.
 
         Delegates to OptionTree.closest() for tree traversal.
+
+        Parameters
+        ----------
+        tree : OptionTree
+            The option tree to walk
+        obj : Dimensioned
+            The object to look up
+        group : str
+            The option group
+        backend : str, optional
+            The backend name
+        defaults : bool, optional
+            Whether to include default values from parent nodes / global tree.
+            When False, only returns explicitly set values at the matching node
+            (plus internal tree hierarchy inheritance).
         """
-        return tree.closest(obj, group, defaults=True, backend=backend)
+        return tree.closest(obj, group, defaults=defaults, backend=backend)
 
     @classmethod
-    def merge_options(cls, options_list, group):
-        """Phase 3: Merge multiple Options objects, later entries override earlier ones.
+    def merge_options(cls, paired_options, group):
+        """Phase 3: Merge multiple (source_name, Options) pairs, later entries override earlier ones.
 
         This implements the priority ordering - sources added later in the
         collection phase have higher priority.
+
+        Parameters
+        ----------
+        paired_options : list of (source_name, Options) tuples
+            Ordered from lowest to highest priority
+        group : str
+            The option group name
+
+        Returns
+        -------
+        (Options, dict[str, str])
+            Merged Options and provenance dict {key: source_name}
         """
-        if not options_list:
-            return Options(group)
+        if not paired_options:
+            return Options(group), {}
 
         merged_kwargs = {}
         merged_allowed = Keywords()
-        for opts in options_list:
-            merged_kwargs.update(opts.kwargs)
+        provenance = {}
+
+        for source_name, opts in paired_options:
+            for key in opts.kwargs:
+                merged_kwargs[key] = opts.kwargs[key]
+                provenance[key] = source_name
             if opts.allowed_keywords:
                 merged_allowed = merged_allowed + opts.allowed_keywords
 
-        return Options(group, allowed_keywords=merged_allowed, **merged_kwargs)
+        return Options(group, allowed_keywords=merged_allowed, **merged_kwargs), provenance
 
     @classmethod
     def classify_options(cls, obj, flat_kwargs, backend=None):
@@ -1137,16 +1222,36 @@ class OptionResolver:
         return classified
 
     @classmethod
-    def filter_by_backend(cls, options, group, obj, backend):
+    def filter_by_backend(cls, options, group, obj, backend, provenance=None):
         """Phase 5: Filter options by backend-specific allowed keywords.
 
         - 'style': filter by plot_class.style_opts
         - 'plot': filter by plot_class.param
         - 'norm': filter by ['framewise', 'axiswise']
         - 'output': filter by ['backend']
+
+        Parameters
+        ----------
+        options : Options
+            The options to filter
+        group : str
+            The option group name
+        obj : Dimensioned
+            The object being rendered
+        backend : str
+            The backend name
+        provenance : dict[str, str], optional
+            Per-key source attribution to filter alongside options
+
+        Returns
+        -------
+        (Options, dict[str, str])
+            Filtered options and filtered provenance dict
         """
+        provenance = provenance or {}
+
         if not options or not options.kwargs:
-            return options
+            return options, dict(provenance)
 
         plot_class = None
         try:
@@ -1165,8 +1270,10 @@ class OptionResolver:
             allowed = Options._output_allowed_kws
 
         if allowed is not None:
-            return options.filtered(allowed)
-        return options
+            filtered_opts = options.filtered(allowed)
+            filtered_prov = {k: v for k, v in provenance.items() if k in filtered_opts.kwargs}
+            return filtered_opts, filtered_prov
+        return options, dict(provenance)
 
     @classmethod
     def _get_allowed_keywords(cls, obj, group, backend):
