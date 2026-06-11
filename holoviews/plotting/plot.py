@@ -34,6 +34,7 @@ from ..selection import NoOpSelectionDisplay
 from ..streams import RangeX, RangeXY, RangeY, Stream
 from ..util.transform import dim
 from .util import (
+    _last_frame,
     attach_streams,
     compute_overlayable_zorders,
     dim_axis_label,
@@ -1110,7 +1111,7 @@ class CallbackPlot:
                     # Skip if Stream.source is an overlay but the plot isn't
                     # or if the source is an element but the plot isn't
                     src_el = (
-                        stream.source.last if isinstance(stream.source, HoloMap) else stream.source
+                        _last_frame(stream.source) if isinstance(stream.source, HoloMap) else stream.source
                     )
                     if not self._matching_plot_type(src_el):
                         continue
@@ -1136,13 +1137,13 @@ class CallbackPlot:
         if isinstance(self, GenericOverlayPlot):
             zorders = []
         elif self.batched:
-            zorders = list(range(self.zorder, self.zorder + len(self.hmap.last)))
+            zorders = list(range(self.zorder, self.zorder + len(_last_frame(self.hmap))))
         else:
             zorders = [self.zorder]
 
         if isinstance(self, GenericOverlayPlot) and not self.batched:
             if self.overlaid:
-                sources = [self.hmap.last]
+                sources = [_last_frame(self.hmap)]
             else:
                 sources = [o for i, inputs in self.stream_sources.items() for o in inputs]
         elif not self.static or isinstance(self.hmap, DynamicMap):
@@ -1150,7 +1151,7 @@ class CallbackPlot:
                 o for i, inputs in self.stream_sources.items() for o in inputs if i in zorders
             ]
         else:
-            sources = [self.hmap.last]
+            sources = [_last_frame(self.hmap)]
         return sources
 
 

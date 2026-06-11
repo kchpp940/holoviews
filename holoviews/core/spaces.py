@@ -14,7 +14,7 @@ import numpy as np
 import param
 
 from ..streams import Params, Stream, streams_list_from_dict
-from ..util.warnings import HoloviewsUserWarning, warn
+from ..util.warnings import HoloviewsUserWarning, deprecated, warn
 from . import traversal, util
 from .accessors import Opts, Redim
 from .dimension import Dimension, ViewableElement
@@ -962,23 +962,30 @@ class DynamicMap(HoloMap):
 
     @property
     def context(self):
-        """访问运行时上下文 DynamicMapContext。"""
+        """访问运行时上下文 DynamicMapContext。推荐所有运行时状态和操作通过此接口访问。"""
         return self._context
+
+    # ---- 兼容层 (Transition Layer) ----
+    # 以下属性和方法均为向后兼容保留，新代码应直接通过 dmap.context.* 访问
 
     @property
     def _posarg_keys(self):
+        deprecated("2.0", "DynamicMap._posarg_keys", "DynamicMap.context.posarg_keys")
         return self._context.posarg_keys
 
     @_posarg_keys.setter
     def _posarg_keys(self, value):
+        deprecated("2.0", "DynamicMap._posarg_keys", "DynamicMap.context.posarg_keys")
         self._context._posarg_keys = value
 
     @property
     def _current_key(self):
+        deprecated("2.0", "DynamicMap._current_key", "DynamicMap.context.current_key")
         return self._context.current_key
 
     @_current_key.setter
     def _current_key(self, value):
+        deprecated("2.0", "DynamicMap._current_key", "DynamicMap.context.current_key")
         self._context.current_key = value
 
     @property
@@ -1010,26 +1017,32 @@ class DynamicMap(HoloMap):
 
     @property
     def current_key(self):
-        """Returns the current key value."""
+        """Returns the current key value.
+
+        For runtime access, prefer DynamicMap.context.current_key.
+        """
         return self._context.current_key
 
     def _stream_parameters(self):
+        deprecated("2.0", "DynamicMap._stream_parameters()", "DynamicMap.context.stream_parameters()")
         return self._context.stream_parameters()
 
     def _initial_key(self):
         """Construct an initial key for based on the lower range bounds or
         values on the key dimensions.
 
-        委托给 DynamicMapContext.initial_key()
+        Deprecated: use DynamicMap.context.initial_key() instead.
         """
+        deprecated("2.0", "DynamicMap._initial_key()", "DynamicMap.context.initial_key()")
         return self._context.initial_key()
 
     def _validate_key(self, key):
         """Make sure the supplied key values are within the bounds
         specified by the corresponding dimension range and soft_range.
 
-        委托给 DynamicMapContext.validate_key()
+        Deprecated: use DynamicMap.context.validate_key() instead.
         """
+        deprecated("2.0", "DynamicMap._validate_key()", "DynamicMap.context.validate_key()")
         return self._context.validate_key(key)
 
     def event(self, **kwargs):
@@ -1037,6 +1050,8 @@ class DynamicMap(HoloMap):
 
         Automatically find streams matching the supplied kwargs to
         update and trigger events on them.
+
+        For internal runtime use, prefer DynamicMap.context.handle_event().
 
         Parameters
         ----------
@@ -1048,15 +1063,17 @@ class DynamicMap(HoloMap):
     def _style(self, retval):
         """Applies custom option tree to values return by the callback.
 
-        委托给 DynamicMapContext._style()
+        Deprecated: use DynamicMap.context._style() instead.
         """
+        deprecated("2.0", "DynamicMap._style()", "DynamicMap.context._style()")
         return self._context._style(retval)
 
     def _execute_callback(self, *args):
         """Executes the callback with the appropriate args and kwargs.
 
-        委托给 DynamicMapContext.execute_callback()
+        Deprecated: use DynamicMap.context.execute_callback() instead.
         """
+        deprecated("2.0", "DynamicMap._execute_callback()", "DynamicMap.context.execute_callback()")
         return self._context.execute_callback(*args)
 
     def options(self, *args, **kwargs):
@@ -1525,7 +1542,7 @@ class DynamicMap(HoloMap):
             initialized = self
         else:
             initialized = self.clone()
-            initialized[initialized._initial_key()]
+            initialized[initialized._context.initial_key()]
 
         if not isinstance(initialized.last, (Layout, NdLayout, GridSpace)):
             return self
