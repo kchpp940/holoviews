@@ -119,13 +119,11 @@ def lookup_options(obj, group, backend):
 
     node = Store.lookup_options(backend, obj, group)
 
-    theme = _get_object_theme(obj) or get_active_theme()
-    node = _merge_options_with_theme(node, theme, backend, group)
-
     if group == "style" and style_opts is not None:
         return node.filtered(style_opts)
     elif group == "plot" and plot_class:
-        return node.filtered(list(plot_class.param))
+        allowed = [k for k in plot_class.param if k != "theme"]
+        return node.filtered(allowed)
     else:
         return node
 
@@ -1394,6 +1392,16 @@ class Store:
 
         theme = _get_object_theme(obj) or get_active_theme()
         options = _merge_options_with_theme(options, theme, backend, group)
+
+        if "theme" in options.kwargs:
+            from .options import Options
+            filtered_kwargs = {k: v for k, v in options.kwargs.items() if k != "theme"}
+            options = Options(
+                key=options.key,
+                allowed_keywords=options.allowed_keywords,
+                merge_keywords=options.merge_keywords,
+                **filtered_kwargs,
+            )
 
         return options
 

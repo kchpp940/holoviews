@@ -309,6 +309,152 @@ class TestThemeIntegration:
         plotly_styles = theme.get_styles("plotly")
         assert plotly_styles.background["color"] == "#222222"
 
+    def test_theme_parameter_not_leaked_to_backend(self):
+        pytest.importorskip("bokeh")
+        hv.extension("bokeh")
+
+        curve = hv.Curve([1, 2, 3]).opts(theme="dark", bgcolor="#ff0000")
+        opts = hv.Store.lookup_options("bokeh", curve, "plot")
+
+        assert "theme" not in opts.kwargs
+
+    def test_explicit_opts_override_theme(self):
+        pytest.importorskip("bokeh")
+        hv.extension("bokeh")
+
+        hv.opts.defaults_theme("presentation")
+
+        curve = hv.Curve([1, 2, 3]).opts(bgcolor="#ff0000")
+        opts = hv.Store.lookup_options("bokeh", curve, "plot")
+
+        assert opts.kwargs["bgcolor"] == "#ff0000"
+        assert opts.kwargs.get("text_font_size") == "16pt"
+
+    def test_object_theme_overrides_global(self):
+        pytest.importorskip("bokeh")
+        hv.extension("bokeh")
+
+        hv.opts.defaults_theme("default")
+
+        curve1 = hv.Curve([1, 2, 3]).opts(theme="dark")
+        curve2 = hv.Curve([1, 2, 3])
+
+        opts1 = hv.Store.lookup_options("bokeh", curve1, "plot")
+        opts2 = hv.Store.lookup_options("bokeh", curve2, "plot")
+
+        assert opts1.kwargs.get("bgcolor") == "#222222"
+        assert opts2.kwargs.get("bgcolor") == "#ffffff"
+
+    def test_context_theme_overrides_global(self):
+        pytest.importorskip("bokeh")
+        hv.extension("bokeh")
+
+        hv.opts.defaults_theme("default")
+
+        curve = hv.Curve([1, 2, 3])
+
+        with hv.opts.theme("dark"):
+            opts = hv.Store.lookup_options("bokeh", curve, "plot")
+            assert opts.kwargs.get("bgcolor") == "#222222"
+
+        opts2 = hv.Store.lookup_options("bokeh", curve, "plot")
+        assert opts2.kwargs.get("bgcolor") == "#ffffff"
+
+    def test_bokeh_legend_styles(self):
+        pytest.importorskip("bokeh")
+        theme = get_theme("presentation")
+        from holoviews.core.theme import _theme_to_options
+
+        opts = _theme_to_options(theme, "bokeh", "plot")
+        assert "legend_position" in opts
+        assert "legend_opts" in opts
+        assert "label_text_font_size" in opts["legend_opts"]
+
+    def test_bokeh_colorbar_styles(self):
+        pytest.importorskip("bokeh")
+        theme = get_theme("presentation")
+        from holoviews.core.theme import _theme_to_options
+
+        opts = _theme_to_options(theme, "bokeh", "plot")
+        assert "colorbar_opts" in opts
+        assert "title_text_font_size" in opts["colorbar_opts"]
+
+    def test_bokeh_hover_styles(self):
+        pytest.importorskip("bokeh")
+        theme = get_theme("presentation")
+        from holoviews.core.theme import _theme_to_options
+
+        opts = _theme_to_options(theme, "bokeh", "style")
+        assert "hover_fill_color" in opts
+        assert "hover_fill_alpha" in opts
+
+    def test_bokeh_toolbar_styles(self):
+        pytest.importorskip("bokeh")
+        theme = get_theme("presentation")
+        from holoviews.core.theme import _theme_to_options
+
+        opts = _theme_to_options(theme, "bokeh", "plot")
+        assert opts["toolbar"] == "above"
+        assert opts["autohide_toolbar"] is True
+
+    def test_matplotlib_rcparams_integration(self):
+        pytest.importorskip("matplotlib")
+        theme = get_theme("presentation")
+        from holoviews.core.theme import _theme_to_options
+
+        opts = _theme_to_options(theme, "matplotlib", "plot")
+        assert "fig_rcparams" in opts
+        assert opts["fig_rcparams"]["font.size"] == 16
+
+    def test_matplotlib_gridstyle_integration(self):
+        pytest.importorskip("matplotlib")
+        theme = get_theme("presentation")
+        from holoviews.core.theme import _theme_to_options
+
+        opts = _theme_to_options(theme, "matplotlib", "plot")
+        assert "gridstyle" in opts
+        assert "grid_color" in opts["gridstyle"]
+
+    def test_plotly_layout_styles(self):
+        pytest.importorskip("plotly")
+        theme = get_theme("presentation")
+        from holoviews.core.theme import _theme_to_options
+
+        opts = _theme_to_options(theme, "plotly", "plot")
+        assert "font_size" in opts
+        assert "paper_bgcolor" in opts
+
+    def test_plotly_hover_styles(self):
+        pytest.importorskip("plotly")
+        theme = get_theme("presentation")
+        from holoviews.core.theme import _theme_to_options
+
+        opts = _theme_to_options(theme, "plotly", "style")
+        assert "hoverlabel_bgcolor" in opts
+        assert "hoverlabel_font_size" in opts
+
+    def test_full_priority_chain(self):
+        pytest.importorskip("bokeh")
+        hv.extension("bokeh")
+
+        hv.opts.defaults_theme("default")
+
+        curve = hv.Curve([1, 2, 3]).opts(theme="dark", bgcolor="#ff0000")
+
+        with hv.opts.theme("presentation"):
+            opts = hv.Store.lookup_options("bokeh", curve, "plot")
+            assert opts.kwargs["bgcolor"] == "#ff0000"
+            assert opts.kwargs.get("text_font_size") == "12pt"
+
+    def test_theme_in_style_options_not_leaked(self):
+        pytest.importorskip("bokeh")
+        hv.extension("bokeh")
+
+        curve = hv.Curve([1, 2, 3]).opts(theme="dark")
+        opts = hv.Store.lookup_options("bokeh", curve, "style")
+
+        assert "theme" not in opts.kwargs
+
 
 class TestThemeApi:
     def test_module_level_functions(self):
