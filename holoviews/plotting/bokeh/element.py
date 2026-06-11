@@ -34,13 +34,14 @@ from bokeh.models.formatters import (
     MercatorTickFormatter,
     TickFormatter,
 )
-from bokeh.models.layouts import TabPanel, Tabs
+from bokeh.models.layouts import Column, Row, TabPanel, Tabs
 from bokeh.models.mappers import (
     CategoricalColorMapper,
     LinearColorMapper,
     LogColorMapper,
 )
 from bokeh.models.ranges import DataRange1d, FactorRange, Range1d
+from bokeh.models.widgets import Div as DivWidget
 from bokeh.models.scales import LogScale
 from bokeh.models.tickers import (
     BasicTicker,
@@ -52,15 +53,9 @@ from bokeh.models.tickers import (
 from bokeh.models.tools import Tool
 
 from ...core import Dataset, Dimension, DynamicMap, Element, util
+from ...core.debug import debug
 from ...core.options import Keywords, SkipRendering, abbreviated_exception
 from ...core.overlay import CompositeOverlay, NdOverlay
-from ...core.theme import (
-    apply_bokeh_theme_to_colorbar,
-    apply_bokeh_theme_to_figure,
-    apply_bokeh_theme_to_hover,
-    apply_bokeh_theme_to_legend,
-    get_theme_styles_for_plot,
-)
 from ...core.util import dtype_kind
 from ...element import Annotation, Contours, Graph, Path, Tiles, VectorField
 from ...streams import Buffer, PlotSize, RangeXY
@@ -449,6 +444,14 @@ class ElementPlot(BokehPlot, GenericElementPlot):
         doc="The hover mode determines how the hover tool is activated.",
     )
 
+    show_debug_panel = param.Boolean(
+        default=False,
+        doc="""
+        Whether to show a debug information side panel alongside the plot.
+        The panel displays stream parameters, cache info, operation details,
+        and rendering ranges when HoloViews debug mode is enabled.""",
+    )
+
     xticks = param.ClassSelector(
         class_=(int, list, tuple, np.ndarray, Ticker),
         default=None,
@@ -771,8 +774,6 @@ class ElementPlot(BokehPlot, GenericElementPlot):
         elif any(hover_tools):
             hover = hover_tools[0]
         if hover:
-            theme_styles, theme_user_keys = get_theme_styles_for_plot(self, "bokeh")
-            apply_bokeh_theme_to_hover(hover, theme_styles, theme_user_keys)
             self.handles["hover"] = hover
 
         if self.subcoordinate_y:
@@ -1225,13 +1226,10 @@ class ElementPlot(BokehPlot, GenericElementPlot):
         else:
             title = ""
 
-        theme_styles, theme_user_keys = get_theme_styles_for_plot(self, "bokeh")
-
         if self.toolbar != "disable":
             tools = self._init_tools(element)
             properties["tools"] = tools
-            if "position" in theme_user_keys.get("toolbar", set()):
-                properties["toolbar_location"] = self.toolbar
+            properties["toolbar_location"] = self.toolbar
         else:
             properties["tools"] = []
             properties["toolbar_location"] = None
@@ -1248,13 +1246,7 @@ class ElementPlot(BokehPlot, GenericElementPlot):
             fig = bokeh.plotting.figure(title=title, **properties)
         fig.xaxis[0].update(**axis_props["x"])
         fig.yaxis[0].update(**axis_props["y"])
-
-        apply_bokeh_theme_to_figure(fig, theme_styles, theme_user_keys)
-
-        if "autohide" in theme_user_keys.get("toolbar", set()):
-            fig.toolbar.autohide = self.autohide_toolbar
-        if "position" in theme_user_keys.get("toolbar", set()):
-            fig.toolbar_location = self.toolbar
+        fig.toolbar.autohide = self.autohide_toolbar
 
         # Set up handlers to configure following behavior on streaming plots
         if self.streaming:
@@ -1647,6 +1639,31 @@ class ElementPlot(BokehPlot, GenericElementPlot):
 
         l, b, r, t = None, None, None, None
         if any(isinstance(r, (Range1d, DataRange1d)) for r in [x_range, y_range]):
+            if debug.enabled:
+                try:
+                    current_x = (
+                        getattr(x_range, "start", None),
+                        getattr(x_range, "end", None),
+                    )
+                    current_y = (
+                        getattr(y_range, "start", None),
+                        getattr(y_range, "end", None),
+                    )
+                    plot_size = (
+                        getattr(plot, "frame_width", None) or getattr(plot, "width", None),
+                        getattr(plot, "frame_height", None) or getattr(plot, "height", None),
+                    )
+                    debug.record_render(
+                        backend="bokeh",
+                        render_info={
+                            "actual_range": {"x": current_x, "y": current_y},
+                            "plot_size": plot_size,
+                            "plot_type": type(self).__name__,
+                            "element_type": type(element).__name__,
+                        },
+                    )
+                except Exception:
+                    pass
             if self.multi_y:
                 range_dim = x_range.name if self.invert_axes else y_range.name
             else:
@@ -2568,6 +2585,13 @@ class ElementPlot(BokehPlot, GenericElementPlot):
 
         self.drawn = True
 
+        if not self.overlaid and (self.show_debug_panel or debug.enabled):
+            debug_panel = self._create_debug_panel(plot)
+            if debug_panel is not None:
+                combined = Row(plot, debug_panel)
+                self.handles["combined_layout"] = combined
+                return combined
+
         return plot
 
     def _apply_hard_bounds(self, element, ranges):
@@ -2606,6 +2630,152 @@ class ElementPlot(BokehPlot, GenericElementPlot):
             for cb in self._js_on_data_callbacks:
                 if cb not in cds.js_property_callbacks.get("change:data", []):
                     cds.js_on_change("data", cb)
+
+    def _format_debug_info(self) -> str:
+        """Format the current debug information as HTML for the side panel."""
+        if not debug.enabled:
+            return (
+                "<div style='padding: 10px; background: #fff3cd; "
+                "border: 1px solid #ffeeba; border-radius: 4px; "
+                "font-family: monospace; font-size: 11px;'>"
+                "<strong>Debug Mode:</strong> Disabled. "
+                "Set <code>hv.debug.enabled = True</code> to enable."
+                "</div>"
+            )
+
+        frame = debug.get_latest_frame()
+        if frame is None:
+            return (
+                "<div style='padding: 10px; background: #d1ecf1; "
+                "border: 1px solid #bee5eb; border-radius: 4px; "
+                "font-family: monospace; font-size: 11px;'>"
+                "<strong>Debug Info:</strong> No frames collected yet. "
+                "Interact with the plot to generate debug data."
+                "</div>"
+            )
+
+        html_parts = [
+            "<div style='font-family: monospace; font-size: 11px; "
+            "max-width: 320px; max-height: 500px; overflow-y: auto;'>",
+            "<div style='font-weight: bold; color: #007bff; margin-bottom: 5px;'>"
+            f"Frame: {frame['frame_id']}</div>",
+        ]
+
+        if frame.get("redraw_reason"):
+            html_parts.append(
+                "<div style='margin: 4px 0; padding: 4px; background: #fff3cd; "
+                "border-radius: 3px;'><strong>Redraw:</strong> "
+                f"{frame['redraw_reason']}</div>"
+            )
+
+        if frame["streams"]:
+            html_parts.append(
+                "<div style='margin: 4px 0;'><strong style='color: #6c757d;'>Streams:</strong></div>"
+            )
+            html_parts.append("<ul style='margin: 2px 0 4px 16px; padding: 0;'>")
+            for sname, sinfo in frame["streams"].get("parameters", {}).items():
+                html_parts.append(f"<li><code>{sname}</code>: {sinfo}</li>")
+            triggered = frame["streams"].get("triggered", [])
+            if triggered:
+                html_parts.append(
+                    f"<li style='color: #dc3545;'>Triggered: {triggered}</li>"
+                )
+            html_parts.append("</ul>")
+
+        if frame["cache"].get("history"):
+            html_parts.append(
+                "<div style='margin: 4px 0;'><strong style='color: #6c757d;'>Cache:</strong></div>"
+            )
+            html_parts.append("<ul style='margin: 2px 0 4px 16px; padding: 0;'>")
+            for entry in frame["cache"]["history"][-3:]:
+                status = "✓ HIT" if entry["hit"] else "✗ MISS"
+                color = "#28a745" if entry["hit"] else "#dc3545"
+                reason = f" ({entry['reason']})" if entry.get("reason") else ""
+                html_parts.append(
+                    f"<li><span style='color: {color};'>{status}</span> "
+                    f"key: {entry['key']}{reason}</li>"
+                )
+            html_parts.append("</ul>")
+
+        if frame["operation"].get("operations"):
+            html_parts.append(
+                "<div style='margin: 4px 0;'><strong style='color: #6c757d;'>Operations:</strong></div>"
+            )
+            for op in frame["operation"]["operations"]:
+                html_parts.append(
+                    "<div style='margin: 2px 0; padding: 4px; background: #e9ecef; "
+                    "border-radius: 3px;'>"
+                )
+                html_parts.append(f"<div><code>{op.get('name', 'Unknown')}</code></div>")
+                details = []
+                if "aggregation_size" in op:
+                    details.append(f"Size: {op['aggregation_size']}")
+                if "sampling_resolution" in op and any(op["sampling_resolution"]):
+                    details.append(f"Res: {op['sampling_resolution']}")
+                if op.get("clipped_range"):
+                    details.append("Clipped")
+                if "aggregator" in op:
+                    details.append(f"Agg: {op['aggregator']}")
+                if "data_points" in op:
+                    details.append(f"Data: {op['data_points']}")
+                if details:
+                    html_parts.append(
+                        "<div style='font-size: 10px; color: #495057;'>"
+                        f"{' | '.join(details)}</div>"
+                    )
+                html_parts.append("</div>")
+
+        if frame["render"]:
+            html_parts.append(
+                "<div style='margin: 4px 0;'><strong style='color: #6c757d;'>Render:</strong></div>"
+            )
+            html_parts.append("<ul style='margin: 2px 0 4px 16px; padding: 0;'>")
+            for backend, rinfo in frame["render"].items():
+                details = []
+                if "actual_range" in rinfo:
+                    details.append(f"Range: {rinfo['actual_range']}")
+                if "plot_size" in rinfo:
+                    details.append(f"Size: {rinfo['plot_size']}")
+                html_parts.append(
+                    f"<li><strong>{backend}</strong>: {' | '.join(details)}</li>"
+                )
+            html_parts.append("</ul>")
+
+        timing = frame.get("timing", {})
+        if timing:
+            html_parts.append(
+                "<div style='margin: 4px 0;'><strong style='color: #6c757d;'>Timing:</strong></div>"
+            )
+            html_parts.append("<ul style='margin: 2px 0 4px 16px; padding: 0;'>")
+            for stage, duration in timing.items():
+                html_parts.append(f"<li>{stage}: {duration:.4f}s</li>")
+            html_parts.append("</ul>")
+
+        html_parts.append("</div>")
+        return "".join(html_parts)
+
+    def _create_debug_panel(self, plot):
+        """Create a side panel containing debug information."""
+        if not (self.show_debug_panel or debug.enabled):
+            return None
+
+        debug_div = DivWidget(
+            text=self._format_debug_info(),
+            styles={"white-space": "pre-wrap"},
+        )
+        self.handles["debug_panel"] = debug_div
+        self.handles["debug_container"] = Column(
+            debug_div,
+            width=340,
+            margin=(5, 5, 5, 5),
+        )
+        return self.handles["debug_container"]
+
+    def _update_debug_panel(self):
+        """Update the debug panel with the latest frame information."""
+        if "debug_panel" not in self.handles:
+            return
+        self.handles["debug_panel"].text = self._format_debug_info()
 
     def _update_glyphs(self, element, ranges, style):
         plot = self.handles["plot"]
@@ -2731,6 +2901,7 @@ class ElementPlot(BokehPlot, GenericElementPlot):
 
         self._update_glyphs(element, ranges, self.style[self.cyclic_index])
         self._execute_hooks(element)
+        self._update_debug_panel()
 
     def _execute_hooks(self, element):
         dtype_fix_hook(self, element)
@@ -3184,9 +3355,6 @@ class ColorbarPlot(ElementPlot):
         plot.add_layout(color_bar, pos)
         self.handles[prefix + "colorbar"] = color_bar
 
-        theme_styles, theme_user_keys = get_theme_styles_for_plot(self, "bokeh")
-        apply_bokeh_theme_to_colorbar(color_bar, theme_styles, theme_user_keys)
-
     def _get_colormapper(
         self,
         eldim,
@@ -3457,10 +3625,6 @@ class LegendPlot(ElementPlot):
                 for item in leg.items:
                     for r in item.renderers:
                         r.muted = self.legend_muted
-
-        theme_styles, theme_user_keys = get_theme_styles_for_plot(self, "bokeh")
-        for leg in plot.legend:
-            apply_bokeh_theme_to_legend(leg, theme_styles, theme_user_keys)
 
 
 class AnnotationPlot:

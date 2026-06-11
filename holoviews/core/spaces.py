@@ -17,6 +17,7 @@ from ..streams import Params, Stream, streams_list_from_dict
 from ..util.warnings import HoloviewsUserWarning, warn
 from . import traversal, util
 from .accessors import Opts, Redim
+from .debug import debug
 from .dimension import Dimension, ViewableElement
 from .layout import AdjointLayout, Empty, Layout, Layoutable, NdLayout
 from .ndmapping import NdMapping, UniformNdMapping, item_check
@@ -991,6 +992,26 @@ class DynamicMap(HoloMap):
         """Returns the current key value."""
         return self._current_key
 
+    @property
+    def debug_info(self):
+        """Returns the global debug context.
+
+        Convenience property to access the debug context for
+        inspection and configuration.
+
+        Returns
+        -------
+        DebugContext
+            The global debug context instance.
+
+        Examples
+        --------
+        >>> dmap.debug_info.enabled = True
+        >>> print(dmap.debug_info.summary())
+        >>> latest_frame = dmap.debug_info.get_latest_frame()
+        """
+        return debug
+
     def _stream_parameters(self):
         return util.stream_parameters(self.streams, no_duplicates=not self.positional_stream_args)
 
@@ -1073,14 +1094,23 @@ class DynamicMap(HoloMap):
             raise KeyError(msg.format(invalid=", ".join(f"{i!r}" for i in invalid)))
 
         streams = []
+        updated_streams = {}
         for stream in self.streams:
             contents = stream.contents
             applicable_kws = {k: v for k, v in kwargs.items() if k in set(contents.keys())}
             if not applicable_kws and contents:
                 continue
             streams.append(stream)
+            updated_streams[stream.name] = applicable_kws
             rkwargs = util.rename_stream_kwargs(stream, applicable_kws, reverse=True)
             stream.update(**rkwargs)
+
+        if debug.enabled and updated_streams:
+            debug.record_streams({"triggered": list(updated_streams.keys())})
+            debug.record_redraw_reason(
+                f"event() called with updates: "
+                + ", ".join(f"{k}={v}" for k, v in kwargs.items())
+            )
 
         Stream.trigger(streams)
 
@@ -1114,8 +1144,22 @@ class DynamicMap(HoloMap):
         if not isinstance(self.callback, Generator):
             kwargs["_memoization_hash_"] = hash_items
 
+        if debug.enabled:
+            import time
+
+            t0 = time.time()
+            triggered_streams = [s.name for s in self.streams if getattr(s, "_triggering", False)]
+            if triggered_streams:
+                debug.record_redraw_reason(
+                    f"streams triggered: {', '.join(triggered_streams)}"
+                )
+
         with dynamicmap_memoization(self.callback, self.streams):
             retval = self.callback(*args, **kwargs)
+
+        if debug.enabled:
+            debug.record_timing("callback_execution", time.time() - t0)
+
         return self._style(retval)
 
     def options(self, *args, **kwargs):
@@ -1346,16 +1390,44 @@ class DynamicMap(HoloMap):
                 return sliced
 
         # Cache lookup
+        cache_hit = False
+        cache_miss_reason = None
         try:
             dimensionless = util.dimensionless_contents(
                 get_nested_streams(self), self.kdims, no_duplicates=False
             )
             empty = self._stream_parameters() == [] and self.kdims == []
             if dimensionless or empty:
+                cache_miss_reason = "dimensionless streams disable cache"
                 raise KeyError("Using dimensionless streams disables DynamicMap cache")
             cache = super().__getitem__(key)
+            cache_hit = True
         except KeyError:
             cache = None
+            if cache_miss_reason is None:
+                cache_miss_reason = "key not in cache"
+
+        if debug.enabled:
+            # Record stream parameters
+            stream_params = {}
+            for s in self.streams:
+                try:
+                    stream_params[s.name] = dict(s.contents)
+                except Exception:
+                    stream_params[s.name] = str(s.contents)
+            debug.record_streams({"parameters": stream_params})
+
+            # Record cache info
+            debug.record_cache(
+                key=str(tuple_key),
+                hit=cache_hit,
+                cache_size=len(self.data) if hasattr(self, "data") else None,
+                reason=cache_miss_reason if not cache_hit else None,
+            )
+            if not cache_hit:
+                debug.record_redraw_reason(
+                    f"cache miss for key {tuple_key}: {cache_miss_reason}"
+                )
 
         # If the key expresses a cross product, compute the elements and return
         product = self._cross_product(tuple_key, cache.data if cache else {}, data_slice)

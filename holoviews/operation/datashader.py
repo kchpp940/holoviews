@@ -32,6 +32,7 @@ from ..core.data import (
     XArrayInterface,
     cuDFInterface,
 )
+from ..core.debug import debug
 from ..core.util import (
     cast_array_to_int64,
     cftime_to_timestamp,
@@ -576,6 +577,8 @@ class aggregate(LineAggregationOperation):
         return x, y, Dataset(df, kdims=kdims, vdims=vdims), glyph
 
     def _process(self, element, key=None):
+        import time
+
         agg_fn, sel_fn, agg_state = self._get_agg_state(element)
         category_name = self._get_category_column_name(agg_fn)
 
@@ -587,10 +590,15 @@ class aggregate(LineAggregationOperation):
             )
             return overlay_aggregate(element, **params)
 
+        if debug.enabled:
+            t0 = time.time()
+
         if element._plot_id in self._precomputed:
             x, y, data, glyph = self._precomputed[element._plot_id]
+            precomputed_hit = True
         else:
             x, y, data, glyph = self.get_agg_data(element, category_name)
+            precomputed_hit = False
 
         if self.p.precompute:
             self._precomputed[element._plot_id] = x, y, data, glyph
@@ -602,8 +610,30 @@ class aggregate(LineAggregationOperation):
         params = self._get_agg_params(element, x, y, agg_fn, (x0, y0, x1, y1))
 
         if x is None or y is None or width == 0 or height == 0:
+            if debug.enabled:
+                debug.record_operation(
+                    op_name=type(self).__name__,
+                    op_info={
+                        "aggregator": type(agg_fn).__name__,
+                        "glyph": glyph,
+                        "precomputed": precomputed_hit,
+                        "empty": True,
+                        "empty_reason": "invalid dimensions or zero size",
+                    },
+                )
             return self._empty_agg(element, x, y, width, height, xs, ys, agg_fn, **params)
         elif getattr(data, "interface", None) is not DaskInterface and not len(data):
+            if debug.enabled:
+                debug.record_operation(
+                    op_name=type(self).__name__,
+                    op_info={
+                        "aggregator": type(agg_fn).__name__,
+                        "glyph": glyph,
+                        "precomputed": precomputed_hit,
+                        "empty": True,
+                        "empty_reason": "no data points",
+                    },
+                )
             empty_val = 0 if isinstance(agg_fn, ds.count) else np.nan
             xarray = xr.DataArray(
                 np.full((height, width), empty_val),
@@ -616,6 +646,25 @@ class aggregate(LineAggregationOperation):
 
         dfdata = PandasInterface.as_dframe(data)
         cvs_fn = getattr(cvs, glyph)
+
+        if debug.enabled:
+            try:
+                n_points = len(dfdata)
+            except Exception:
+                n_points = None
+            debug.record_operation(
+                op_name=type(self).__name__,
+                op_info={
+                    "aggregator": type(agg_fn).__name__,
+                    "aggregator_column": getattr(agg_fn, "column", None),
+                    "glyph": glyph,
+                    "precomputed": precomputed_hit,
+                    "data_points": n_points,
+                    "data_type": type(data).__name__,
+                    "empty": False,
+                },
+            )
+
         agg = self._apply_aggregate_with_agg_state(
             dfdata, cvs_fn, agg_fn, x, y, agg_state, sel_fn, params
         )
@@ -631,6 +680,10 @@ class aggregate(LineAggregationOperation):
             params["vdims"] = list(map(str, agg.coords[agg_fn.column].data))
         elif agg_state == AggState.AGG_SEL_BY:
             params["vdims"] = [d for d in agg.data_vars if d not in agg.attrs["selector_columns"]]
+
+        if debug.enabled:
+            debug.record_timing("datashader_aggregation", time.time() - t0)
+
         return self.p.element_type(agg, **params)
 
     def _apply_datashader(self, dfdata, cvs_fn, agg_fn, x, y, agg_state: AggState):

@@ -5,6 +5,14 @@ import numpy as np
 from .accessors import Apply, Redim
 from .boundingregion import AARectangle, BoundingBox, BoundingEllipse
 from .data import Dataset, Interface
+from .debug import (
+    DebugContext,
+    debug,
+    debug_frame,
+    disable_debug,
+    enable_debug,
+    get_debug_context,
+)
 from .dimension import Dimension, Dimensioned, ViewableElement, ViewableTree
 from .element import Collator, Element, Element2D, Element3D, Tabular
 from .io import FileArchive
@@ -14,7 +22,6 @@ from .operation import Operation
 from .options import Store, StoreOptions
 from .overlay import CompositeOverlay, NdOverlay, Overlay
 from .sheetcoords import SheetCoordinateSystem
-from .theme import Theme, ThemeStyles
 from .spaces import DynamicMap, GridMatrix, GridSpace, HoloMap
 from .tree import AttrTree
 from .util import config
@@ -50,6 +57,7 @@ __all__ = [
     "Collator",
     "CompositeOverlay",
     "Dataset",
+    "DebugContext",
     "Dimension",
     "Dimensioned",
     "DynamicMap",
@@ -80,8 +88,13 @@ __all__ = [
     "archive",
     "boundingregion",
     "config",
+    "debug",
+    "debug_frame",
+    "disable_debug",
+    "enable_debug",
     "dimension",
     "element",
+    "get_debug_context",
     "layout",
     "ndmapping",
     "operation",

@@ -23,6 +23,7 @@ from pyviz_comms import JupyterComm
 
 from ..core import traversal, util
 from ..core.data import Dataset, disable_pipeline, enable_pipeline
+from ..core.debug import debug
 from ..core.element import Element, Element3D
 from ..core.layout import Empty, Layout, NdLayout
 from ..core.options import Compositor, SkipRendering, Store, lookup_options
@@ -383,16 +384,6 @@ class DimensionedPlot(Plot):
     dimension values.
 
     """
-
-    theme = param.Parameter(
-        default=None,
-        allow_None=True,
-        doc="""
-        Theme to apply to this plot. Can be either a theme name string
-        (e.g. 'presentation', 'dark') or a Theme object. This overrides
-        the global default theme and any context theme for this specific
-        plot.""",
-    )
 
     fontsize = param.Parameter(
         default=None,
@@ -1927,6 +1918,15 @@ class GenericElementPlot(DimensionedPlot):
         using the last available frame.
 
         """
+        if debug.enabled and ranges is not None:
+            debug.record_render(
+                backend=getattr(self, "backend", "generic"),
+                render_info={
+                    "frame_key": key,
+                    "element_type": type(self.hmap).__name__,
+                    "ranges": ranges,
+                },
+            )
 
 
 class GenericOverlayPlot(GenericElementPlot):

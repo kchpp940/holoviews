@@ -10,11 +10,6 @@ from ...core import util
 from ...core.dimension import Dimension
 from ...core.element import Element
 from ...core.spaces import DynamicMap
-from ...core.theme import (
-    apply_plotly_theme_to_layout,
-    apply_plotly_theme_to_trace,
-    get_theme_styles_for_plot,
-)
 from ...core.util import dtype_kind
 from ...element.tiles import Tiles
 from ...streams import Stream
@@ -386,9 +381,6 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
             trace[self._style_key] = dict(trace[self._style_key])
             for s, val in vectorized.items():
                 trace[self._style_key][s] = val[index]
-
-        theme_styles, theme_user_keys = get_theme_styles_for_plot(self, "plotly")
-        apply_plotly_theme_to_trace(trace, theme_styles, theme_user_keys)
         return {"traces": [trace]}
 
     def get_data(self, element, ranges, style, is_geo=False):
@@ -510,14 +502,11 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
     def init_layout(self, key, element, ranges, is_geo=False):
         el = element.traverse(lambda x: x, [Element])
         el = el[0] if el else element
-        theme_styles, theme_user_keys = get_theme_styles_for_plot(self, "plotly")
         layout = dict(
             title=self._format_title(key, separator=" "),
+            plot_bgcolor=self.bgcolor,
             uirevision=True,
         )
-        if "color" in theme_user_keys.get("background", set()):
-            layout["plot_bgcolor"] = self.bgcolor
-            layout["paper_bgcolor"] = self.bgcolor
         if not self.responsive:
             layout["width"] = self.width
             layout["height"] = self.height
@@ -671,14 +660,12 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
                 scene["aspectmode"] = "manual"
                 scene["aspectratio"] = self.aspect
             layout["scene"] = scene
-            apply_plotly_theme_to_layout(layout, theme_styles, xaxis, yaxis, theme_user_keys)
         else:
             l, b, r, t = self.margins
             layout["margin"] = dict(l=l, r=r, b=b, t=t, pad=4)
             if not is_geo:
                 layout["xaxis"] = xaxis
                 layout["yaxis"] = yaxis
-            apply_plotly_theme_to_layout(layout, theme_styles, xaxis, yaxis, theme_user_keys)
 
         return layout
 
@@ -752,31 +739,6 @@ class ColorbarPlot(ElementPlot):
         dim_name = dim_range_key(eldim)
         if self.colorbar:
             opts["colorbar"] = dict(**self.colorbar_opts)
-            theme_styles, theme_user_keys = get_theme_styles_for_plot(self, "plotly")
-            if theme_styles.colorbar:
-                cb_theme = theme_styles.colorbar
-                plotly_cb_keys = {
-                    "title_font_size": ("title", "font", "size"),
-                    "title_font_family": ("title", "font", "family"),
-                    "title_font_color": ("title", "font", "color"),
-                    "tick_font_size": ("tickfont", "size"),
-                    "tick_font_family": ("tickfont", "family"),
-                    "tick_font_color": ("tickfont", "color"),
-                    "bgcolor": ("bgcolor",),
-                    "bordercolor": ("bordercolor",),
-                    "borderwidth": ("borderwidth",),
-                    "len": ("len",),
-                    "thickness": ("thickness",),
-                }
-                for theme_key, nested_keys in plotly_cb_keys.items():
-                    if theme_key in cb_theme:
-                        if theme_key in theme_user_keys.get("colorbar", set()):
-                            continue
-                        target = opts["colorbar"]
-                        for k in nested_keys[:-1]:
-                            target = target.setdefault(k, {})
-                        if nested_keys[-1] not in target:
-                            target[nested_keys[-1]] = cb_theme[theme_key]
             if "title" not in opts["colorbar"]:
                 if isinstance(eldim, dim):
                     title = str(eldim)

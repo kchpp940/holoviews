@@ -1,0 +1,58 @@
+Error processing line 1 of /Users/pkcha/.local/lib/python3.13/site-packages/autogluon_common-1.5.1b20260503-nspkg.pth:
+
+  Traceback (most recent call last):
+    File "<frozen site>", line 207, in addpackage
+    File "<string>", line 1, in <module>
+    File "<frozen importlib._bootstrap>", line 810, in module_from_spec
+  AttributeError: 'NoneType' object has no attribute 'loader'
+
+Remainder of file ignored
+Error processing line 1 of /Users/pkcha/.local/lib/python3.13/site-packages/autogluon_core-1.5.1b20260503-nspkg.pth:
+
+  Traceback (most recent call last):
+    File "<frozen site>", line 207, in addpackage
+    File "<string>", line 1, in <module>
+    File "<frozen importlib._bootstrap>", line 810, in module_from_spec
+  AttributeError: 'NoneType' object has no attribute 'loader'
+
+Remainder of file ignored
+Error processing line 1 of /Users/pkcha/.local/lib/python3.13/site-packages/autogluon_features-1.5.1b20260503-nspkg.pth:
+
+  Traceback (most recent call last):
+    File "<frozen site>", line 207, in addpackage
+    File "<string>", line 1, in <module>
+    File "<frozen importlib._bootstrap>", line 810, in module_from_spec
+  AttributeError: 'NoneType' object has no attribute 'loader'
+
+Remainder of file ignored
+Error processing line 1 of /Users/pkcha/.local/lib/python3.13/site-packages/autogluon_tabular-1.5.1b20260503-nspkg.pth:
+
+  Traceback (most recent call last):
+    File "<frozen site>", line 207, in addpackage
+    File "<string>", line 1, in <module>
+    File "<frozen importlib._bootstrap>", line 810, in module_from_spec
+  AttributeError: 'NoneType' object has no attribute 'loader'
+
+Remainder of file ignored
+ImportError while loading conftest '/Users/pkcha/holoviews/holoviews/tests/conftest.py'.
+holoviews/tests/conftest.py:57: in <module>
+    import matplotlib as mpl
+../.local/lib/python3.13/site-packages/matplotlib/__init__.py:997: in <module>
+    rcParamsDefault = _rc_params_in_file(
+../.local/lib/python3.13/site-packages/matplotlib/__init__.py:934: in _rc_params_in_file
+    config[key] = val  # try to convert to proper type or raise
+    ^^^^^^^^^^^
+../.local/lib/python3.13/site-packages/matplotlib/__init__.py:769: in __setitem__
+    cval = self.validate[key](val)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+../.local/lib/python3.13/site-packages/matplotlib/rcsetup.py:427: in validate_font_properties
+    parse_fontconfig_pattern(s)
+../.local/lib/python3.13/site-packages/matplotlib/_fontconfig_pattern.py:83: in parse_fontconfig_pattern
+    parser = _make_fontconfig_parser()
+             ^^^^^^^^^^^^^^^^^^^^^^^^^
+../.local/lib/python3.13/site-packages/matplotlib/_fontconfig_pattern.py:64: in _make_fontconfig_parser
+    prop = Group((name + Suppress("=") + comma_separated(value)) | oneOf(_CONSTANTS))
+                                                                   ^^^^^^^^^^^^^^^^^
+/opt/miniconda3/lib/python3.13/site-packages/pyparsing/util.py:472: in _inner
+    warnings.warn(
+E   pyparsing.warnings.PyparsingDeprecationWarning: 'oneOf' deprecated - use 'one_of'
