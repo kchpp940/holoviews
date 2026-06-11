@@ -578,13 +578,16 @@ class Opts(metaclass=AccessorPipelineMeta):
         Options object associated with the object containing the
         applied option keywords.
         """
-        from .options import OptionResolver, Options, Store
+        from .options import OptionResolver, Options, ResolvedOptions, Store
 
         backend = backend if backend else Store.current_backend
         if group is not None:
             return OptionResolver.resolve(self._obj, group, backend, defaults=defaults)
 
         resolved = OptionResolver.resolve(self._obj, group=None, backend=backend, defaults=defaults)
+        if isinstance(resolved, ResolvedOptions):
+            resolved = resolved.as_dict()
+
         keywords = {}
         for g in Options._option_groups:
             if g in resolved and resolved[g].kwargs:

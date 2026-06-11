@@ -104,26 +104,13 @@ def lookup_options(obj, group, backend):
     """Given a HoloViews object, a plot option group (e.g. 'style') and
     backend, return the corresponding Options object.
 
-    Legacy entry point that delegates to OptionResolver for the full
-    resolution pipeline (inheritance → merging → backend filtering).
+    RENDERING-PATH entry point — runs the full OptionResolver pipeline
+    (inheritance → priority merge → backend filtering).
+
+    For internal copy/migration paths that need RAW unfiltered options,
+    use OptionResolver.lookup_raw or Store.lookup_options instead.
     """
     return OptionResolver.resolve(obj, group, backend)
-
-
-def lookup_options_raw(obj, group, backend, defaults=True):
-    """Legacy low-level lookup without backend filtering.
-
-    Used internally by Store.lookup_options for cases where the raw
-    unfiltered options are needed (e.g. for option transfer).
-    """
-    if obj.id in Store._custom_options[backend]:
-        return Store._custom_options[backend][obj.id].closest(
-            obj, group, defaults, backend=backend
-        )
-    elif not defaults:
-        return Options()
-    else:
-        return Store._options[backend].closest(obj, group, defaults, backend=backend)
 
 
 class CallbackError(RuntimeError):
@@ -894,31 +881,85 @@ class OptionTree(AttrTree):
 EMPTY_OPTIONS = Options()
 
 
+class ResolvedOptions:
+    """Structured return type for the full option resolution pipeline.
+
+    Carries explicitly grouped plot/style/norm/output options after
+    inheritance merging, source priority resolution, and backend
+    keyword filtering. Intended as the canonical return type for
+    rendering paths.
+
+    Attributes
+    ----------
+    plot : Options
+        Plot-level options (width, height, title_format, etc.)
+    style : Options
+        Artist/element style options (color, line_width, cmap, etc.)
+    norm : Options
+        Normalization options (framewise, axiswise)
+    output : Options
+        Output/backend options (backend)
+    backend : str
+        The backend against which options were resolved and filtered
+    """
+
+    __slots__ = ("plot", "style", "norm", "output", "backend")
+
+    def __init__(self, plot=None, style=None, norm=None, output=None, backend=None):
+        self.plot = plot or Options("plot")
+        self.style = style or Options("style")
+        self.norm = norm or Options("norm")
+        self.output = output or Options("output")
+        self.backend = backend
+
+    def get(self, group):
+        """Get options for a specific group name."""
+        return getattr(self, group)
+
+    def as_dict(self):
+        """Return a plain {group: Options} dict (legacy compatibility)."""
+        return {"plot": self.plot, "style": self.style, "norm": self.norm, "output": self.output}
+
+    def __repr__(self):
+        parts = [f"{g}={getattr(self, g).kwargs}" for g in ("plot", "style", "norm", "output") if getattr(self, g).kwargs]
+        backend_str = f", backend={self.backend!r}" if self.backend else ""
+        return f"ResolvedOptions({', '.join(parts)}{backend_str})"
+
+
 class OptionResolver:
     """Unified option resolution pipeline with clear separation of concerns.
 
-    Responsibilities:
-    - Phase 1: Collect option sources in priority order
-    - Phase 2: Resolve OptionTree inheritance (parent → child)
-    - Phase 3: Cross-source merging (higher priority wins)
-    - Phase 4: Classify flat kwargs into plot/style/norm/output groups
-    - Phase 5: Backend-specific keyword filtering
+    Two explicit entry points with strict semantic boundaries:
+
+    * **lookup_raw(obj, group, backend, defaults)** — low-level, raw OptionTree
+      result (inheritance only, NO backend filtering). Use for internal copy
+      paths like transfer_options, compositor, option introspection.
+
+    * **resolve(obj, group, backend, defaults, user_overrides)** — full pipeline
+      result (inheritance → priority merge → backend filtering). Use for
+      rendering paths. Returns ResolvedOptions when group=None, Options otherwise.
+
+    Pipeline phases (for resolve):
+    1. Source Collection   — gather sources in priority order
+    2. Tree Inheritance    — OptionTree parent→child walk (via lookup_raw)
+    3. Cross-Source Merge  — higher-priority sources override lower ones
+    4. Group Classification— flat kwargs → plot/style/norm/output
+    5. Backend Filtering   — drop kwargs not accepted by the backend plot class
 
     Source priority (lowest → highest):
     1. Global defaults (Store._options)
     2. Theme/global config (extension point)
     3. Object custom options (Store._custom_options)
     4. User explicit overrides
-
-    This resolver is designed to be extensible for future global configs
-    like themes, hover, and debug settings without duplicating judgment logic.
     """
 
     _option_groups = ["plot", "style", "norm", "output"]
 
     @classmethod
     def resolve(cls, obj, group=None, backend=None, defaults=True, user_overrides=None):
-        """Main entry point: resolve options for an object through the full pipeline.
+        """Full pipeline: resolve + merge + filter options for rendering.
+
+        Use this from rendering paths.
 
         Parameters
         ----------
@@ -926,18 +967,18 @@ class OptionResolver:
             The HoloViews object to resolve options for
         group : str, optional
             The option group ('plot', 'style', 'norm', 'output'). If None,
-            returns a dict of all groups.
+            returns a ResolvedOptions with all four groups populated.
         backend : str, optional
-            Backend to use. Defaults to Store.current_backend.
+            Backend to resolve against. Defaults to Store.current_backend.
         defaults : bool, optional
-            Whether to include default option values
+            Whether to include global default option values
         user_overrides : dict, optional
             Explicit user overrides in grouped format {group: {kw: val}}
 
         Returns
         -------
-        Options or dict of Options
-            Resolved options for the specified group, or dict of all groups
+        ResolvedOptions or Options
+            ResolvedOptions when group=None, Options for the specific group otherwise
         """
         backend = backend or Store.current_backend
 
@@ -950,11 +991,31 @@ class OptionResolver:
             resolved = cls._resolve_single_group(sources, obj, group, backend)
             return cls.filter_by_backend(resolved, group, obj, backend)
 
-        result = {}
+        resolved_groups = {}
         for g in cls._option_groups:
             resolved = cls._resolve_single_group(sources, obj, g, backend)
-            result[g] = cls.filter_by_backend(resolved, g, obj, backend)
-        return result
+            resolved_groups[g] = cls.filter_by_backend(resolved, g, obj, backend)
+
+        return ResolvedOptions(backend=backend, **resolved_groups)
+
+    @classmethod
+    def lookup_raw(cls, obj, group, backend, defaults=True):
+        """Low-level raw lookup from OptionTree — NO backend filtering.
+
+        Walks the hierarchy for inheritance, returns the raw merged Options.
+        Use this for internal copy/migration paths: transfer_options,
+        compositor, option introspection.
+
+        Equivalent to the original Store.lookup_options semantics.
+        """
+        if obj.id in Store._custom_options.get(backend, {}):
+            return Store._custom_options[backend][obj.id].closest(
+                obj, group, defaults, backend=backend
+            )
+        elif not defaults:
+            return Options()
+        else:
+            return Store._options[backend].closest(obj, group, defaults, backend=backend)
 
     @classmethod
     def collect_sources(cls, obj, backend, defaults=True):
@@ -1124,6 +1185,19 @@ class OptionResolver:
         elif group == "output":
             return Keywords(Options._output_allowed_kws, target=type(obj).__name__)
         return Keywords()
+
+
+def resolve_options(obj, group=None, backend=None, defaults=True, user_overrides=None):
+    """Explicit rendering-path entry point for the option resolution pipeline.
+
+    Runs the full OptionResolver pipeline (inheritance → priority merge →
+    backend filtering). Returns ResolvedOptions when group=None, Options
+    otherwise.
+
+    This is the RECOMMENDED entry point for rendering code. Use
+    OptionResolver.lookup_raw for internal copy/migration paths.
+    """
+    return OptionResolver.resolve(obj, group, backend, defaults, user_overrides)
 
 
 class Compositor(param.Parameterized):
@@ -1595,19 +1669,30 @@ class Store:
     def lookup_options(cls, backend, obj, group, defaults=True):
         """Lookup options for the given object and group.
 
-        When defaults=True, runs the full OptionResolver pipeline
-        (inheritance → merging → backend filtering). When defaults=False,
-        returns only the custom options without defaults or filtering.
+        Returns the RAW (unfiltered) Options from the OptionTree,
+        walking up the hierarchy for inheritance. Does NOT apply
+        backend-specific keyword filtering — use OptionResolver.resolve
+        or resolve_options() for rendering paths that need filtered options.
 
+        Parameters
+        ----------
+        backend : str
+            The backend to lookup for
+        obj : Dimensioned
+            The object to look up options for
+        group : str
+            The option group ('plot', 'style', 'norm', 'output')
+        defaults : bool, optional
+            Whether to include global default options
         """
-        if defaults:
-            return OptionResolver.resolve(obj, group, backend, defaults=True)
-
         if obj.id in cls._custom_options[backend]:
             return cls._custom_options[backend][obj.id].closest(
-                obj, group, defaults=False, backend=backend
+                obj, group, defaults, backend=backend
             )
-        return Options()
+        elif not defaults:
+            return Options()
+        else:
+            return cls._options[backend].closest(obj, group, defaults, backend=backend)
 
     @classmethod
     def lookup(cls, backend, obj):
@@ -1630,9 +1715,8 @@ class Store:
         """Transfers options for all backends from one object to another.
         Drops any options defined in the supplied drop list.
 
-        Uses lookup_options_raw to get unfiltered options suitable for
-        re-application to a different object.
-
+        Uses OptionResolver.lookup_raw to get unfiltered options suitable
+        for re-application to a different object (internal copy path).
         """
         if obj is new_obj:
             return
@@ -1642,10 +1726,10 @@ class Store:
         spec = ".".join([s for s in (type_name, group, obj.label)[:level] if s])
         options = []
         for group in Options._option_groups:
-            opts = lookup_options_raw(obj, group, backend)
+            opts = OptionResolver.lookup_raw(obj, group, backend)
             if not opts:
                 continue
-            new_opts = lookup_options_raw(new_obj, group, backend, defaults=False)
+            new_opts = OptionResolver.lookup_raw(new_obj, group, backend, defaults=False)
             existing = new_opts.kwargs if new_opts else {}
             filtered = {
                 k: v
