@@ -1641,98 +1641,54 @@ class Dimensioned(LabelledData):
     def schema(self, dims: str | list[str] = "all") -> dict:
         """Return a machine-readable schema describing the object's dimensions.
 
-        Provides a standardized JSON-serializable dictionary containing
+        Provides a standardised JSON-serializable dictionary produced by
+        :func:`holoviews.core.util.build_dimension_schema`, containing
         metadata about the key dimensions (kdims) and value dimensions
-        (vdims) of the object. Each dimension entry includes:
-        - name: the dimension name
-        - label: the display label
-        - unit: the unit string (if any)
-        - type: the declared type of the dimension (if any)
-        - range: the declared range [min, max] (if any)
-        - values: the explicit list of allowed values (if any)
+        (vdims) of the object.  The returned dictionary always carries
+        the standardised top-level keys ``version``, ``schema_version``,
+        ``notes``, ``stats``, ``kdims`` and ``vdims``.
+
+        For :class:`Dataset` (and subclasses such as :class:`hv.Curve`,
+        :class:`hv.Image`, etc.) this method is overridden to include
+        the actual storage ``dtype``, ``datatype`` and data ``shape``
+        as reported by the active data interface.  This lightweight
+        fallback is used for ``Dimensioned`` objects that do not
+        expose a data interface.
 
         Parameters
         ----------
         dims : str or list of str, optional
-            Which dimensions to include. One of 'all' (default),
-            'key'/'kdims', or 'value'/'vdims'. Can also be a list
-            of individual dimension names.
+            Which dimensions to include.  One of ``'all'`` (default),
+            ``'key'``/``'kdims'``, ``'value'``/``'vdims'``, or a list of
+            individual dimension names.
 
         Returns
         -------
         dict
-            A dictionary with 'kdims' and 'vdims' keys, each mapping to
-            a list of dimension schema dictionaries.
+            A dictionary produced by :func:`build_dimension_schema`
+            containing ``version``, ``schema_version``, ``notes``,
+            ``stats``, ``kdims`` and ``vdims``.
 
-        Examples
+        See Also
         --------
-        >>> curve = hv.Curve([1, 2, 3], kdims='x', vdims='y')
-        >>> curve.schema()
-        {'kdims': [{'name': 'x', 'label': 'x', 'unit': None, ...}],
-         'vdims': [{'name': 'y', 'label': 'y', 'unit': None, ...}]}
+        Dataset.schema : versioned schema including actual dtypes,
+            datatype and shape for data-backed objects.
+        holoviews.core.util.build_dimension_schema : the unified
+            versioned schema builder.
         """
         from .spaces import DynamicMap, HoloMap
+        from .util import build_dimension_schema
 
-        def _dim_to_schema(dim):
-            info = {
-                "name": dim.name,
-                "label": getattr(dim, "label", dim.name),
-                "unit": getattr(dim, "unit", None),
-                "type": getattr(dim, "type", None).__name__ if getattr(dim, "type", None) else None,
-            }
-            if hasattr(dim, "range") and dim.range != (None, None):
-                rng = dim.range
-                try:
-                    info["range"] = [
-                        float(rng[0]) if rng[0] is not None else None,
-                        float(rng[1]) if rng[1] is not None else None,
-                    ]
-                except (TypeError, ValueError):
-                    info["range"] = [
-                        rng[0] if rng[0] is not None else None,
-                        rng[1] if rng[1] is not None else None,
-                    ]
-            if hasattr(dim, "values") and dim.values is not None and len(dim.values) > 0:
-                vals = list(dim.values)
-                try:
-                    info["values"] = [float(v) for v in vals]
-                except (TypeError, ValueError):
-                    info["values"] = [str(v) for v in vals]
-            if hasattr(dim, "value_format") and dim.value_format:
-                info["value_format"] = str(dim.value_format)
-            return info
+        unbounded_kdims = None
+        if isinstance(self, (DynamicMap, HoloMap)):
+            unbounded_kdims = list(getattr(self, "unbounded", []))
 
-        schema_dict = {"kdims": [], "vdims": []}
-
-        if dims == "all":
-            kdims = self.kdims
-            vdims = self.vdims
-        elif dims in ("key", "k", "kdims"):
-            kdims = self.kdims
-            vdims = []
-        elif dims in ("value", "v", "vdims"):
-            kdims = []
-            vdims = self.vdims
-        elif isinstance(dims, list):
-            selected = [self.get_dimension(d, strict=True) for d in dims]
-            kdims = [d for d in selected if d in self.kdims]
-            vdims = [d for d in selected if d in self.vdims]
-        else:
-            raise ValueError(
-                f"Invalid dims value: {dims!r}. Use 'all', 'key', 'value', or a list of dimension names."
-            )
-
-        for kd in kdims:
-            dim_info = _dim_to_schema(kd)
-            if isinstance(self, (DynamicMap, HoloMap)):
-                unbounded = list(getattr(self, "unbounded", []))
-                dim_info["unbounded"] = kd.name in [d.name for d in unbounded]
-            schema_dict["kdims"].append(dim_info)
-
-        for vd in vdims:
-            schema_dict["vdims"].append(_dim_to_schema(vd))
-
-        return schema_dict
+        return build_dimension_schema(
+            list(self.kdims),
+            list(self.vdims),
+            unbounded_kdims=unbounded_kdims,
+            dims=dims,
+        )
 
     def __repr__(self):
         return PrettyPrinter.pprint(self)

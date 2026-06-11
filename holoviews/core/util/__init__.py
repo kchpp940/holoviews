@@ -2576,3 +2576,170 @@ def dtype_kind(obj) -> str:
 
 def _is_deep_indexable(obj) -> TypeIs[ViewableTree | UniformNdMapping | AdjointLayout]:
     return getattr(obj, "_deep_indexable", False)
+
+
+DIMENSION_SCHEMA_VERSION = "1.0"
+
+
+def build_dimension_schema(
+    kdims,
+    vdims,
+    *,
+    dtype_getter=None,
+    datatype=None,
+    shape=None,
+    unbounded_kdims=None,
+    dims="all",
+):
+    """Unified versioned schema builder for Dimensioned objects.
+
+    Single source of truth for generating machine-readable dimension
+    schemas used throughout HoloViews (by ``Dimensioned.schema()``,
+    ``Dataset.schema()``, ExportContext dimension_schema, and any
+    other consumer that needs a standardised, versioned description
+    of an object's key/value dimensions.
+
+    The produced schema is versioned via ``DIMENSION_SCHEMA_VERSION``
+    and always contains the standardised top-level keys:
+    ``version``, ``schema_version``, ``notes``, ``stats``, ``kdims``
+    and ``vdims``.  Each dimension entry contains: ``name``, ``label``,
+    ``unit``, ``type`` (declared type name), and optionally ``dtype``
+    (actual storage dtype), ``range``, ``values``, ``value_format``
+    and ``unbounded`` (for dynamic key dimensions).
+
+    Parameters
+    ----------
+    kdims : list of Dimension
+        The key dimensions to describe.
+    vdims : list of Dimension
+        The value dimensions to describe.
+    dtype_getter : callable(Dimension) -> dtype-like, optional
+        For Dataset-backed objects: a callable that takes a Dimension
+        and returns the actual storage dtype for that dimension
+        (e.g. ``lambda d: interface.dtype(dataset, d)``).
+    datatype : str, optional
+        The name of the active data backend / interface datatype
+        (e.g. ``"pandas"``, ``"dictionary"``).  Added to ``stats``.
+    shape : tuple, optional
+        The data shape.  Added to ``stats``.
+    unbounded_kdims : iterable of Dimension or str, optional
+        Key dimensions that are unbounded (DynamicMap).  Those
+        dimensions will carry ``"unbounded": True`` in their entry.
+    dims : str or list of str, optional
+        Which dimensions to include.  One of ``'all'`` (default),
+        ``'key'`` / ``'kdims'``, ``'value'`` / ``'vdims'``, or an
+        explicit list of dimension names.
+
+    Returns
+    -------
+    dict
+        A versioned JSON-serialisable dictionary::
+
+            {
+                "version": DIMENSION_SCHEMA_VERSION,
+                "schema_version": DIMENSION_SCHEMA_VERSION,
+                "notes": [...],
+                "stats": {"datatype": ..., "shape": ..., ...},
+                "kdims": [ {...}, ... ],
+                "vdims": [ {...}, ... ],
+            }
+    """
+    # Resolve which dimensions to include
+    if dims == "all":
+        resolved_kdims = list(kdims)
+        resolved_vdims = list(vdims)
+    elif dims in ("key", "k", "kdims"):
+        resolved_kdims = list(kdims)
+        resolved_vdims = []
+    elif dims in ("value", "v", "vdims"):
+        resolved_kdims = []
+        resolved_vdims = list(vdims)
+    elif isinstance(dims, list):
+        all_dims = list(kdims) + list(vdims)
+        selected = []
+        for name in dims:
+            for d in all_dims:
+                if d.name == name:
+                    selected.append(d)
+                    break
+        resolved_kdims = [d for d in selected if d in kdims]
+        resolved_vdims = [d for d in selected if d in vdims]
+    else:
+        raise ValueError(
+            f"Invalid dims value: {dims!r}. "
+            "Use 'all', 'key', 'value', or a list of dimension names."
+        )
+
+    unbounded_names = set()
+    if unbounded_kdims is not None:
+        for d in unbounded_kdims:
+            unbounded_names.add(d.name if hasattr(d, "name") else str(d))
+
+    def _dim_to_dict(dim, is_kdim):
+        info = {
+            "name": dim.name,
+            "label": getattr(dim, "label", dim.name),
+            "unit": getattr(dim, "unit", None),
+            "type": getattr(dim, "type", None).__name__
+            if getattr(dim, "type", None)
+            else None,
+        }
+        if dtype_getter is not None:
+            try:
+                actual_dtype = dtype_getter(dim)
+                if actual_dtype is not None:
+                    info["dtype"] = str(actual_dtype)
+            except Exception:
+                pass
+        if is_kdim and dim.name in unbounded_names:
+            info["unbounded"] = True
+        if hasattr(dim, "range") and dim.range != (None, None):
+            rng = dim.range
+            try:
+                info["range"] = [
+                    float(rng[0]) if rng[0] is not None else None,
+                    float(rng[1]) if rng[1] is not None else None,
+                ]
+            except (TypeError, ValueError):
+                info["range"] = [
+                    rng[0] if rng[0] is not None else None,
+                    rng[1] if rng[1] is not None else None,
+                ]
+        if hasattr(dim, "values") and dim.values is not None and len(dim.values) > 0:
+            vals = list(dim.values)
+            try:
+                info["values"] = [float(v) for v in vals]
+            except (TypeError, ValueError):
+                info["values"] = [str(v) for v in vals]
+        if hasattr(dim, "value_format") and dim.value_format:
+            info["value_format"] = str(dim.value_format)
+        return info
+
+    kdim_entries = [_dim_to_dict(d, True) for d in resolved_kdims]
+    vdim_entries = [_dim_to_dict(d, False) for d in resolved_vdims]
+
+    notes = []
+    if datatype is not None:
+        notes.append(f"datatype={datatype!r}")
+    if shape is not None:
+        notes.append(f"shape={shape!r}")
+    if len(unbounded_names) > 0:
+        notes.append(f"unbounded_kdims={sorted(unbounded_names)!r}")
+
+    stats = {
+        "n_kdims": len(resolved_kdims),
+        "n_vdims": len(resolved_vdims),
+    }
+    if datatype is not None:
+        stats["datatype"] = datatype
+    if shape is not None:
+        stats["shape"] = tuple(shape)
+
+    return {
+        "version": DIMENSION_SCHEMA_VERSION,
+        "schema_version": DIMENSION_SCHEMA_VERSION,
+        "notes": notes,
+        "stats": stats,
+        "kdims": kdim_entries,
+        "vdims": vdim_entries,
+    }
