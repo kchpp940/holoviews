@@ -277,22 +277,29 @@ def split_dmap_overlay(obj, depth=0):
 
 
 def initialize_dynamic(obj):
-    """Initializes all DynamicMap objects contained by the object"""
+    """Initializes all DynamicMap objects contained by the object.
+
+    Uses the DynamicMapContext.initialize() stable interface to initialize
+    DynamicMap frames before rendering.
+    """
     dmaps = obj.traverse(lambda x: x, specs=[DynamicMap])
     for dmap in dmaps:
         if dmap.unbounded:
             # Skip initialization until plotting code
             continue
         if not len(dmap):
-            dmap[dmap._initial_key()]
+            dmap.context.initialize()
 
 
 def get_plot_frame(map_obj, key_map, cached=False):
     """Returns the current frame in a mapping given a key mapping.
 
+    For DynamicMap objects, uses the DynamicMapContext.get_frame() stable
+    interface instead of accessing __getitem__ directly.
+
     Parameters
     ----------
-    obj
+    map_obj
         Nested Dimensioned object
     key_map
         Dictionary mapping between dimensions and key value
@@ -303,11 +310,21 @@ def get_plot_frame(map_obj, key_map, cached=False):
     -------
     The item in the mapping corresponding to the supplied key.
     """
+    if isinstance(map_obj, DynamicMap):
+        try:
+            return map_obj.context.get_frame(key_map, cached)
+        except KeyError:
+            return None
+        except (StopIteration, CallbackError) as e:
+            raise e
+        except Exception:
+            print(traceback.format_exc())
+            return None
+
     if (
         map_obj.kdims
         and len(map_obj.kdims) == 1
         and map_obj.kdims[0] == "Frame"
-        and not isinstance(map_obj, DynamicMap)
     ):
         # Special handling for static plots
         return map_obj.last
