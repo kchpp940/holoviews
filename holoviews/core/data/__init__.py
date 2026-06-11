@@ -1290,6 +1290,145 @@ class Dataset(Element, metaclass=PipelineMeta):
             dimensions = [self.get_dimension(d, strict=True) for d in dimensions]
         return {d.name: self.dimension_values(d) for d in dimensions}
 
+    SCHEMA_VERSION = "1.0"
+
+    def schema(self, dims: str | list[str] = "all") -> dict:
+        """Return a versioned, machine-readable schema describing the object.
+
+        Provides a standardized JSON-serializable dictionary containing
+        metadata about the Dataset's key dimensions (kdims), value
+        dimensions (vdims), and actual data dtypes as reported by the
+        active data interface.
+
+        This versioned schema is the public contract for describing
+        Dataset structures (and subclasses such as Curve, Image,
+        Scatter, etc.). For Dimensioned objects without data support,
+        the lightweight ``Dimensioned.schema()`` fallback is used
+        instead.
+
+        The schema dictionary is versioned via ``SCHEMA_VERSION`` so
+        consumers can evolve alongside this contract.
+
+        Parameters
+        ----------
+        dims : str or list of str, optional
+            Which dimensions to include. One of:
+
+            - ``'all'`` (default): include kdims and vdims
+            - ``'key'`` / ``'kdims'``: only include key dimensions
+            - ``'value'`` / ``'vdims'``: only include value dimensions
+            - list of dimension names: include only the named dimensions
+
+        Returns
+        -------
+        dict
+            A dictionary with the following structure::
+
+                {
+                    "schema_version": "1.0",
+                    "datatype": <active interface datatype>,
+                    "shape": <data shape tuple>,
+                    "kdims": [ {"name": ..., "dtype": ..., ...}, ... ],
+                    "vdims": [ {"name": ..., "dtype": ..., ...}, ... ],
+                }
+
+            Each dimension entry additionally includes: ``label``,
+            ``unit``, ``type`` (declared type name), ``range``,
+            ``values``, ``value_format`` (when applicable) and the
+            actual storage ``dtype`` reported by the data interface.
+
+        See Also
+        --------
+        Dimensioned.schema : lightweight fallback for non-dataset
+            Dimensioned objects.
+        """
+        from ..spaces import DynamicMap, HoloMap
+
+        def _dim_to_schema(dim):
+            info = {
+                "name": dim.name,
+                "label": getattr(dim, "label", dim.name),
+                "unit": getattr(dim, "unit", None),
+                "type": getattr(dim, "type", None).__name__
+                if getattr(dim, "type", None)
+                else None,
+            }
+            # Actual storage dtype from the data interface
+            try:
+                actual_dtype = self.interface.dtype(self, dim)
+                if actual_dtype is not None:
+                    info["dtype"] = str(actual_dtype)
+            except Exception:
+                pass
+            # Declared range
+            if hasattr(dim, "range") and dim.range != (None, None):
+                rng = dim.range
+                try:
+                    info["range"] = [
+                        float(rng[0]) if rng[0] is not None else None,
+                        float(rng[1]) if rng[1] is not None else None,
+                    ]
+                except (TypeError, ValueError):
+                    info["range"] = [
+                        rng[0] if rng[0] is not None else None,
+                        rng[1] if rng[1] is not None else None,
+                    ]
+            # Explicit value list
+            if hasattr(dim, "values") and dim.values is not None and len(dim.values) > 0:
+                vals = list(dim.values)
+                try:
+                    info["values"] = [float(v) for v in vals]
+                except (TypeError, ValueError):
+                    info["values"] = [str(v) for v in vals]
+            if hasattr(dim, "value_format") and dim.value_format:
+                info["value_format"] = str(dim.value_format)
+            return info
+
+        if dims == "all":
+            kdims = list(self.kdims)
+            vdims = list(self.vdims)
+        elif dims in ("key", "k", "kdims"):
+            kdims = list(self.kdims)
+            vdims = []
+        elif dims in ("value", "v", "vdims"):
+            kdims = []
+            vdims = list(self.vdims)
+        elif isinstance(dims, list):
+            selected = [self.get_dimension(d, strict=True) for d in dims]
+            kdims = [d for d in selected if d in self.kdims]
+            vdims = [d for d in selected if d in self.vdims]
+        else:
+            raise ValueError(
+                f"Invalid dims value: {dims!r}. "
+                "Use 'all', 'key', 'value', or a list of dimension names."
+            )
+
+        schema_dict = {
+            "schema_version": self.SCHEMA_VERSION,
+            "datatype": getattr(self.interface, "datatype", None),
+        }
+
+        try:
+            schema_dict["shape"] = tuple(self.shape())
+        except Exception:
+            schema_dict["shape"] = None
+
+        kdim_entries = []
+        for kd in kdims:
+            dim_info = _dim_to_schema(kd)
+            if isinstance(self, (DynamicMap, HoloMap)):
+                unbounded = list(getattr(self, "unbounded", []))
+                dim_info["unbounded"] = kd.name in [d.name for d in unbounded]
+            kdim_entries.append(dim_info)
+        schema_dict["kdims"] = kdim_entries
+
+        vdim_entries = []
+        for vd in vdims:
+            vdim_entries.append(_dim_to_schema(vd))
+        schema_dict["vdims"] = vdim_entries
+
+        return schema_dict
+
     @property
     def to(self):
         """Returns the conversion interface with methods to convert Dataset"""

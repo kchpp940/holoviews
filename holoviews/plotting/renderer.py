@@ -980,6 +980,7 @@ class Renderer(Exporter):
             )
 
         original_basename = basename
+        original_fmt = fmt
 
         with StoreOptions.options(obj, options, **kwargs):
             plot, fmt = self_or_cls._validate(obj, fmt)
@@ -987,6 +988,14 @@ class Renderer(Exporter):
         resolved_fmt = fmt
         info_dict = None
         widget_mode = None
+
+        # Determine the actual widget mode used (widgets/scrubber vs plain html)
+        if isinstance(original_fmt, str) and original_fmt in self_or_cls.widgets:
+            widget_mode = original_fmt
+        elif original_fmt != fmt and fmt == "html":
+            # _validate may have converted holomap format to html
+            if original_fmt in ("scrubber", "widgets", "gif", "auto"):
+                widget_mode = fmt if original_fmt == "auto" else original_fmt
 
         if isinstance(plot, Viewable):
             from bokeh.resources import CDN, INLINE, Resources
@@ -1011,7 +1020,9 @@ class Renderer(Exporter):
                         basename = f"{basename}.{fmt}"
             plot.layout.save(basename, embed=True, resources=resources, title=title)
             info_dict = {"mime_type": MIME_TYPES.get(fmt)}
-            widget_mode = fmt
+            # widget_mode was already determined before _validate, do not overwrite
+            if widget_mode is None:
+                widget_mode = fmt
         else:
             rendered = self_or_cls(plot, fmt)
             if rendered is None:
