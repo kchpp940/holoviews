@@ -55,7 +55,10 @@ from ...core import Dataset, Dimension, DynamicMap, Element, util
 from ...core.options import Keywords, SkipRendering, abbreviated_exception
 from ...core.overlay import CompositeOverlay, NdOverlay
 from ...core.theme import (
+    apply_bokeh_theme_to_colorbar,
     apply_bokeh_theme_to_figure,
+    apply_bokeh_theme_to_hover,
+    apply_bokeh_theme_to_legend,
     get_theme_styles_for_plot,
 )
 from ...core.util import dtype_kind
@@ -768,6 +771,8 @@ class ElementPlot(BokehPlot, GenericElementPlot):
         elif any(hover_tools):
             hover = hover_tools[0]
         if hover:
+            theme_styles = get_theme_styles_for_plot(self, "bokeh")
+            apply_bokeh_theme_to_hover(hover, theme_styles)
             self.handles["hover"] = hover
 
         if self.subcoordinate_y:
@@ -3173,6 +3178,9 @@ class ColorbarPlot(ElementPlot):
         plot.add_layout(color_bar, pos)
         self.handles[prefix + "colorbar"] = color_bar
 
+        theme_styles = get_theme_styles_for_plot(self, "bokeh")
+        apply_bokeh_theme_to_colorbar(color_bar, theme_styles)
+
     def _get_colormapper(
         self,
         eldim,
@@ -3443,6 +3451,10 @@ class LegendPlot(ElementPlot):
                 for item in leg.items:
                     for r in item.renderers:
                         r.muted = self.legend_muted
+
+        theme_styles = get_theme_styles_for_plot(self, "bokeh")
+        for leg in plot.legend:
+            apply_bokeh_theme_to_legend(leg, theme_styles)
 
 
 class AnnotationPlot:

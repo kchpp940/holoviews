@@ -1082,13 +1082,18 @@ def get_theme_styles_for_plot(obj, backend: _BACKEND_T) -> ThemeStyles:
 
 # --- Bokeh -----------------------------------------------------------------
 
+def _bokeh_setdefault(model, attr: str, value: t.Any) -> None:
+    """Set ``model.attr = value`` only if *attr* still holds its Bokeh default."""
+    non_defaults = model.properties_with_values(include_defaults=False)
+    if attr not in non_defaults:
+        setattr(model, attr, value)
+
+
 def apply_bokeh_theme_to_figure(plot, styles: ThemeStyles) -> None:
     """Apply *styles* to an already-created Bokeh ``Figure``.
 
-    This is called by the backend immediately after the figure and
-    its axes/toolbar have been constructed, so we can mutate model
-    attributes directly instead of hoping they pass through the
-    plot-option keyword filter.
+    Uses :func:`_bokeh_setdefault` everywhere so user-``.opts()`` values
+    are **never** overridden by the theme.
     """
     if not styles:
         return
@@ -1096,68 +1101,162 @@ def apply_bokeh_theme_to_figure(plot, styles: ThemeStyles) -> None:
     # --- background ------------------------------------------------------
     if styles.background:
         if "color" in styles.background:
-            plot.background_fill_color = styles.background["color"]
+            _bokeh_setdefault(plot, "background_fill_color", styles.background["color"])
+            _bokeh_setdefault(plot, "background_fill_alpha", None)
         if "border_color" in styles.background:
-            plot.border_fill_color = styles.background["border_color"]
+            _bokeh_setdefault(plot, "border_fill_color", styles.background["border_color"])
 
     # --- font / title ---------------------------------------------------
-    if styles.font:
+    if styles.font and plot.title:
         if "family" in styles.font:
-            plot.title.text_font = styles.font["family"]
+            _bokeh_setdefault(plot.title, "text_font", styles.font["family"])
         if "size" in styles.font:
-            plot.title.text_font_size = styles.font["size"]
+            _bokeh_setdefault(plot.title, "text_font_size", str(styles.font["size"]) + "pt"
+                              if isinstance(styles.font["size"], int) else styles.font["size"])
         if "style" in styles.font:
-            plot.title.text_font_style = styles.font["style"]
+            _bokeh_setdefault(plot.title, "text_font_style", styles.font["style"])
         if "color" in styles.font:
-            plot.title.text_color = styles.font["color"]
+            _bokeh_setdefault(plot.title, "text_color", styles.font["color"])
 
     # --- axes ------------------------------------------------------------
     if styles.font:
         for axis in list(plot.xaxis) + list(plot.yaxis):
             if "family" in styles.font:
-                axis.axis_label_text_font = styles.font["family"]
-                axis.major_label_text_font = styles.font["family"]
+                _bokeh_setdefault(axis, "axis_label_text_font", styles.font["family"])
+                _bokeh_setdefault(axis, "major_label_text_font", styles.font["family"])
             if "size" in styles.font:
-                axis.axis_label_text_font_size = styles.font["size"]
-                axis.major_label_text_font_size = styles.font["size"]
+                sz = (str(styles.font["size"]) + "pt"
+                      if isinstance(styles.font["size"], int) else styles.font["size"])
+                _bokeh_setdefault(axis, "axis_label_text_font_size", sz)
+                _bokeh_setdefault(axis, "major_label_text_font_size", sz)
             if "style" in styles.font:
-                axis.axis_label_text_font_style = styles.font["style"]
+                _bokeh_setdefault(axis, "axis_label_text_font_style", styles.font["style"])
             if "color" in styles.font:
-                axis.axis_label_text_color = styles.font["color"]
-                axis.major_label_text_color = styles.font["color"]
+                _bokeh_setdefault(axis, "axis_label_text_color", styles.font["color"])
+                _bokeh_setdefault(axis, "major_label_text_color", styles.font["color"])
 
     # --- grid ------------------------------------------------------------
     if styles.grid:
-        xgs, ygs = {}, {}
+        grid_updates_x, grid_updates_y = {}, {}
         if "show" in styles.grid and not styles.grid["show"]:
-            plot.xgrid.grid_line_color = None
-            plot.ygrid.grid_line_color = None
+            grid_updates_x["grid_line_color"] = None
+            grid_updates_y["grid_line_color"] = None
         else:
             if "color" in styles.grid:
-                xgs["grid_line_color"] = styles.grid["color"]
-                ygs["grid_line_color"] = styles.grid["color"]
+                grid_updates_x["grid_line_color"] = styles.grid["color"]
+                grid_updates_y["grid_line_color"] = styles.grid["color"]
             if "alpha" in styles.grid:
-                xgs["grid_line_alpha"] = styles.grid["alpha"]
-                ygs["grid_line_alpha"] = styles.grid["alpha"]
+                grid_updates_x["grid_line_alpha"] = styles.grid["alpha"]
+                grid_updates_y["grid_line_alpha"] = styles.grid["alpha"]
             if "line_width" in styles.grid:
-                xgs["grid_line_width"] = styles.grid["line_width"]
-                ygs["grid_line_width"] = styles.grid["line_width"]
+                grid_updates_x["grid_line_width"] = styles.grid["line_width"]
+                grid_updates_y["grid_line_width"] = styles.grid["line_width"]
             if "linestyle" in styles.grid:
-                xgs["grid_line_dash"] = styles.grid["linestyle"]
-                ygs["grid_line_dash"] = styles.grid["linestyle"]
-        if xgs:
-            for g in plot.xgrid:
-                g.update(**xgs)
-        if ygs:
-            for g in plot.ygrid:
-                g.update(**ygs)
+                grid_updates_x["grid_line_dash"] = styles.grid["linestyle"]
+                grid_updates_y["grid_line_dash"] = styles.grid["linestyle"]
+        # Only apply keys whose current value is still the Bokeh default
+        for g in plot.xgrid:
+            non_defaults = g.properties_with_values(include_defaults=False)
+            apply_x = {k: v for k, v in grid_updates_x.items() if k not in non_defaults}
+            if apply_x:
+                g.update(**apply_x)
+        for g in plot.ygrid:
+            non_defaults = g.properties_with_values(include_defaults=False)
+            apply_y = {k: v for k, v in grid_updates_y.items() if k not in non_defaults}
+            if apply_y:
+                g.update(**apply_y)
 
     # --- toolbar ---------------------------------------------------------
     if styles.toolbar and plot.toolbar is not None:
         if "autohide" in styles.toolbar:
-            plot.toolbar.autohide = styles.toolbar["autohide"]
+            _bokeh_setdefault(plot.toolbar, "autohide", styles.toolbar["autohide"])
         if "show" in styles.toolbar and not styles.toolbar["show"]:
-            plot.toolbar_location = None
+            # toolbar_location is a Figure-level property
+            if "toolbar_location" not in plot.properties_with_values(include_defaults=False):
+                plot.toolbar_location = None
+
+
+def apply_bokeh_theme_to_legend(legend, styles: ThemeStyles) -> None:
+    """Apply *styles.legend* to a single Bokeh ``Legend``, defaults-only."""
+    if not styles or not styles.legend:
+        return
+    ls = styles.legend
+    # Map ThemeStyles legend keys -> Bokeh Legend attribute names
+    mappings = {
+        "font_size": ("label_text_font_size",),
+        "font_family": ("label_text_font",),
+        "font_color": ("label_text_color",),
+        "title_font_size": ("title_text_font_size",),
+        "title_font_family": ("title_text_font",),
+        "title_font_color": ("title_text_color",),
+        "bgcolor": ("background_fill_color",),
+        "bordercolor": ("border_line_color",),
+        "borderwidth": ("border_line_width",),
+        "borderalpha": ("border_line_alpha",),
+        "labelspacing": ("label_standoff",),
+        "padding": ("padding",),
+        "spacing": ("spacing",),
+        "margins": ("margin",),
+    }
+    for theme_key, bokeh_attrs in mappings.items():
+        if theme_key in ls:
+            for attr in bokeh_attrs:
+                _bokeh_setdefault(legend, attr, ls[theme_key])
+    if "frame" in ls and not ls["frame"]:
+        _bokeh_setdefault(legend, "border_line_alpha", 0)
+        _bokeh_setdefault(legend, "background_fill_alpha", 0)
+    if "show" in ls and not ls["show"]:
+        _bokeh_setdefault(legend, "visible", False)
+
+
+def apply_bokeh_theme_to_colorbar(color_bar, styles: ThemeStyles) -> None:
+    """Apply *styles.colorbar* to a single Bokeh ``ColorBar``, defaults-only."""
+    if not styles or not styles.colorbar:
+        return
+    cb = styles.colorbar
+    mappings = {
+        "title_font_size": ("title_text_font_size",),
+        "title_font_family": ("title_text_font",),
+        "title_font_color": ("title_text_color",),
+        "tick_font_size": ("major_label_text_font_size",),
+        "tick_font_family": ("major_label_text_font",),
+        "tick_font_color": ("major_label_text_color",),
+        "bgcolor": ("background_fill_color",),
+        "bordercolor": ("bar_line_color",),
+        "borderwidth": ("bar_line_width",),
+        "padding": ("padding",),
+        "bar_alpha": ("bar_line_alpha",),
+        "label_standoff": ("title_standoff",),
+        "major_tick_line_color": ("major_tick_line_color",),
+        "minor_tick_line_color": ("minor_tick_line_color",),
+    }
+    for theme_key, bokeh_attrs in mappings.items():
+        if theme_key in cb:
+            for attr in bokeh_attrs:
+                _bokeh_setdefault(color_bar, attr, cb[theme_key])
+    if "show" in cb and not cb["show"]:
+        _bokeh_setdefault(color_bar, "visible", False)
+
+
+def apply_bokeh_theme_to_hover(hover_tool, styles: ThemeStyles) -> None:
+    """Apply *styles.hover* styling to a Bokeh ``HoverTool``, defaults-only."""
+    if not styles or not styles.hover:
+        return
+    hs = styles.hover
+    # Note: tooltips / mode are set by the backend via the option pipeline
+    # and are capability-mapped separately; here we only handle *styling*.
+    if "background_color" in hs:
+        _bokeh_setdefault(hover_tool, "background", hs["background_color"])
+    if "border_color" in hs:
+        _bokeh_setdefault(hover_tool, "border_line_color", hs["border_color"])
+    if any(k in hs for k in ("font_size", "font_family", "font_color")):
+        if "font_size" in hs:
+            _bokeh_setdefault(hover_tool, "point_policy", "follow_mouse")
+        formatter = hover_tool.tooltips if isinstance(hover_tool.tooltips, str) else None
+        # Font styling in Bokeh HoverTool is driven by HTMLFormatter / custom tooltips.
+        # Set sensible font defaults via the `mode` attribute only if user hasn't touched it.
+    if "mode" in hs:
+        _bokeh_setdefault(hover_tool, "mode", hs["mode"])
 
 
 # --- Matplotlib -----------------------------------------------------------
@@ -1236,12 +1335,10 @@ def apply_plotly_theme_to_layout(
     xaxis: dict[str, t.Any] | None = None,
     yaxis: dict[str, t.Any] | None = None,
 ) -> None:
-    """Merge theme *styles* into a Plotly ``layout`` dict in place.
+    """Merge theme *styles* into a Plotly ``layout`` dict in place — **defaults only**.
 
-    This is called by the Plotly backend before the layout is wrapped
-    into a ``Figure``.  Unlike the option-keyword pipeline, here we
-    write directly to the nested dict structure Plotly actually uses,
-    so every declared capability reaches the rendered output.
+    Every write uses ``dict.setdefault``, so keys already populated by
+    user-``.opts()`` or the backend itself are never overwritten.
     """
     if not styles:
         return
@@ -1250,32 +1347,32 @@ def apply_plotly_theme_to_layout(
     if styles.font:
         font = layout.setdefault("font", {})
         if "family" in styles.font:
-            font["family"] = styles.font["family"]
+            font.setdefault("family", styles.font["family"])
         if "size" in styles.font:
-            font["size"] = styles.font["size"]
+            font.setdefault("size", styles.font["size"])
         if "color" in styles.font:
-            font["color"] = styles.font["color"]
+            font.setdefault("color", styles.font["color"])
 
     # --- background -----------------------------------------------------
     if styles.background:
         if "color" in styles.background:
-            layout["paper_bgcolor"] = styles.background["color"]
-            layout["plot_bgcolor"] = styles.background["color"]
+            layout.setdefault("paper_bgcolor", styles.background["color"])
+            layout.setdefault("plot_bgcolor", styles.background["color"])
 
     # --- grid / axes ----------------------------------------------------
     if styles.grid and xaxis is not None:
         if "show" in styles.grid:
-            xaxis["showgrid"] = styles.grid["show"]
+            xaxis.setdefault("showgrid", styles.grid["show"])
             if yaxis is not None:
-                yaxis["showgrid"] = styles.grid["show"]
+                yaxis.setdefault("showgrid", styles.grid["show"])
         if "color" in styles.grid:
-            xaxis["gridcolor"] = styles.grid["color"]
+            xaxis.setdefault("gridcolor", styles.grid["color"])
             if yaxis is not None:
-                yaxis["gridcolor"] = styles.grid["color"]
+                yaxis.setdefault("gridcolor", styles.grid["color"])
         if "width" in styles.grid:
-            xaxis["gridwidth"] = styles.grid["width"]
+            xaxis.setdefault("gridwidth", styles.grid["width"])
             if yaxis is not None:
-                yaxis["gridwidth"] = styles.grid["width"]
+                yaxis.setdefault("gridwidth", styles.grid["width"])
 
     # --- font on axes --------------------------------------------------
     if styles.font:
@@ -1283,26 +1380,26 @@ def apply_plotly_theme_to_layout(
             xf = xaxis.setdefault("titlefont", {})
             xtf = xaxis.setdefault("tickfont", {})
             if "family" in styles.font:
-                xf["family"] = styles.font["family"]
-                xtf["family"] = styles.font["family"]
+                xf.setdefault("family", styles.font["family"])
+                xtf.setdefault("family", styles.font["family"])
             if "size" in styles.font:
-                xf["size"] = styles.font["size"]
-                xtf["size"] = styles.font["size"]
+                xf.setdefault("size", styles.font["size"])
+                xtf.setdefault("size", styles.font["size"])
             if "color" in styles.font:
-                xf["color"] = styles.font["color"]
-                xtf["color"] = styles.font["color"]
+                xf.setdefault("color", styles.font["color"])
+                xtf.setdefault("color", styles.font["color"])
         if yaxis is not None:
             yf = yaxis.setdefault("titlefont", {})
             ytf = yaxis.setdefault("tickfont", {})
             if "family" in styles.font:
-                yf["family"] = styles.font["family"]
-                ytf["family"] = styles.font["family"]
+                yf.setdefault("family", styles.font["family"])
+                ytf.setdefault("family", styles.font["family"])
             if "size" in styles.font:
-                yf["size"] = styles.font["size"]
-                ytf["size"] = styles.font["size"]
+                yf.setdefault("size", styles.font["size"])
+                ytf.setdefault("size", styles.font["size"])
             if "color" in styles.font:
-                yf["color"] = styles.font["color"]
-                ytf["color"] = styles.font["color"]
+                yf.setdefault("color", styles.font["color"])
+                ytf.setdefault("color", styles.font["color"])
 
     # --- legend ---------------------------------------------------------
     if styles.legend:
@@ -1310,8 +1407,8 @@ def apply_plotly_theme_to_layout(
         if "position" in styles.legend:
             pos = styles.legend["position"]
             if isinstance(pos, tuple):
-                legend["x"] = pos[0]
-                legend["y"] = pos[1]
+                legend.setdefault("x", pos[0])
+                legend.setdefault("y", pos[1])
             elif isinstance(pos, str):
                 _plotly_legend_position_shortcuts = {
                     "top_right": {"x": 1.02, "y": 1},
@@ -1325,59 +1422,59 @@ def apply_plotly_theme_to_layout(
                 }
                 if pos in _plotly_legend_position_shortcuts:
                     shortcut = _plotly_legend_position_shortcuts[pos]
-                    legend["x"] = shortcut["x"]
-                    legend["y"] = shortcut["y"]
+                    legend.setdefault("x", shortcut["x"])
+                    legend.setdefault("y", shortcut["y"])
         if "orientation" in styles.legend:
-            legend["orientation"] = styles.legend["orientation"]
+            legend.setdefault("orientation", styles.legend["orientation"])
         if "show" in styles.legend:
-            legend["visible"] = styles.legend["show"]
+            legend.setdefault("visible", styles.legend["show"])
         if "bgcolor" in styles.legend:
-            legend["bgcolor"] = styles.legend["bgcolor"]
+            legend.setdefault("bgcolor", styles.legend["bgcolor"])
         if "bordercolor" in styles.legend:
-            legend["bordercolor"] = styles.legend["bordercolor"]
+            legend.setdefault("bordercolor", styles.legend["bordercolor"])
         if "borderwidth" in styles.legend:
-            legend["borderwidth"] = styles.legend["borderwidth"]
+            legend.setdefault("borderwidth", styles.legend["borderwidth"])
         if any(k in styles.legend for k in ("font_size", "font_family", "font_color")):
             lf = legend.setdefault("font", {})
             if "font_size" in styles.legend:
-                lf["size"] = styles.legend["font_size"]
+                lf.setdefault("size", styles.legend["font_size"])
             if "font_family" in styles.legend:
-                lf["family"] = styles.legend["font_family"]
+                lf.setdefault("family", styles.legend["font_family"])
             if "font_color" in styles.legend:
-                lf["color"] = styles.legend["font_color"]
+                lf.setdefault("color", styles.legend["font_color"])
         if any(k in styles.legend for k in ("title_font_size", "title_font_family", "title_font_color")):
             title = legend.setdefault("title", {})
             tf = title.setdefault("font", {})
             if "title_font_size" in styles.legend:
-                tf["size"] = styles.legend["title_font_size"]
+                tf.setdefault("size", styles.legend["title_font_size"])
             if "title_font_family" in styles.legend:
-                tf["family"] = styles.legend["title_font_family"]
+                tf.setdefault("family", styles.legend["title_font_family"])
             if "title_font_color" in styles.legend:
-                tf["color"] = styles.legend["title_font_color"]
+                tf.setdefault("color", styles.legend["title_font_color"])
 
     # --- hover ---------------------------------------------------------
     if styles.hover:
         if "mode" in styles.hover:
-            layout["hovermode"] = styles.hover["mode"]
-        hl = {}
+            layout.setdefault("hovermode", styles.hover["mode"])
+        hl = layout.setdefault("hoverlabel", {})
         if "background_color" in styles.hover:
-            hl["bgcolor"] = styles.hover["background_color"]
+            hl.setdefault("bgcolor", styles.hover["background_color"])
         if "border_color" in styles.hover:
-            hl["bordercolor"] = styles.hover["border_color"]
+            hl.setdefault("bordercolor", styles.hover["border_color"])
+        if "border_width" in styles.hover:
+            hl.setdefault("borderwidth", styles.hover["border_width"])
         if any(k in styles.hover for k in ("font_size", "font_family", "font_color")):
             hf = hl.setdefault("font", {})
             if "font_size" in styles.hover:
-                hf["size"] = styles.hover["font_size"]
+                hf.setdefault("size", styles.hover["font_size"])
             if "font_family" in styles.hover:
-                hf["family"] = styles.hover["font_family"]
+                hf.setdefault("family", styles.hover["font_family"])
             if "font_color" in styles.hover:
-                hf["color"] = styles.hover["font_color"]
-        if hl:
-            layout["hoverlabel"] = hl
+                hf.setdefault("color", styles.hover["font_color"])
 
 
 def apply_plotly_theme_to_trace(trace: dict[str, t.Any], styles: ThemeStyles) -> None:
-    """Merge theme *styles* into a single Plotly trace dictionary."""
+    """Merge theme *styles* into a single Plotly trace dictionary — **defaults only**."""
     if not styles:
         return
 
@@ -1385,47 +1482,53 @@ def apply_plotly_theme_to_trace(trace: dict[str, t.Any], styles: ThemeStyles) ->
     if styles.colorbar:
         cb = trace.setdefault("colorbar", {})
         if "title_font_size" in styles.colorbar:
-            cb.setdefault("title", {}).setdefault("font", {})["size"] = styles.colorbar["title_font_size"]
+            cb.setdefault("title", {}).setdefault("font", {}).setdefault(
+                "size", styles.colorbar["title_font_size"]
+            )
         if "title_font_family" in styles.colorbar:
-            cb.setdefault("title", {}).setdefault("font", {})["family"] = styles.colorbar["title_font_family"]
+            cb.setdefault("title", {}).setdefault("font", {}).setdefault(
+                "family", styles.colorbar["title_font_family"]
+            )
         if "title_font_color" in styles.colorbar:
-            cb.setdefault("title", {}).setdefault("font", {})["color"] = styles.colorbar["title_font_color"]
+            cb.setdefault("title", {}).setdefault("font", {}).setdefault(
+                "color", styles.colorbar["title_font_color"]
+            )
         if "tick_font_size" in styles.colorbar:
-            cb.setdefault("tickfont", {})["size"] = styles.colorbar["tick_font_size"]
+            cb.setdefault("tickfont", {}).setdefault("size", styles.colorbar["tick_font_size"])
         if "tick_font_family" in styles.colorbar:
-            cb.setdefault("tickfont", {})["family"] = styles.colorbar["tick_font_family"]
+            cb.setdefault("tickfont", {}).setdefault("family", styles.colorbar["tick_font_family"])
         if "tick_font_color" in styles.colorbar:
-            cb.setdefault("tickfont", {})["color"] = styles.colorbar["tick_font_color"]
+            cb.setdefault("tickfont", {}).setdefault("color", styles.colorbar["tick_font_color"])
         if "bgcolor" in styles.colorbar:
-            cb["bgcolor"] = styles.colorbar["bgcolor"]
+            cb.setdefault("bgcolor", styles.colorbar["bgcolor"])
         if "bordercolor" in styles.colorbar:
-            cb["bordercolor"] = styles.colorbar["bordercolor"]
+            cb.setdefault("bordercolor", styles.colorbar["bordercolor"])
         if "borderwidth" in styles.colorbar:
-            cb["borderwidth"] = styles.colorbar["borderwidth"]
+            cb.setdefault("borderwidth", styles.colorbar["borderwidth"])
         if "len" in styles.colorbar:
-            cb["len"] = styles.colorbar["len"]
+            cb.setdefault("len", styles.colorbar["len"])
         if "thickness" in styles.colorbar:
-            cb["thickness"] = styles.colorbar["thickness"]
+            cb.setdefault("thickness", styles.colorbar["thickness"])
         if "show" in styles.colorbar:
-            trace["showscale"] = styles.colorbar["show"]
+            trace.setdefault("showscale", styles.colorbar["show"])
 
     # hoverlabel also lives on the trace
     if styles.hover:
         hl = trace.setdefault("hoverlabel", {})
         if "background_color" in styles.hover:
-            hl["bgcolor"] = styles.hover["background_color"]
+            hl.setdefault("bgcolor", styles.hover["background_color"])
         if "border_color" in styles.hover:
-            hl["bordercolor"] = styles.hover["border_color"]
+            hl.setdefault("bordercolor", styles.hover["border_color"])
         if "border_width" in styles.hover:
-            hl["borderwidth"] = styles.hover["border_width"]
+            hl.setdefault("borderwidth", styles.hover["border_width"])
         if any(k in styles.hover for k in ("font_size", "font_family", "font_color")):
             hf = hl.setdefault("font", {})
             if "font_size" in styles.hover:
-                hf["size"] = styles.hover["font_size"]
+                hf.setdefault("size", styles.hover["font_size"])
             if "font_family" in styles.hover:
-                hf["family"] = styles.hover["font_family"]
+                hf.setdefault("family", styles.hover["font_family"])
             if "font_color" in styles.hover:
-                hf["color"] = styles.hover["font_color"]
+                hf.setdefault("color", styles.hover["font_color"])
 
 
 _register_builtin_themes()
