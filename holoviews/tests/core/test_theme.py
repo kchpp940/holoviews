@@ -470,3 +470,201 @@ class TestThemeApi:
     def test_module_level_registry(self):
         assert isinstance(theme_registry, ThemeRegistry)
         assert isinstance(theme_state, ThemeState)
+
+
+# ---------------------------------------------------------------------------
+# Actual-rendering assertions per backend
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def _register_test_theme():
+    if "__test_theme__" in hv.opts.list_themes():
+        return
+    hv.opts.register_theme(
+        Theme(
+            "__test_theme__",
+            bokeh=ThemeStyles(
+                font={"family": "Courier New", "size": 18, "color": "#112233"},
+                background={"color": "#F5F5F5"},
+                grid={"show": True, "color": "#AAAAAA", "alpha": 0.6, "line_width": 1.5},
+                legend={"font_size": 13, "bgcolor": "#FFFFFF", "borderwidth": 0},
+                toolbar={"autohide": True},
+                colorbar={"title_font_size": 14, "tick_font_size": 10, "bgcolor": "#FFFFFF"},
+                hover={"mode": "vline", "background_color": "#FFFFE0"},
+            ),
+            matplotlib=ThemeStyles(
+                font={"family": "DejaVu Sans", "size": 16},
+                background={"color": "#FFF8DC"},
+                grid={"show": True, "color": "#A9A9A9"},
+                legend={"fontsize": 12, "framealpha": 0.8, "facecolor": "#FFFAF0"},
+                toolbar={"show": True},
+                colorbar={"labelsize": 11},
+            ),
+            plotly=ThemeStyles(
+                font={"family": "Verdana", "size": 16, "color": "#222222"},
+                background={"color": "#FAF0E6"},
+                grid={"show": True, "color": "#D3D3D3", "width": 1},
+                legend={"font_size": 13, "bgcolor": "#FFFAF0", "position": "top_right"},
+                colorbar={"title_font_size": 13, "tick_font_size": 10},
+                hover={"mode": "closest", "background_color": "#FFFFFF"},
+            ),
+        )
+    )
+
+
+class TestThemeCapabilitiesDowngrade:
+    def test_unsupported_keys_logged_as_info(self, caplog):
+        import logging
+
+        from holoviews.core.theme import ThemeCapabilities
+
+        caplog.set_level(logging.INFO)
+        raw = ThemeStyles(toolbar={"show": True, "unknown": 1})
+        # Plotly declares no toolbar support
+        ThemeCapabilities.filter_styles(raw, "plotly", warn=True)
+        assert any("toolbar" in rec.message for rec in caplog.records)
+
+
+class TestUserExplicitKeys:
+    def test_user_opts_detected_via_store_lookup(self, _register_test_theme):
+        import holoviews as hv
+        from holoviews.core.theme import get_user_explicit_keys
+
+        hv.extension("bokeh")
+        curve = hv.Curve([1, 2, 3]).opts(
+            bgcolor="#FF0000", legend_position="top_left"
+        )
+        renderer = hv.renderer("bokeh")
+        plot = renderer.get_plot(curve)
+        user_keys = get_user_explicit_keys(plot, "bokeh")
+        assert "color" in user_keys["background"]
+        assert "position" in user_keys["legend"]
+
+
+class TestBokehActualRendering:
+    def test_theme_applied_to_figure(self, _register_test_theme):
+        import holoviews as hv
+
+        hv.extension("bokeh")
+        with hv.opts.theme("__test_theme__"):
+            curve = hv.Curve([1, 2, 3])
+            renderer = hv.renderer("bokeh")
+            plot = renderer.get_plot(curve)
+            state = plot.state
+            assert state.background_fill_color == "#F5F5F5"
+            assert state.title.text_font == "Courier New"
+            assert state.toolbar.autohide is True
+            # grid
+            for g in state.xgrid:
+                assert g.grid_line_color == "#AAAAAA"
+                assert g.grid_line_alpha == 0.6
+                assert g.grid_line_width == 1.5
+            # axes font
+            for ax in state.xaxis:
+                assert ax.axis_label_text_font == "Courier New"
+                assert ax.major_label_text_font == "Courier New"
+
+    def test_user_opts_not_overwritten(self, _register_test_theme):
+        import holoviews as hv
+
+        hv.extension("bokeh")
+        with hv.opts.theme("__test_theme__"):
+            curve = hv.Curve([1, 2, 3]).opts(bgcolor="#0000FF")
+            renderer = hv.renderer("bokeh")
+            plot = renderer.get_plot(curve)
+            assert plot.state.background_fill_color == "#0000FF"
+
+    def test_theme_applied_to_legend(self, _register_test_theme):
+        import holoviews as hv
+
+        hv.extension("bokeh")
+        with hv.opts.theme("__test_theme__"):
+            overlay = hv.Curve([1, 2, 3], label="A") * hv.Curve([3, 2, 1], label="B")
+            renderer = hv.renderer("bokeh")
+            plot = renderer.get_plot(overlay)
+            assert plot.state.legend
+            for leg in plot.state.legend:
+                font_size_val = leg.label_text_font_size
+                if isinstance(font_size_val, str):
+                    assert font_size_val.startswith("13")
+                else:
+                    assert str(font_size_val).startswith("13")
+                assert leg.background_fill_color == "#FFFFFF"
+
+    def test_theme_applied_to_hover(self, _register_test_theme):
+        import holoviews as hv
+        from bokeh.models import HoverTool
+
+        hv.extension("bokeh")
+        with hv.opts.theme("__test_theme__"):
+            curve = hv.Curve([1, 2, 3])
+            renderer = hv.renderer("bokeh")
+            plot = renderer.get_plot(curve)
+            hovers = [t for t in plot.state.tools if isinstance(t, HoverTool)]
+            assert hovers
+            h = hovers[0]
+            assert h.background == "#FFFFE0"
+
+
+class TestMatplotlibActualRendering:
+    def test_theme_applied_to_figure(self, _register_test_theme):
+        import holoviews as hv
+        from matplotlib.colors import to_rgb
+
+        hv.extension("matplotlib")
+        with hv.opts.theme("__test_theme__"):
+            curve = hv.Curve([1, 2, 3])
+            renderer = hv.renderer("matplotlib")
+            plot = renderer.get_plot(curve)
+            fig = plot.state.figure
+            expected_bg = to_rgb("#FFF8DC")
+            assert to_rgb(fig.get_facecolor()[:3]) == expected_bg
+            ax = fig.axes[0]
+            assert to_rgb(ax.get_facecolor()[:3]) == expected_bg
+            expected_grid = to_rgb("#A9A9A9")
+            assert to_rgb(ax.yaxis.get_gridlines()[0].get_color()[:3]) == expected_grid
+
+    def test_user_opts_not_overwritten_mpl(self, _register_test_theme):
+        import holoviews as hv
+        from matplotlib.colors import to_rgb
+
+        hv.extension("matplotlib")
+        with hv.opts.theme("__test_theme__"):
+            curve = hv.Curve([1, 2, 3]).opts(bgcolor="#00FF00")
+            renderer = hv.renderer("matplotlib")
+            plot = renderer.get_plot(curve)
+            ax = plot.state.figure.axes[0]
+            assert to_rgb(ax.get_facecolor()[:3]) == to_rgb("#00FF00")
+
+
+class TestPlotlyActualRendering:
+    def test_theme_applied_to_layout(self, _register_test_theme):
+        import holoviews as hv
+
+        hv.extension("plotly")
+        with hv.opts.theme("__test_theme__"):
+            curve = hv.Curve([1, 2, 3])
+            renderer = hv.renderer("plotly")
+            fig = renderer.get_plot(curve).state
+            assert fig.layout["font"]["family"] == "Verdana"
+            assert fig.layout["font"]["size"] == 16
+            assert fig.layout["paper_bgcolor"] == "#FAF0E6"
+            assert fig.layout["plot_bgcolor"] == "#FAF0E6"
+            assert fig.layout["hovermode"] == "closest"
+            assert fig.layout["hoverlabel"]["bgcolor"] == "#FFFFFF"
+            assert fig.layout["xaxis"]["showgrid"] is True
+            assert fig.layout["xaxis"]["gridcolor"] == "#D3D3D3"
+            assert fig.layout["legend"]["x"] == 1.02
+            assert fig.layout["legend"]["y"] == 1
+
+    def test_user_opts_not_overwritten_plotly(self, _register_test_theme):
+        import holoviews as hv
+
+        hv.extension("plotly")
+        with hv.opts.theme("__test_theme__"):
+            curve = hv.Curve([1, 2, 3]).opts(bgcolor="#0000FF")
+            renderer = hv.renderer("plotly")
+            fig = renderer.get_plot(curve).state
+            assert fig.layout["paper_bgcolor"] == "#0000FF"
+            assert fig.layout["plot_bgcolor"] == "#0000FF"

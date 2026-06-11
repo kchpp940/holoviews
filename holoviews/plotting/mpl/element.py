@@ -1023,8 +1023,11 @@ class ColorbarPlot(ElementPlot):
             if labelsize is not None:
                 break
 
-        theme_styles = get_theme_styles_for_plot(self, "matplotlib")
-        if labelsize is None and theme_styles.colorbar and "labelsize" in theme_styles.colorbar:
+        theme_styles, theme_user_keys = get_theme_styles_for_plot(self, "matplotlib")
+        if (labelsize is None
+                and theme_styles.colorbar
+                and "labelsize" in theme_styles.colorbar
+                and "labelsize" not in theme_user_keys.get("colorbar", set())):
             labelsize = theme_styles.colorbar["labelsize"]
 
         if cbar.solids and noalpha:
@@ -1092,12 +1095,13 @@ class ColorbarPlot(ElementPlot):
 
         padding = self.cbar_padding
         width = self.cbar_width
-        theme_styles = get_theme_styles_for_plot(self, "matplotlib")
+        theme_styles, theme_user_keys = get_theme_styles_for_plot(self, "matplotlib")
         cb_opts = dict(self.colorbar_opts)
         if theme_styles.colorbar:
             for k, v in theme_styles.colorbar.items():
-                if k in ("pad", "shrink", "aspect", "fraction") and k not in cb_opts:
-                    cb_opts[k] = v
+                if k in ("pad", "shrink", "aspect", "fraction"):
+                    if k not in cb_opts and k not in theme_user_keys.get("colorbar", set()):
+                        cb_opts[k] = v
         if spec[:2] not in specs:
             offset = len(ax_colorbars)
             scaled_w = w * width
@@ -1375,7 +1379,7 @@ class LegendPlot(ElementPlot):
             leg_spec["ncol"] = self.legend_cols
         legend_opts = self.legend_opts.copy()
         legend_opts.update(**dict(leg_spec, **self._fontsize("legend")))
-        theme_styles = get_theme_styles_for_plot(self, "matplotlib")
+        theme_styles, theme_user_keys = get_theme_styles_for_plot(self, "matplotlib")
         if theme_styles.legend:
             theme_legend = theme_styles.legend
             mpl_legend_keys = {
@@ -1389,7 +1393,9 @@ class LegendPlot(ElementPlot):
                 "frame": "frameon",
             }
             for theme_key, mpl_key in mpl_legend_keys.items():
-                if theme_key in theme_legend and mpl_key not in legend_opts:
+                if (theme_key in theme_legend
+                        and mpl_key not in legend_opts
+                        and theme_key not in theme_user_keys.get("legend", set())):
                     legend_opts[mpl_key] = theme_legend[theme_key]
         return legend_opts
 

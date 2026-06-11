@@ -771,8 +771,8 @@ class ElementPlot(BokehPlot, GenericElementPlot):
         elif any(hover_tools):
             hover = hover_tools[0]
         if hover:
-            theme_styles = get_theme_styles_for_plot(self, "bokeh")
-            apply_bokeh_theme_to_hover(hover, theme_styles)
+            theme_styles, theme_user_keys = get_theme_styles_for_plot(self, "bokeh")
+            apply_bokeh_theme_to_hover(hover, theme_styles, theme_user_keys)
             self.handles["hover"] = hover
 
         if self.subcoordinate_y:
@@ -1225,10 +1225,13 @@ class ElementPlot(BokehPlot, GenericElementPlot):
         else:
             title = ""
 
+        theme_styles, theme_user_keys = get_theme_styles_for_plot(self, "bokeh")
+
         if self.toolbar != "disable":
             tools = self._init_tools(element)
             properties["tools"] = tools
-            properties["toolbar_location"] = self.toolbar
+            if "position" in theme_user_keys.get("toolbar", set()):
+                properties["toolbar_location"] = self.toolbar
         else:
             properties["tools"] = []
             properties["toolbar_location"] = None
@@ -1245,10 +1248,13 @@ class ElementPlot(BokehPlot, GenericElementPlot):
             fig = bokeh.plotting.figure(title=title, **properties)
         fig.xaxis[0].update(**axis_props["x"])
         fig.yaxis[0].update(**axis_props["y"])
-        fig.toolbar.autohide = self.autohide_toolbar
 
-        theme_styles = get_theme_styles_for_plot(self, "bokeh")
-        apply_bokeh_theme_to_figure(fig, theme_styles)
+        apply_bokeh_theme_to_figure(fig, theme_styles, theme_user_keys)
+
+        if "autohide" in theme_user_keys.get("toolbar", set()):
+            fig.toolbar.autohide = self.autohide_toolbar
+        if "position" in theme_user_keys.get("toolbar", set()):
+            fig.toolbar_location = self.toolbar
 
         # Set up handlers to configure following behavior on streaming plots
         if self.streaming:
@@ -3178,8 +3184,8 @@ class ColorbarPlot(ElementPlot):
         plot.add_layout(color_bar, pos)
         self.handles[prefix + "colorbar"] = color_bar
 
-        theme_styles = get_theme_styles_for_plot(self, "bokeh")
-        apply_bokeh_theme_to_colorbar(color_bar, theme_styles)
+        theme_styles, theme_user_keys = get_theme_styles_for_plot(self, "bokeh")
+        apply_bokeh_theme_to_colorbar(color_bar, theme_styles, theme_user_keys)
 
     def _get_colormapper(
         self,
@@ -3452,9 +3458,9 @@ class LegendPlot(ElementPlot):
                     for r in item.renderers:
                         r.muted = self.legend_muted
 
-        theme_styles = get_theme_styles_for_plot(self, "bokeh")
+        theme_styles, theme_user_keys = get_theme_styles_for_plot(self, "bokeh")
         for leg in plot.legend:
-            apply_bokeh_theme_to_legend(leg, theme_styles)
+            apply_bokeh_theme_to_legend(leg, theme_styles, theme_user_keys)
 
 
 class AnnotationPlot:

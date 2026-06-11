@@ -211,8 +211,8 @@ class MPLPlot(DimensionedPlot):
         if self.fig_latex:
             self.fig_rcparams["text.usetex"] = True
 
-        theme_styles = get_theme_styles_for_plot(self, "matplotlib")
-        theme_rc = apply_matplotlib_theme_to_rcparams(theme_styles)
+        theme_styles, theme_user_keys = get_theme_styles_for_plot(self, "matplotlib")
+        theme_rc = apply_matplotlib_theme_to_rcparams(theme_styles, theme_user_keys)
         for k, v in theme_rc.items():
             self.fig_rcparams.setdefault(k, v)
 
@@ -251,8 +251,8 @@ class MPLPlot(DimensionedPlot):
                 fig.set_size_inches([inches, inches])
             axis = fig.add_subplot(111, projection=self.projection)
             axis.set_aspect("auto")
-            theme_styles = get_theme_styles_for_plot(self, "matplotlib")
-            apply_matplotlib_theme_to_axes(axis, theme_styles)
+            theme_styles, theme_user_keys = get_theme_styles_for_plot(self, "matplotlib")
+            apply_matplotlib_theme_to_axes(axis, theme_styles, theme_user_keys)
         return fig, axis
 
     def _get_fontsize_defaults(self):
