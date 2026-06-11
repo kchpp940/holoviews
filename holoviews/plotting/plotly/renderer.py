@@ -161,7 +161,7 @@ class PlotlyRenderer(Renderer):
         factor = percent_size / 100.0
         obj = obj.last if isinstance(obj, HoloMap) else obj
         plot = Store.registry[cls.backend].get(type(obj), None)
-        options = plot.resolve_options(obj).plot.options
+        options = plot.lookup_options(obj, "plot").options
         width = options.get("width", plot.width) * factor
         height = options.get("height", plot.height) * factor
         return dict(options, width=int(width), height=int(height))

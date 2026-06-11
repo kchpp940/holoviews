@@ -177,7 +177,7 @@ class BokehRenderer(Renderer):
             from .plot import BokehPlot
 
             plot = BokehPlot
-        options = plot.resolve_options(obj).plot.options
+        options = plot.lookup_options(obj, "plot").options
         width = options.get("width", plot.width)
         height = options.get("height", plot.height)
         if width is not None:

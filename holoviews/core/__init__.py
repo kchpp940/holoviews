@@ -11,7 +11,7 @@ from .io import FileArchive
 from .layout import AdjointLayout, Empty, Layout, NdLayout
 from .ndmapping import MultiDimensionalMapping, NdMapping, UniformNdMapping
 from .operation import Operation
-from .options import OptionResolver, ResolvedOptions, Store, StoreOptions, resolve_options
+from .options import Store, StoreOptions
 from .overlay import CompositeOverlay, NdOverlay, Overlay
 from .sheetcoords import SheetCoordinateSystem
 from .spaces import DynamicMap, GridMatrix, GridSpace, HoloMap
@@ -67,10 +67,8 @@ __all__ = [
     "NdMapping",
     "NdOverlay",
     "Operation",
-    "OptionResolver",
     "Overlay",
     "Redim",
-    "ResolvedOptions",
     "SheetCoordinateSystem",
     "Store",
     "StoreOptions",
@@ -87,7 +85,6 @@ __all__ = [
     "ndmapping",
     "operation",
     "options",
-    "resolve_options",
     "sheetcoords",
     "tree",
 ]

@@ -459,7 +459,7 @@ def get_sideplot_ranges(plot, element, main, ranges):
     if dim.label in ranges:
         main_range = ranges[dim.label]["combined"]
     else:
-        framewise = plot._get_resolved(range_item.last).norm.options.get("framewise")
+        framewise = plot.lookup_options(range_item.last, "norm").options.get("framewise")
         if framewise and range_item.get(key, False):
             main_range = range_item[key].range(dim)
         else:

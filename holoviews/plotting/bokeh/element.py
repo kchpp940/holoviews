@@ -1010,7 +1010,7 @@ class ElementPlot(BokehPlot, GenericElementPlot):
                 ):
                     axis_type = "timedelta"
 
-        norm_opts = self.resolve_options(el).norm.options
+        norm_opts = self.lookup_options(el, "norm").options
         shared_name = extra_range_name or ("x-main-range" if pos == 0 else "y-main-range")
         if plots and self.shared_axes and not norm_opts.get("axiswise", False) and not dim:
             dim_range = self._shared_axis_range(plots, specs, range_type, axis_type, pos)
@@ -2640,7 +2640,7 @@ class ElementPlot(BokehPlot, GenericElementPlot):
             if el is None:
                 continue
             for callback in callbacks:
-                norm = self.resolve_options(el).norm.options
+                norm = self.lookup_options(el, "norm").options
                 if norm.get("framewise"):
                     for s in callback.streams:
                         if isinstance(s, RangeXY) and not s._triggering:
@@ -2684,15 +2684,14 @@ class ElementPlot(BokehPlot, GenericElementPlot):
         else:
             style_element = element
             max_cycles = self.style._max_cycles
-        update_resolved = self.resolve_options(style_element)
-        style = update_resolved.style
+        style = self.lookup_options(style_element, "style")
         self.style = style.max_cycles(max_cycles) if max_cycles else style
 
         if not self.overlaid:
             ranges = self.compute_ranges(self.hmap, key, ranges)
         else:
             self.ranges.update(ranges)
-        self._apply_plot_opts(update_resolved.plot.options)
+        self._apply_plot_opts(self.lookup_options(style_element, "plot").options)
         ranges = util.match_spec(style_element, ranges)
         self.current_ranges = ranges
         plot = self.handles["plot"]
@@ -2750,7 +2749,7 @@ class ElementPlot(BokehPlot, GenericElementPlot):
         ]
         current_frames = util.unique_iterator(current_frames)
         return any(
-            self.resolve_options(frame).norm.options.get("framewise") for frame in current_frames
+            self.lookup_options(frame, "norm").options.get("framewise") for frame in current_frames
         )
 
     def _draw_scalebar(self, *, plot, renderer):
@@ -3519,7 +3518,7 @@ class OverlayPlot(GenericOverlayPlot, LegendPlot):
     ]
 
     def __init__(self, overlay, **kwargs):
-        self._multi_y_propagation = self.resolve_options(overlay).plot.options.get(
+        self._multi_y_propagation = self.lookup_options(overlay, "plot").options.get(
             "multi_y", False
         )
         super().__init__(overlay, **kwargs)
@@ -3565,7 +3564,7 @@ class OverlayPlot(GenericOverlayPlot, LegendPlot):
         legend = plot.legend[0]
 
         options = {}
-        properties = self.resolve_options(self.hmap.last).style[self.cyclic_index]
+        properties = self.lookup_options(self.hmap.last, "style")[self.cyclic_index]
         for k, v in properties.items():
             if k in line_properties and "line" not in k:
                 ksplit = k.split("_")
@@ -4002,7 +4001,7 @@ class OverlayPlot(GenericOverlayPlot, LegendPlot):
             ranges = self.compute_ranges(range_obj, key, ranges)
 
             # Update plot options
-            plot_opts = self.resolve_options(element).plot.options
+            plot_opts = self.lookup_options(element, "plot").options
             inherited = self._traverse_options(
                 element, "plot", self._propagate_options, defaults=False
             )
