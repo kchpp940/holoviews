@@ -740,13 +740,21 @@ class ElementPlot(GenericElementPlot, MPLPlot):
             element=element,
             ranges=ranges,
             key=key,
-            axes=ax,
-            figure=ax.figure,
         )
 
         ctx = self.run_lifecycle_phase(LifecyclePhase.PRE_INIT, ctx)
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_FIGURE, ctx)
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_AXES, ctx)
+
+        def _create_figure(ctx: LifecycleContext) -> LifecycleContext:
+            fig = ax.figure
+            self.handles["fig"] = fig
+            return ctx.update(figure=fig, layout=fig)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_FIGURE, ctx, _create_figure)
+
+        def _create_axes(ctx: LifecycleContext) -> LifecycleContext:
+            return ctx.update(axes=ax)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_AXES, ctx, _create_axes)
 
         style = dict(zorder=self.zorder, **self.style[self.cyclic_index])
         if self.show_legend:
@@ -758,24 +766,43 @@ class ElementPlot(GenericElementPlot, MPLPlot):
             ctx.extra["axis_kwargs"] = axis_kwargs
             return ctx.update(glyphs=handles.get("artist"))
 
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_GLYPHS, ctx)
-        ctx = _create_glyphs(ctx)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_GLYPHS, ctx, _create_glyphs)
 
         trigger = self._trigger
         self._trigger = []
         Stream.trigger(trigger)
+
+        def _create_legend(ctx: LifecycleContext) -> LifecycleContext:
+            legend = ax.get_legend()
+            return ctx.update(legend=legend)
+
+        def _create_colorbar(ctx: LifecycleContext) -> LifecycleContext:
+            colorbar = None
+            for artist in ax.get_children():
+                if hasattr(artist, "colorbar") and artist.colorbar is not None:
+                    colorbar = artist.colorbar
+                    break
+            if "cax" in self.handles:
+                colorbar = self.handles["cax"]
+            return ctx.update(colorbar=colorbar)
+
+        def _create_tools(ctx: LifecycleContext) -> LifecycleContext:
+            format_coord = getattr(ax, "format_coord", None)
+            tools_dict = {
+                "format_coord": format_coord,
+                "hover_data": None,
+            }
+            return ctx.update(tools=tools_dict)
 
         def _finalize_style(ctx: LifecycleContext) -> LifecycleContext:
             axis_kwargs = ctx.extra.get("axis_kwargs", {})
             result = self._finalize_axis(self.keys[-1], element=element, ranges=ranges, **axis_kwargs)
             return ctx.update(state=result)
 
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_LEGEND, ctx)
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_COLORBAR, ctx)
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_TOOLS, ctx)
-
-        ctx = self.run_lifecycle_phase(LifecyclePhase.FINALIZE_STYLE, ctx)
-        ctx = _finalize_style(ctx)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_LEGEND, ctx, _create_legend)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_COLORBAR, ctx, _create_colorbar)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_TOOLS, ctx, _create_tools)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.FINALIZE_STYLE, ctx, _finalize_style)
 
         ctx = self.run_lifecycle_phase(LifecyclePhase.POST_INIT, ctx)
 

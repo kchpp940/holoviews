@@ -2497,7 +2497,6 @@ class ElementPlot(BokehPlot, GenericElementPlot):
 
     def initialize_plot(self, ranges=None, plot=None, plots=None, source=None):
         """Initializes a new plot object with the last available frame."""
-        # Get element key and ranges for frame
         if self.batched:
             element = [el for el in self.hmap.data.values() if el][-1]
         else:
@@ -2515,15 +2514,21 @@ class ElementPlot(BokehPlot, GenericElementPlot):
             element=element,
             ranges=ranges,
             key=key,
-            extra={"style_element": style_element, "plots": plots, "source": source},
         )
+        ctx.extra.update({
+            "style_element": style_element,
+            "plots": plots,
+            "source": source,
+            "external_plot": plot is not None,
+        })
 
         ctx = self.run_lifecycle_phase(LifecyclePhase.PRE_INIT, ctx)
 
         def _create_figure(ctx: LifecycleContext) -> LifecycleContext:
             style_element = ctx.extra["style_element"]
             plots = ctx.extra["plots"]
-            if plot is None:
+            external_plot = ctx.extra["external_plot"]
+            if not external_plot:
                 fig = self._init_plot(ctx.key, style_element, ranges=ctx.ranges, plots=plots)
                 self._populate_axis_handles(fig)
             else:
@@ -2543,23 +2548,30 @@ class ElementPlot(BokehPlot, GenericElementPlot):
                 self._apply_hard_bounds(element, ranges)
 
             self.handles["plot"] = fig
-            return ctx.update(figure=fig, axes=(self.handles["xaxis"], self.handles["yaxis"]))
+            axes_tuple = (self.handles["xaxis"], self.handles["yaxis"])
+            return ctx.update(figure=fig, axes=axes_tuple, layout=fig)
 
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_FIGURE, ctx)
-        ctx = _create_figure(ctx)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_FIGURE, ctx, _create_figure)
+
+        def _create_axes(ctx: LifecycleContext) -> LifecycleContext:
+            axes_tuple = (self.handles["xaxis"], self.handles["yaxis"])
+            return ctx.update(axes=axes_tuple)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_AXES, ctx, _create_axes)
 
         def _create_glyphs(ctx: LifecycleContext) -> LifecycleContext:
             source = ctx.extra["source"]
             if self.autorange:
                 self._setup_autorange()
-            glyphs = self._init_glyphs(ctx.figure, element, ctx.ranges, source)
+            self._init_glyphs(ctx.figure, element, ctx.ranges, source)
             if not self.overlaid:
                 self._update_plot(ctx.key, ctx.figure, style_element)
                 self._update_ranges(style_element, ctx.ranges)
-            return ctx.update(glyphs=glyphs)
+            glyph = self.handles.get("glyph")
+            glyph_renderer = self.handles.get("glyph_renderer")
+            return ctx.update(glyphs=glyph_renderer if glyph_renderer is not None else glyph)
 
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_GLYPHS, ctx)
-        ctx = _create_glyphs(ctx)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_GLYPHS, ctx, _create_glyphs)
 
         for cb in self.callbacks:
             cb.initialize()
@@ -2570,27 +2582,42 @@ class ElementPlot(BokehPlot, GenericElementPlot):
         def _create_legend(ctx: LifecycleContext) -> LifecycleContext:
             if not self.overlaid:
                 self._process_legend()
-            return ctx
+            legends = ctx.figure.legend if hasattr(ctx.figure, "legend") else []
+            legend = legends[0] if legends else None
+            return ctx.update(legend=legend)
+
+        def _create_colorbar(ctx: LifecycleContext) -> LifecycleContext:
+            colorbar = self.handles.get("colorbar")
+            if colorbar is None:
+                for layout_key in ["right", "left", "above", "below"]:
+                    layout_items = getattr(ctx.figure, layout_key, [])
+                    for item in layout_items:
+                        if hasattr(item, "color_mapper"):
+                            colorbar = item
+                            break
+                    if colorbar is not None:
+                        break
+            return ctx.update(colorbar=colorbar)
 
         def _create_tools(ctx: LifecycleContext) -> LifecycleContext:
             if not self.overlaid:
                 self._set_active_tools(ctx.figure)
                 self._setup_data_callbacks(ctx.figure)
-            return ctx.update(tools=ctx.figure.tools)
+            tools_dict = {
+                "all": ctx.figure.tools,
+                "hover": self.handles.get("hover"),
+            }
+            return ctx.update(tools=tools_dict)
 
         def _finalize_style(ctx: LifecycleContext) -> LifecycleContext:
             self._execute_hooks(element)
             self.drawn = True
             return ctx.update(state=ctx.figure)
 
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_LEGEND, ctx)
-        ctx = _create_legend(ctx)
-
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_TOOLS, ctx)
-        ctx = _create_tools(ctx)
-
-        ctx = self.run_lifecycle_phase(LifecyclePhase.FINALIZE_STYLE, ctx)
-        ctx = _finalize_style(ctx)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_LEGEND, ctx, _create_legend)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_COLORBAR, ctx, _create_colorbar)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_TOOLS, ctx, _create_tools)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.FINALIZE_STYLE, ctx, _finalize_style)
 
         ctx = self.run_lifecycle_phase(LifecyclePhase.POST_INIT, ctx)
 

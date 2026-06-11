@@ -206,25 +206,21 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
             element=element,
             ranges=ranges,
             key=key,
-            extra={"is_geo": is_geo},
         )
+        ctx.extra["is_geo"] = is_geo
 
         ctx = self.run_lifecycle_phase(LifecyclePhase.PRE_INIT, ctx)
 
-        # Set plot options
         plot_opts = self.lookup_options(element, "plot").options
         self.param.update(**{k: v for k, v in plot_opts.items() if k in self.param})
 
-        # Get ranges
         ranges = self.compute_ranges(self.hmap, key, ranges)
         ranges = util.match_spec(element, ranges)
         ctx.ranges = ranges
 
-        # Get style
         self.style = self.lookup_options(element, "style")
         style = self.style[self.cyclic_index]
 
-        # Validate style properties are supported in geo mode
         if is_geo:
             unsupported_opts = [
                 style_opt for style_opt in style if style_opt in self.unsupported_geo_style_opts
@@ -235,7 +231,6 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
                     f"backend when overlaid on Tiles:\n    {unsupported_opts}"
                 )
 
-        # Get data and options and merge them
         data = self.get_data(element, ranges, style, is_geo=is_geo)
         opts = self.graph_options(element, ranges, style, is_geo=is_geo)
 
@@ -248,32 +243,25 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
             }
 
             for i, d in enumerate(data):
-                # Initialize traces
                 datum_components = self.init_graph(d, opts, index=i, is_geo=is_geo)
-
-                # Handle traces
                 traces = datum_components.get("traces", [])
                 components["traces"].extend(traces)
 
                 if i == 0 and traces:
                     traces[0]["uid"] = self.trace_uid
 
-                # Handle images, shapes, annotations
                 for k in ["images", "shapes", "annotations"]:
                     components[k].extend(datum_components.get(k, []))
 
-                # Handle mapbox
                 if PLOTLY_MAP in datum_components:
                     components[PLOTLY_MAP] = datum_components[PLOTLY_MAP]
 
             self.handles["components"] = components
             return ctx.update(glyphs=components["traces"])
 
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_GLYPHS, ctx)
-        ctx = _create_glyphs(ctx)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_GLYPHS, ctx, _create_glyphs)
 
         def _create_layout(ctx: LifecycleContext) -> LifecycleContext:
-            # Initialize layout
             layout = self.init_layout(key, element, ranges, is_geo=is_geo)
             components = self.handles["components"]
             for k in ["images", "shapes", "annotations"]:
@@ -286,12 +274,16 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
             self.handles["layout"] = layout
             return ctx.update(layout=layout, axes=layout)
 
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_LAYOUT, ctx)
-        ctx = _create_layout(ctx)
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_AXES, ctx)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_LAYOUT, ctx, _create_layout)
+
+        def _create_axes(ctx: LifecycleContext) -> LifecycleContext:
+            xaxis = ctx.layout.get("xaxis", {})
+            yaxis = ctx.layout.get("yaxis", {})
+            return ctx.update(axes=(xaxis, yaxis))
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_AXES, ctx, _create_axes)
 
         def _create_figure(ctx: LifecycleContext) -> LifecycleContext:
-            # Create figure and return it
             layout = ctx.layout
             layout["autosize"] = self.responsive
             fig = dict(
@@ -300,8 +292,7 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
             self.handles["fig"] = fig
             return ctx.update(figure=fig)
 
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_FIGURE, ctx)
-        ctx = _create_figure(ctx)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_FIGURE, ctx, _create_figure)
 
         def _create_legend(ctx: LifecycleContext) -> LifecycleContext:
             legend = ctx.layout.get("legend")
@@ -309,11 +300,12 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
 
         def _create_colorbar(ctx: LifecycleContext) -> LifecycleContext:
             colorbar = None
+            coloraxis = ctx.layout.get("coloraxis")
             for trace in ctx.glyphs:
                 if "colorbar" in trace:
                     colorbar = trace["colorbar"]
                     break
-            return ctx.update(colorbar=colorbar)
+            return ctx.update(colorbar=colorbar, extra={**ctx.extra, "coloraxis": coloraxis})
 
         def _create_tools(ctx: LifecycleContext) -> LifecycleContext:
             hovertemplate = None
@@ -321,29 +313,22 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
                 if "hovertemplate" in trace:
                     hovertemplate = trace["hovertemplate"]
                     break
-            return ctx.update(
-                tools={
-                    "hovertemplate": hovertemplate,
-                    "customdata": ctx.glyphs[0].get("customdata") if ctx.glyphs else None,
-                }
-            )
-
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_LEGEND, ctx)
-        ctx = _create_legend(ctx)
-
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_COLORBAR, ctx)
-        ctx = _create_colorbar(ctx)
-
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_TOOLS, ctx)
-        ctx = _create_tools(ctx)
+            tools_dict = {
+                "hovertemplate": hovertemplate,
+                "customdata": ctx.glyphs[0].get("customdata") if ctx.glyphs else None,
+                "config": ctx.figure.get("config"),
+            }
+            return ctx.update(tools=tools_dict)
 
         def _finalize_style(ctx: LifecycleContext) -> LifecycleContext:
             self._execute_hooks(element)
             self.drawn = True
             return ctx.update(state=ctx.figure)
 
-        ctx = self.run_lifecycle_phase(LifecyclePhase.FINALIZE_STYLE, ctx)
-        ctx = _finalize_style(ctx)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_LEGEND, ctx, _create_legend)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_COLORBAR, ctx, _create_colorbar)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_TOOLS, ctx, _create_tools)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.FINALIZE_STYLE, ctx, _finalize_style)
 
         ctx = self.run_lifecycle_phase(LifecyclePhase.POST_INIT, ctx)
 
