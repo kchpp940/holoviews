@@ -23,6 +23,7 @@ from ...core import (
 )
 from ...core.dimension import Dimension
 from ...core.options import Keywords, abbreviated_exception
+from ...core.theme import get_theme_styles_for_plot
 from ...core.util import dtype_kind
 from ...element import Graph, Path
 from ...streams import Stream
@@ -1022,6 +1023,10 @@ class ColorbarPlot(ElementPlot):
             if labelsize is not None:
                 break
 
+        theme_styles = get_theme_styles_for_plot(self, "matplotlib")
+        if labelsize is None and theme_styles.colorbar and "labelsize" in theme_styles.colorbar:
+            labelsize = theme_styles.colorbar["labelsize"]
+
         if cbar.solids and noalpha:
             cbar.solids.set_edgecolor("face")
         cbar.set_label(label, fontsize=labelsize)
@@ -1087,6 +1092,12 @@ class ColorbarPlot(ElementPlot):
 
         padding = self.cbar_padding
         width = self.cbar_width
+        theme_styles = get_theme_styles_for_plot(self, "matplotlib")
+        cb_opts = dict(self.colorbar_opts)
+        if theme_styles.colorbar:
+            for k, v in theme_styles.colorbar.items():
+                if k in ("pad", "shrink", "aspect", "fraction") and k not in cb_opts:
+                    cb_opts[k] = v
         if spec[:2] not in specs:
             offset = len(ax_colorbars)
             scaled_w = w * width
@@ -1094,7 +1105,7 @@ class ColorbarPlot(ElementPlot):
                 [l + w + padding + (scaled_w + padding + w * 0.15) * offset, b, scaled_w, h]
             )
             cbar = fig.colorbar(
-                artist, cax=cax, ax=axis, extend=self.cbar_extend, **self.colorbar_opts
+                artist, cax=cax, ax=axis, extend=self.cbar_extend, **cb_opts
             )
             self._set_axis_formatter(cbar.ax.yaxis, dimension, self.cformatter)
             self._adjust_cbar(cbar, label, dimension)
@@ -1364,6 +1375,22 @@ class LegendPlot(ElementPlot):
             leg_spec["ncol"] = self.legend_cols
         legend_opts = self.legend_opts.copy()
         legend_opts.update(**dict(leg_spec, **self._fontsize("legend")))
+        theme_styles = get_theme_styles_for_plot(self, "matplotlib")
+        if theme_styles.legend:
+            theme_legend = theme_styles.legend
+            mpl_legend_keys = {
+                "fontsize": "fontsize",
+                "title_fontsize": "title_fontsize",
+                "framealpha": "framealpha",
+                "edgecolor": "edgecolor",
+                "facecolor": "facecolor",
+                "borderpad": "borderpad",
+                "labelspacing": "labelspacing",
+                "frame": "frameon",
+            }
+            for theme_key, mpl_key in mpl_legend_keys.items():
+                if theme_key in theme_legend and mpl_key not in legend_opts:
+                    legend_opts[mpl_key] = theme_legend[theme_key]
         return legend_opts
 
 

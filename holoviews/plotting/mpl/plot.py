@@ -28,6 +28,11 @@ from ...core import (
     NdLayout,
 )
 from ...core.options import SkipRendering, Store
+from ...core.theme import (
+    apply_matplotlib_theme_to_axes,
+    apply_matplotlib_theme_to_rcparams,
+    get_theme_styles_for_plot,
+)
 from ...core.util import int_to_alpha, int_to_roman, wrap_tuple_streams
 from ..plot import (
     DimensionedPlot,
@@ -206,6 +211,11 @@ class MPLPlot(DimensionedPlot):
         if self.fig_latex:
             self.fig_rcparams["text.usetex"] = True
 
+        theme_styles = get_theme_styles_for_plot(self, "matplotlib")
+        theme_rc = apply_matplotlib_theme_to_rcparams(theme_styles)
+        for k, v in theme_rc.items():
+            self.fig_rcparams.setdefault(k, v)
+
         if self.renderer.interactive:
             plt.ion()
             self._close_figures = False
@@ -241,6 +251,8 @@ class MPLPlot(DimensionedPlot):
                 fig.set_size_inches([inches, inches])
             axis = fig.add_subplot(111, projection=self.projection)
             axis.set_aspect("auto")
+            theme_styles = get_theme_styles_for_plot(self, "matplotlib")
+            apply_matplotlib_theme_to_axes(axis, theme_styles)
         return fig, axis
 
     def _get_fontsize_defaults(self):

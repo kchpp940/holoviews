@@ -54,6 +54,10 @@ from bokeh.models.tools import Tool
 from ...core import Dataset, Dimension, DynamicMap, Element, util
 from ...core.options import Keywords, SkipRendering, abbreviated_exception
 from ...core.overlay import CompositeOverlay, NdOverlay
+from ...core.theme import (
+    apply_bokeh_theme_to_figure,
+    get_theme_styles_for_plot,
+)
 from ...core.util import dtype_kind
 from ...element import Annotation, Contours, Graph, Path, Tiles, VectorField
 from ...streams import Buffer, PlotSize, RangeXY
@@ -1237,6 +1241,9 @@ class ElementPlot(BokehPlot, GenericElementPlot):
         fig.xaxis[0].update(**axis_props["x"])
         fig.yaxis[0].update(**axis_props["y"])
         fig.toolbar.autohide = self.autohide_toolbar
+
+        theme_styles = get_theme_styles_for_plot(self, "bokeh")
+        apply_bokeh_theme_to_figure(fig, theme_styles)
 
         # Set up handlers to configure following behavior on streaming plots
         if self.streaming:
