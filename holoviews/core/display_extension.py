@@ -69,7 +69,6 @@ __all__ = [
     "get_side_panels",
     "get_text_extras",
     "get_metadata",
-    "get_execution_context_meta",
     "get_display_payload",
     "DimensionedHoverExtension",
     "DynamicMapExtension",
@@ -577,63 +576,6 @@ def get_metadata(obj: Any) -> Dict[str, Any]:
     return meta
 
 
-def get_execution_context_meta(obj: Any) -> Dict[str, Any]:
-    """Extract execution context metadata from an object produced by a
-    resampling/rasterizing/datashading operation.
-
-    Tries several sources in order:
-
-    1. ``obj._hv_execution_context`` — an
-       :class:`~holoviews.operation.resample.OperationExecutionContext`
-       instance attached by the operation itself.
-    2. ``obj._operation_context`` — a generic operation context dict
-       that may contain ``sampling_meta``, ``bounds``, ``precompute``
-       etc.
-    3. ``obj.callback.operation`` — when the object is a DynamicMap
-       wrapping an Operation.
-
-    Returns a flat dictionary of display-friendly metadata that can be
-    used directly by :class:`OperationContextExtension` or consumed
-    programmatically.  Returns an empty dict if no execution context
-    is found.
-    """
-    ctx: Dict[str, Any] = {}
-
-    hv_ctx = getattr(obj, "_hv_execution_context", None)
-    if hv_ctx is not None:
-        try:
-            meta = hv_ctx.to_metadata_dict()
-            if meta:
-                ctx.update(meta)
-            ctx["_execution_context_obj"] = hv_ctx
-        except Exception:  # noqa: BLE001
-            pass
-
-    op_ctx = getattr(obj, "_operation_context", None)
-    if op_ctx and isinstance(op_ctx, dict):
-        sampling_meta = op_ctx.get("sampling_meta")
-        if isinstance(sampling_meta, dict):
-            for k, v in sampling_meta.items():
-                ctx.setdefault(k, v)
-        if "bounds" in op_ctx and op_ctx["bounds"] is not None:
-            ctx.setdefault("bounds", op_ctx["bounds"])
-        if "precompute" in op_ctx:
-            ctx.setdefault("precompute", op_ctx["precompute"])
-        if "elapsed_ms" in op_ctx:
-            ctx.setdefault("elapsed_ms", op_ctx["elapsed_ms"])
-        if "operation" in op_ctx:
-            ctx.setdefault("operation", op_ctx["operation"])
-
-    callback = getattr(obj, "callback", None)
-    if callback is not None:
-        op = getattr(callback, "operation", None)
-        if op is not None:
-            ctx.setdefault("operation", getattr(op, "__name__", type(op).__name__))
-            ctx.setdefault("operation_type", type(op).__name__)
-
-    return ctx
-
-
 def get_display_payload(obj: Any) -> DisplayPayload:
     """Build a single :class:`DisplayPayload` containing every piece of
     display-extension content for *obj*.
@@ -987,13 +929,14 @@ class OperationContextExtension(DisplayExtension):
     contexts = DisplayContext.ALL
 
     def applies_to(self, obj: Any) -> bool:
+        from ..operation import get_execution_context_meta
         ctx = get_execution_context_meta(obj)
         has_pipeline = hasattr(obj, "operation_pipeline") and obj.operation_pipeline
         return bool(ctx) or has_pipeline
 
     def _collect_context(self, obj: Any) -> Dict[str, Any]:
+        from ..operation import get_execution_context_meta
         ctx = dict(get_execution_context_meta(obj))
-        ctx.pop("_execution_context_obj", None)
 
         if hasattr(obj, "operation_pipeline") and obj.operation_pipeline:
             pipeline = obj.operation_pipeline

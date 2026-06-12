@@ -1495,6 +1495,7 @@ class GenericElementPlot(DimensionedPlot):
             self.keys.append(key)
         self.current_frame = frame
         self.current_key = key
+        self._clear_payload_cache()
         return frame
 
     def _execute_hooks(self, element):
@@ -1505,21 +1506,51 @@ class GenericElementPlot(DimensionedPlot):
             except Exception as e:
                 self.param.warning(f"Plotting hook {hook!r} could not be applied:\n\n {e}")
 
+    def _clear_payload_cache(self) -> None:
+        """Invalidate the cached :class:`DisplayPayload` if any.
+
+        Must be called whenever the active frame, key, stream
+        parameters, or operation metadata change, so that hover, side
+        panels and debug info reflect the latest state instead of a
+        stale payload.
+        """
+        self.__dict__.pop("_cached_payload", None)
+        self.__dict__.pop("_cached_payload_key", None)
+
     def _get_payload(self, element):
         """Build and cache a :class:`~holoviews.core.display_extension.DisplayPayload`
         for *element*.  Subclasses and downstream code should call this
         instead of the module-level ``get_display_payload`` so that a
         single payload instance is shared across hover, panel, and
         metadata consumers within the same plot.
+
+        The cache is keyed on a tuple of (``id(element)``,
+        ``self.current_key``, ``id(self.hmap)``).  Any of those
+        changing will trigger a rebuild.  Callers can also force
+        invalidation via :meth:`_clear_payload_cache`.
         """
         from ..core.display_extension import get_display_payload
 
+        cache_key = (id(element), id(getattr(self, "current_key", None)),
+                     id(getattr(self, "hmap", None)))
+        cached_key = self.__dict__.get("_cached_payload_key")
         payload = self.__dict__.get("_cached_payload")
-        if payload is not None and payload.source_obj is element:
+        if payload is not None and cached_key == cache_key:
             return payload
         payload = get_display_payload(element)
         self.__dict__["_cached_payload"] = payload
+        self.__dict__["_cached_payload_key"] = cache_key
         return payload
+
+    def update_frame(self, key, ranges=None):
+        """Set the plot(s) to the given frame number.
+
+        Clears the cached display payload before delegating to the
+        backend-specific implementation, so that hover / side panels /
+        debug metadata are rebuilt against the newly-selected frame.
+        """
+        self._clear_payload_cache()
+        return super().update_frame(key, ranges=ranges)
 
     def get_aspect(self, xspan, yspan):
         """Should define the aspect ratio of the plot."""
