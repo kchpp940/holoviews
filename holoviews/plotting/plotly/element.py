@@ -277,9 +277,12 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
         ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_LAYOUT, ctx, _create_layout)
 
         def _create_axes(ctx: LifecycleContext) -> LifecycleContext:
-            xaxis = ctx.layout.get("xaxis", {})
-            yaxis = ctx.layout.get("yaxis", {})
-            return ctx.update(axes=(xaxis, yaxis))
+            axes_dict = {}
+            layout = ctx.layout
+            for ax_key in ["xaxis", "yaxis", "xaxis2", "yaxis2", "scene"]:
+                if ax_key in layout:
+                    axes_dict[ax_key] = layout[ax_key]
+            return ctx.update(axes=axes_dict if axes_dict else None)
 
         ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_AXES, ctx, _create_axes)
 
@@ -939,8 +942,49 @@ class OverlayPlot(GenericOverlayPlot, ElementPlot):
         layout = self.init_layout(key, element, ranges, is_geo=is_geo)
         merge_layout(figure["layout"], layout)
         self.drawn = True
-
         self.handles["fig"] = figure
+
+        # OverlayPlot lifecycle: legend/colorbar/tools are set by init_layout
+        ctx = LifecycleContext(
+            plot=self,
+            element=element,
+            ranges=ranges,
+            key=key,
+            figure=figure,
+            layout=figure.get("layout"),
+        )
+
+        # Extract axes from layout
+        axes_dict = {}
+        fig_layout = figure.get("layout", {})
+        for ax_key in ["xaxis", "yaxis", "xaxis2", "yaxis2", "scene"]:
+            if ax_key in fig_layout:
+                axes_dict[ax_key] = fig_layout[ax_key]
+        if axes_dict:
+            ctx.axes = axes_dict
+
+        # Extract legend from layout (Plotly uses layout.legend + showlegend on traces)
+        legend_dict = fig_layout.get("legend", {})
+        showlegend = any(
+            t.get("showlegend", False) for t in figure.get("data", [])
+        )
+        ctx.legend = legend_dict if legend_dict else ({"showlegend": showlegend} if showlegend else None)
+
+        # Extract colorbar from layout/traces
+        coloraxis = fig_layout.get("coloraxis")
+        colorbar = None
+        for trace in figure.get("data", []):
+            if "colorbar" in trace:
+                colorbar = trace["colorbar"]
+                break
+        ctx.colorbar = colorbar if colorbar else coloraxis
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_LEGEND, ctx)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_COLORBAR, ctx)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_TOOLS, ctx)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.FINALIZE_STYLE, ctx)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.POST_INIT, ctx)
+
         return figure
 
     def update_frame(self, key, ranges=None, element=None, is_geo=False):

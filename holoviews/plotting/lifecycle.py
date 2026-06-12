@@ -24,7 +24,7 @@ Architecture Overview:
         Mixin class that provides lifecycle management capabilities to
         backend-specific Plot classes.
 
-Lifecycle Phases (in order):
+Lifecycle Phases (Logical Order):
 
     1.  PRE_INIT        - Before any plot initialization begins
     2.  CREATE_FIGURE   - Create the figure/canvas
@@ -37,8 +37,15 @@ Lifecycle Phases (in order):
     9.  FINALIZE_STYLE  - Apply final styling (themes, fonts, etc.)
     10. POST_INIT       - After all initialization is complete
 
+Backends may reorder CREATE_GLYPHS and CREATE_AXES internally:
+    - Bokeh:  CREATE_FIGURE → CREATE_GLYPHS → CREATE_AXES → CREATE_LEGEND → ...
+    - MPL:    CREATE_FIGURE → CREATE_GLYPHS → CREATE_AXES → CREATE_LEGEND → ...
+    - Plotly: CREATE_GLYPHS → CREATE_LAYOUT → CREATE_AXES → CREATE_FIGURE → ...
+    - Composite plots (Overlay/Layout/Grid) run lifecycle per subplot, then aggregate
+
 Each creation phase (create_*) runs in the pattern:
-    run hooks BEFORE phase -> run backend creation -> run hooks AFTER phase
+    run hooks BEFORE phase -> sync ctx from handles -> run backend creation ->
+    sync ctx from handles again -> run hooks AFTER phase
 This ensures hooks always have access to the created, mutable objects.
 
 Lifecycle Phase Contract
@@ -79,12 +86,13 @@ Creates the figure/canvas object.
   All other objects from PRE_INIT are [R/O]
 - After:
   figure:    [NEW, R/W]  The created figure object
-  layout:    [NEW, R/W]  The figure as layout container
+  layout:    [NEW, R/W]  The figure as layout container (for Plotly dict)
   element:   [R/O]
   ranges:    [R/O]
-  axes:      [OVERWRITTEN]  Initial axes may be replaced by CREATE_AXES
+  axes:      [OVERWRITTEN]  Initial axes (if any) will be replaced/configured in CREATE_AXES
   Others:    [N/A]
-Notes: Figure object is fully mutable after this phase.
+Notes: Figure object is fully mutable after this phase. For Plotly, this creates the
+       final dict wrapper; for Bokeh/MPL, this creates the canvas/figure instance.
 
 Phase: CREATE_LAYOUT
 --------------------
@@ -95,15 +103,27 @@ Creates layout/container (primarily for Plotly and composite plots).
   layout:    [NEW, R/W]  Layout dict (Plotly) or layout object
   figure:    [R/O]
   Others:    Inherit from CREATE_FIGURE
-Notes: For Bokeh/MPL, layout is often the same as figure.
+Notes: For Bokeh/MPL, layout is often the same as figure. For Plotly, this creates
+       the layout dict with axis configuration that will be extracted in CREATE_AXES.
+       For composite plots (GridSpace), this creates the figure-level layout.
 
 Phase: CREATE_AXES
 ------------------
 Creates and configures axes with labels, ticks, ranges.
-This is the FINAL phase for axes configuration - modifications here are preserved.
+
+IMPORTANT COVERAGE SEMANTICS (verified across all backends):
+  BEFORE: axes exists but is UNCONFIGURED (no labels, no tick config)
+  create_fn: runs the backend's axis configuration logic
+    - Bokeh: calls _update_plot → _update_labels (sets axis labels)
+    - MPL:    calls _finalize_axis_core (sets title, xlabel, ylabel, grid, ticks)
+    - Plotly: extracts axis refs from layout dict (reference semantics)
+  AFTER: axes is FULLY CONFIGURED. This is the FINAL modification point for axes.
+         No subsequent phase will overwrite axes labels, ticks, or ranges.
+
 - Before:
   figure:    [R/O]
   glyphs:    [R/O]  Glyphs may be created before axes (backends vary)
+  axes:      [R/O]  UNCONFIGURED - modifications here will be OVERWRITTEN by create_fn
 - After:
   axes:      [NEW, R/W]  Axes tuple (xaxis, yaxis) or Axes object
   figure:    [R/O]
@@ -111,19 +131,21 @@ This is the FINAL phase for axes configuration - modifications here are preserve
   All axes properties (labels, ticks, ranges, grid, log scale, etc.) are FINAL
   after this phase - no subsequent phase will overwrite them.
 Notes: This is the recommended phase for modifying axes properties.
+       Plotly WARNING: axes are references to layout dict entries; modifications
+       via ctx.axes dict keys will affect the final figure.
 
 Phase: CREATE_GLYPHS
 --------------------
 Creates glyphs/artists/traces from data.
 - Before:
   figure:    [R/O]
-  axes:      [R/O]  Do not modify axes here - changes may be overwritten!
+  axes:      [OVERWRITTEN]  Do NOT modify axes here - they will be overwritten by CREATE_AXES!
   element:   [R/O]
   ranges:    [R/O]
 - After:
   glyphs:    [NEW, R/W]  The created glyph/artist/trace object(s)
   figure:    [R/O]
-  axes:      [R/W]  Axes are FINAL after CREATE_AXES
+  axes:      [R/W]  Axes are FINAL only after CREATE_AXES
 Notes: Glyph creation order varies by backend:
   - Bokeh: CREATE_GLYPHS before CREATE_AXES
   - MPL:   CREATE_GLYPHS before CREATE_AXES
@@ -131,35 +153,61 @@ Notes: Glyph creation order varies by backend:
 
 Phase: CREATE_LEGEND
 --------------------
-Creates the legend.
+Creates the legend. Legend object types vary by backend:
+  - Bokeh:  bokeh.models.Legend object (explicit)
+  - MPL:    matplotlib.legend.Legend object (explicit)
+  - Plotly: dict with showlegend + trace_names (legend is implicit)
+
+For composite plots (Overlay/Layout/Grid), legend is aggregated from subplots
+via _sync_ctx_from_handles after all subplots have initialized.
+
 - Before:
   figure:    [R/O]
   axes:      [R/W]  (FINAL - from CREATE_AXES)
   glyphs:    [R/O]
 - After:
-  legend:    [NEW, R/W]  The legend object (or None if no legend)
+  legend:    [NEW, R/W]  The legend object/dict (or None if no legend)
   figure:    [R/O]
   axes:      [R/W]  (FINAL)
   glyphs:    [R/O]
+Notes: Plotly legend is implicit; ctx.legend contains showlegend flag and trace names.
+       For Overlay plots, the legend is created by the OverlayPlot after all subplots
+       have rendered, and will be None until the OverlayPlot's CREATE_LEGEND phase runs.
 
 Phase: CREATE_COLORBAR
 ----------------------
-Creates the colorbar.
+Creates the colorbar. Colorbar object types vary by backend:
+  - Bokeh:  bokeh.models.ColorBar object (explicit)
+  - MPL:    matplotlib.colorbar.Colorbar object (explicit)
+  - Plotly: dict from trace.colorbar or layout.coloraxis
+
+For composite plots (Overlay/Layout/Grid), colorbar is aggregated from subplots
+via _sync_ctx_from_handles after all subplots have initialized.
+
 - Before:
   figure:    [R/O]
   axes:      [R/W]  (FINAL)
   glyphs:    [R/O]
   legend:    [R/O]
 - After:
-  colorbar:  [NEW, R/W]  The colorbar object (or None if no colorbar)
+  colorbar:  [NEW, R/W]  The colorbar object/dict (or None if no colorbar)
   figure:    [R/O]
   axes:      [R/W]  (FINAL)
   glyphs:    [R/O]
   legend:    [R/O]
+Notes: For composite plots, colorbar may come from any subplot and is aggregated
+       automatically by _sync_ctx_from_handles.
 
 Phase: CREATE_TOOLS
 -------------------
-Creates tools (hover, zoom, pan, etc.).
+Creates tools (hover, zoom, pan, etc.). Tool types vary by backend:
+  - Bokeh:  bokeh.models.tools.* objects (HoverTool, PanTool, etc.)
+  - MPL:    format_coord callable, hover_data dict
+  - Plotly: hovertemplate string, config dict, hovermode
+
+For composite plots (Overlay/Layout/Grid), tools are aggregated from subplots
+via _sync_ctx_from_handles after all subplots have initialized.
+
 - Before:
   figure:    [R/O]
   axes:      [R/W]  (FINAL)
@@ -171,6 +219,8 @@ Creates tools (hover, zoom, pan, etc.).
   figure:    [R/O]
   axes:      [R/W]  (FINAL)
   Others:    [R/O]
+Notes: ctx.tools is always a dict with keys like "hover", "all", "format_coord",
+       "hovertemplate", "config", etc. For Bokeh, tools["all"] contains all tool objects.
 
 Phase: FINALIZE_STYLE
 ---------------------
@@ -189,6 +239,7 @@ This is the LAST phase where modifications should be made.
   ALL objects are [R/W] but this is the last chance to modify them.
 Notes: This is the recommended phase for theme application and final touches.
        All modifications here are guaranteed to be preserved.
+       For MPL, this phase runs _finalize_artist and _execute_hooks.
 
 Phase: POST_INIT
 ----------------
@@ -203,7 +254,7 @@ Notes: Good place for cleanup, logging, or post-processing that doesn't
 
 Summary of Key Modification Points:
 ===================================
-- For axes labels/ticks/ranges:   Use CREATE_AXES [after]
+- For axes labels/ticks/ranges:   Use CREATE_AXES [after]   (FINAL, GUARANTEED)
 - For glyph styling:              Use CREATE_GLYPHS [after] or FINALIZE_STYLE
 - For legend customization:       Use CREATE_LEGEND [after] or FINALIZE_STYLE
 - For colorbar customization:     Use CREATE_COLORBAR [after] or FINALIZE_STYLE
@@ -211,12 +262,33 @@ Summary of Key Modification Points:
 - For figure-wide styling:        Use FINALIZE_STYLE [before/after]
 - For themes:                     Use FINALIZE_STYLE (guaranteed final)
 - For debugging/logging:          Use any phase, or POST_INIT
+- For composite plot subobjects:  Use FINALIZE_STYLE (all subplots initialized)
 
-WARNING:
-- Do NOT modify axes in CREATE_GLYPHS [after] - they may be overwritten by
-  CREATE_AXES in some backends.
-- Do NOT rely on object presence in phases marked [N/A].
-- Always check for None before accessing optional objects (legend, colorbar, etc.).
+CRITICAL WARNINGS (verified by real backend tracing):
+======================================================
+1. DO NOT modify axes in CREATE_GLYPHS [after] - they WILL be overwritten by
+   CREATE_AXES in Bokeh and MPL. Use CREATE_AXES [after] instead.
+
+2. DO NOT modify axes in CREATE_AXES [before] - the create_fn WILL overwrite
+   your changes with _update_labels (Bokeh) or _finalize_axis_core (MPL).
+   Use CREATE_AXES [after] for all axis modifications.
+
+3. For Plotly, all objects (figure, layout, axes, legend, colorbar, tools)
+   are dict references. Modifications to ctx.axes, ctx.legend, etc. directly
+   affect the final figure dict.
+
+4. For composite plots (Overlay/Layout/Grid), subplots run their full
+   lifecycle first. Parent plot's CREATE_LEGEND/COLORBAR/TOOLS phases
+   aggregate objects from subplots via _sync_ctx_from_handles.
+   Subplot objects are accessible via self.subplots in the parent's hooks.
+
+5. Optional objects (legend, colorbar) may be None if not created.
+   Always check for None before accessing them.
+
+6. Object types vary by backend:
+   - ctx.legend: Bokeh Legend | MPL Legend | Plotly dict | None
+   - ctx.colorbar: Bokeh ColorBar | MPL Colorbar | Plotly dict | None
+   - ctx.tools: always dict (keys vary by backend)
 
 Usage for Backend Integration:
 
@@ -535,6 +607,330 @@ class LifecycleMixin:
         all_hooks.sort()
         return all_hooks
 
+    def _sync_ctx_from_handles(self, ctx: LifecycleContext) -> LifecycleContext:
+        """
+        Sync all available objects from self.handles into the LifecycleContext.
+
+        This is called before and after each lifecycle phase to ensure that
+        all objects created by the backend are available in the context
+        regardless of which backend or which plot type created them.
+
+        Objects are only set in ctx if they are not already set and a
+        non-None value is found in handles. This preserves objects that
+        were explicitly set by the backend's create_fn.
+        """
+        if not hasattr(self, "handles"):
+            return ctx
+
+        handles = self.handles
+
+        # figure
+        if ctx.figure is None:
+            for key in ["figure", "fig", "plot"]:
+                if key in handles and handles[key] is not None and not callable(handles[key]):
+                    ctx.figure = handles[key]
+                    break
+
+        # layout - fallback to figure if no separate layout
+        if ctx.layout is None:
+            for key in ["layout"]:
+                if key in handles and handles[key] is not None and not callable(handles[key]):
+                    ctx.layout = handles[key]
+                    break
+            if ctx.layout is None and ctx.figure is not None:
+                ctx.layout = ctx.figure
+
+        # axes - try multiple backend conventions
+        if ctx.axes is None:
+            # Bokeh: handles["xaxis"], handles["yaxis"]
+            if "xaxis" in handles and "yaxis" in handles:
+                xax = handles["xaxis"]
+                yax = handles["yaxis"]
+                if (xax is not None and not callable(xax)) or (yax is not None and not callable(yax)):
+                    ctx.axes = (xax, yax)
+            # MPL: handles["axis"] or handles["axes"]
+            elif "axis" in handles and handles["axis"] is not None and not callable(handles["axis"]):
+                ctx.axes = handles["axis"]
+            elif "axes" in handles and handles["axes"] is not None and not callable(handles["axes"]):
+                ctx.axes = handles["axes"]
+            # Composite: subplots with axes
+            elif hasattr(self, "subplots") and self.subplots is not None:
+                all_axes = {}
+                for pos, sp in self.subplots.items():
+                    if hasattr(sp, "handles"):
+                        if "xaxis" in sp.handles and "yaxis" in sp.handles:
+                            xax = sp.handles["xaxis"]
+                            yax = sp.handles["yaxis"]
+                            if (xax is not None and not callable(xax)) or (yax is not None and not callable(yax)):
+                                all_axes[pos] = (xax, yax)
+                        elif "axis" in sp.handles and sp.handles["axis"] is not None and not callable(sp.handles["axis"]):
+                            all_axes[pos] = sp.handles["axis"]
+                if all_axes:
+                    ctx.axes = all_axes
+
+        # glyphs
+        if ctx.glyphs is None:
+            glyphs_dict = {}
+            for key in ["glyph", "glyphs", "glyph_renderer", "artist", "artists", "trace", "traces"]:
+                if key in handles and handles[key] is not None and not callable(handles[key]):
+                    glyphs_dict[key] = handles[key]
+            if glyphs_dict:
+                ctx.glyphs = glyphs_dict
+
+        # legend
+        if ctx.legend is None:
+            for key in ["legend"]:
+                if key in handles and handles[key] is not None and not callable(handles[key]):
+                    ctx.legend = handles[key]
+                    break
+            # Bokeh: figure.legend returns list of Legend objects
+            if ctx.legend is None and ctx.figure is not None and hasattr(ctx.figure, "legend"):
+                try:
+                    legends = ctx.figure.legend
+                    if legends:
+                        if isinstance(legends, list) and len(legends) > 0:
+                            # Filter out callables
+                            actual_legends = [l for l in legends if not callable(l)]
+                            if actual_legends:
+                                ctx.legend = actual_legends[0] if len(actual_legends) == 1 else actual_legends
+                        elif legends and not callable(legends):
+                            ctx.legend = legends
+                except Exception:
+                    pass
+            # MPL: check axes.get_legend()
+            if ctx.legend is None and ctx.axes is not None:
+                try:
+                    if hasattr(ctx.axes, "get_legend"):
+                        leg = ctx.axes.get_legend()
+                        if leg is not None:
+                            ctx.legend = leg
+                except Exception:
+                    pass
+            # Plotly: figure is dict with data+layout; legend is implicit via showlegend on traces
+            if ctx.legend is None and isinstance(ctx.figure, dict) and "data" in ctx.figure:
+                try:
+                    traces = ctx.figure.get("data", [])
+                    showlegend = any(
+                        isinstance(t, dict) and t.get("showlegend", False)
+                        for t in traces
+                    )
+                    if showlegend:
+                        layout = ctx.figure.get("layout", {})
+                        legend_info = layout.get("legend", {}) if isinstance(layout, dict) else {}
+                        legend_info["showlegend"] = True
+                        # Include trace names that appear in legend
+                        legend_trace_names = [
+                            t.get("name") for t in traces
+                            if isinstance(t, dict) and t.get("showlegend", False) and t.get("name")
+                        ]
+                        if legend_trace_names:
+                            legend_info["trace_names"] = legend_trace_names
+                        ctx.legend = legend_info
+                except Exception:
+                    pass
+
+        # colorbar
+        if ctx.colorbar is None:
+            for key in ["colorbar", "cbar"]:
+                if key in handles and handles[key] is not None and not callable(handles[key]):
+                    ctx.colorbar = handles[key]
+                    break
+            # Bokeh: check figure for colorbar
+            if ctx.colorbar is None and ctx.figure is not None:
+                try:
+                    if hasattr(ctx.figure, "select"):
+                        from bokeh.models import ColorBar as _BkColorBar
+                        colorbars = ctx.figure.select(dict(type=_BkColorBar))
+                        if colorbars:
+                            ctx.colorbar = colorbars[0] if len(colorbars) == 1 else colorbars
+                except Exception:
+                    pass
+            # MPL: check axes for colorbar
+            if ctx.colorbar is None and ctx.axes is not None:
+                try:
+                    if hasattr(ctx.axes, "get_children"):
+                        for child in ctx.axes.get_children():
+                            if hasattr(child, "colorbar") and child.colorbar is not None:
+                                ctx.colorbar = child.colorbar
+                                break
+                except Exception:
+                    pass
+            # Plotly: figure dict - colorbar in traces or coloraxis in layout
+            if ctx.colorbar is None and isinstance(ctx.figure, dict):
+                try:
+                    traces = ctx.figure.get("data", [])
+                    for trace in traces:
+                        if isinstance(trace, dict) and "colorbar" in trace:
+                            ctx.colorbar = trace["colorbar"]
+                            break
+                    if ctx.colorbar is None:
+                        layout = ctx.figure.get("layout", {})
+                        if isinstance(layout, dict) and "coloraxis" in layout:
+                            ctx.colorbar = layout["coloraxis"]
+                except Exception:
+                    pass
+
+        # tools
+        if ctx.tools is None:
+            tools_dict = {}
+            # Bokeh-style: hover in handles
+            if "hover" in handles and handles["hover"] is not None and not callable(handles["hover"]):
+                tools_dict["hover"] = handles["hover"]
+            if ctx.figure is not None and hasattr(ctx.figure, "tools"):
+                try:
+                    tools_val = ctx.figure.tools
+                    if tools_val is not None and not callable(tools_val):
+                        tools_dict["all"] = tools_val
+                except Exception:
+                    pass
+            # MPL-style: format_coord in handles
+            if "format_coord" in handles and handles["format_coord"] is not None and not callable(handles["format_coord"]):
+                tools_dict["format_coord"] = handles["format_coord"]
+            if "hover_data" in handles and handles["hover_data"] is not None and not callable(handles["hover_data"]):
+                tools_dict["hover_data"] = handles["hover_data"]
+            # Plotly-style: hovertemplate, customdata, config
+            for key in ["hovertemplate", "customdata", "config", "hover"]:
+                if key in handles and handles[key] is not None and not callable(handles[key]):
+                    tools_dict[key] = handles[key]
+            # Plotly: figure dict - extract from traces and config
+            if isinstance(ctx.figure, dict):
+                try:
+                    traces = ctx.figure.get("data", [])
+                    for trace in traces:
+                        if isinstance(trace, dict):
+                            if "hovertemplate" in trace and trace["hovertemplate"] is not None:
+                                tools_dict["hovertemplate"] = trace["hovertemplate"]
+                                break
+                    if "config" in ctx.figure:
+                        tools_dict["config"] = ctx.figure["config"]
+                    layout = ctx.figure.get("layout", {})
+                    if isinstance(layout, dict) and "hovermode" in layout:
+                        tools_dict["hovermode"] = layout["hovermode"]
+                except Exception:
+                    pass
+            if tools_dict:
+                ctx.tools = tools_dict
+
+        # --- Aggregate from subplots if objects still not found ---
+        if hasattr(self, "subplots") and self.subplots is not None:
+            all_legend = []
+            all_colorbar = []
+            all_tools = {}
+
+            for sp in self.subplots.values():
+                if not hasattr(sp, "handles"):
+                    continue
+                sp_handles = sp.handles
+                sp_fig = sp_handles.get("plot") or sp_handles.get("figure") or sp_handles.get("fig")
+
+                # Collect legend from subplot
+                if ctx.legend is None:
+                    for key in ["legend"]:
+                        if key in sp_handles and sp_handles[key] is not None and not callable(sp_handles[key]):
+                            all_legend.append(sp_handles[key])
+                    # Check subplot axis (MPL)
+                    if "axis" in sp_handles and sp_handles["axis"] is not None and hasattr(sp_handles["axis"], "get_legend"):
+                        try:
+                            leg = sp_handles["axis"].get_legend()
+                            if leg is not None:
+                                all_legend.append(leg)
+                        except Exception:
+                            pass
+                    # Check subplot figure (Bokeh)
+                    if sp_fig is not None and hasattr(sp_fig, "legend"):
+                        try:
+                            sp_legs = sp_fig.legend
+                            if sp_legs and not callable(sp_legs):
+                                if isinstance(sp_legs, list):
+                                    all_legend.extend([l for l in sp_legs if not callable(l)])
+                                else:
+                                    all_legend.append(sp_legs)
+                        except Exception:
+                            pass
+                    # Check subplot ctx.figure (Plotly dict)
+                    if isinstance(sp_fig, dict) and "data" in sp_fig:
+                        try:
+                            traces = sp_fig.get("data", [])
+                            showlegend = any(
+                                isinstance(t, dict) and t.get("showlegend", False)
+                                for t in traces
+                            )
+                            if showlegend:
+                                legend_info = {"showlegend": True}
+                                trace_names = [
+                                    t.get("name") for t in traces
+                                    if isinstance(t, dict) and t.get("showlegend", False) and t.get("name")
+                                ]
+                                if trace_names:
+                                    legend_info["trace_names"] = trace_names
+                                all_legend.append(legend_info)
+                        except Exception:
+                            pass
+
+                # Collect colorbar from subplot
+                if ctx.colorbar is None:
+                    for key in ["colorbar", "cbar"]:
+                        if key in sp_handles and sp_handles[key] is not None and not callable(sp_handles[key]):
+                            all_colorbar.append(sp_handles[key])
+                    if isinstance(sp_fig, dict):
+                        try:
+                            traces = sp_fig.get("data", [])
+                            for trace in traces:
+                                if isinstance(trace, dict) and "colorbar" in trace:
+                                    all_colorbar.append(trace["colorbar"])
+                                    break
+                            layout = sp_fig.get("layout", {})
+                            if isinstance(layout, dict) and "coloraxis" in layout:
+                                all_colorbar.append(layout["coloraxis"])
+                        except Exception:
+                            pass
+                    if sp_fig is not None and hasattr(sp_fig, "select"):
+                        try:
+                            from bokeh.models import ColorBar as _BkColorBar2
+                            cbars = sp_fig.select(dict(type=_BkColorBar2))
+                            if cbars:
+                                all_colorbar.extend(cbars)
+                        except Exception:
+                            pass
+
+                # Collect tools from subplot
+                if ctx.tools is None:
+                    for key in ["hover", "format_coord", "hover_data", "hovertemplate", "customdata", "config", "hover"]:
+                        if key in sp_handles and sp_handles[key] is not None and not callable(sp_handles[key]):
+                            all_tools[key] = sp_handles[key]
+                    if sp_fig is not None and hasattr(sp_fig, "tools"):
+                        try:
+                            tools_val = sp_fig.tools
+                            if tools_val is not None and not callable(tools_val):
+                                all_tools.setdefault("all", [])
+                                if isinstance(tools_val, list):
+                                    all_tools["all"].extend(tools_val)
+                                else:
+                                    all_tools["all"].append(tools_val)
+                        except Exception:
+                            pass
+                    if isinstance(sp_fig, dict):
+                        try:
+                            traces = sp_fig.get("data", [])
+                            for trace in traces:
+                                if isinstance(trace, dict) and "hovertemplate" in trace and trace["hovertemplate"] is not None:
+                                    all_tools["hovertemplate"] = trace["hovertemplate"]
+                                    break
+                            if "config" in sp_fig:
+                                all_tools["config"] = sp_fig["config"]
+                        except Exception:
+                            pass
+
+            # Set aggregated values if not already set
+            if ctx.legend is None and all_legend:
+                ctx.legend = all_legend[0] if len(all_legend) == 1 else all_legend
+            if ctx.colorbar is None and all_colorbar:
+                ctx.colorbar = all_colorbar[0] if len(all_colorbar) == 1 else all_colorbar
+            if ctx.tools is None and all_tools:
+                ctx.tools = all_tools
+
+        return ctx
+
     def run_lifecycle_phase(
         self,
         phase: LifecyclePhase,
@@ -546,10 +942,12 @@ class LifecycleMixin:
 
         Execution order:
         1. Set current phase
-        2. Run "before" hooks (if create_fn is provided)
-        3. Call create_fn(ctx) to do the actual work
-        4. Run "after" hooks (with objects available in ctx)
-        5. Return the (possibly modified) context
+        2. Sync ctx from self.handles (ensure all created objects are available)
+        3. Run "before" hooks (if create_fn is provided)
+        4. Call create_fn(ctx) to do the actual work
+        5. Sync ctx from self.handles again (capture objects from create_fn)
+        6. Run "after" hooks (with objects available in ctx)
+        7. Return the (possibly modified) context
 
         If create_fn is None, only "after" hooks run (notification-only).
         All phases support before/after pattern when a create_fn is provided.
@@ -567,6 +965,9 @@ class LifecycleMixin:
 
         all_hooks = self._get_all_hooks()
 
+        # Always sync before running hooks - ensures backend objects are in ctx
+        ctx = self._sync_ctx_from_handles(ctx)
+
         if create_fn is not None:
             self._current_lifecycle_when = "before"
             for hook in all_hooks:
@@ -574,6 +975,9 @@ class LifecycleMixin:
                     ctx = hook.run(phase, "before", ctx)
 
             ctx = create_fn(ctx)
+
+            # Sync again after create_fn - captures any objects it created
+            ctx = self._sync_ctx_from_handles(ctx)
 
             self._current_lifecycle_when = "after"
             for hook in all_hooks:

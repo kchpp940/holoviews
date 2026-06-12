@@ -1662,12 +1662,65 @@ class OverlayPlot(LegendPlot, GenericOverlayPlot):
                 frame = element.get(k, None)
                 subplot.current_frame = frame
 
-        if self.show_legend and element is not None:
-            self._adjust_legend(element, axis)
-
-        return self._finalize_axis(
-            key, element=element, ranges=ranges, title=self._format_title(key)
+        # Build initial context after subplots initialized
+        ctx = LifecycleContext(
+            plot=self,
+            element=element,
+            ranges=ranges,
+            key=key,
+            axes=axis,
+            figure=axis.figure,
         )
+
+        # CREATE_LEGEND phase
+        def _create_legend_overlay(ctx_inner: LifecycleContext) -> LifecycleContext:
+            if self.show_legend and element is not None:
+                self._adjust_legend(element, axis)
+            legend = axis.get_legend()
+            return ctx_inner.update(legend=legend)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_LEGEND, ctx, _create_legend_overlay)
+
+        # CREATE_COLORBAR phase
+        def _create_colorbar_overlay(ctx_inner: LifecycleContext) -> LifecycleContext:
+            colorbar = None
+            if "cax" in self.handles:
+                colorbar = self.handles["cax"]
+            else:
+                for artist in axis.get_children():
+                    if hasattr(artist, "colorbar") and artist.colorbar is not None:
+                        colorbar = artist.colorbar
+                        break
+            return ctx_inner.update(colorbar=colorbar)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_COLORBAR, ctx, _create_colorbar_overlay)
+
+        # CREATE_TOOLS phase
+        def _create_tools_overlay(ctx_inner: LifecycleContext) -> LifecycleContext:
+            format_coord = self._get_mpl_format_coord(element) if element is not None else None
+            if format_coord is not None:
+                axis.format_coord = format_coord
+            tools_dict = {
+                "format_coord": format_coord,
+                "hover_data": element._get_hover_data() if element is not None and hasattr(element, "_get_hover_data") else None,
+            }
+            return ctx_inner.update(tools=tools_dict)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_TOOLS, ctx, _create_tools_overlay)
+
+        # FINALIZE_STYLE phase
+        def _finalize_style_overlay(ctx_inner: LifecycleContext) -> LifecycleContext:
+            self._finalize_artist(element)
+            self._execute_hooks(element)
+            self.drawn = True
+            return ctx_inner.update(state=axis.figure)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.FINALIZE_STYLE, ctx, _finalize_style_overlay)
+
+        # POST_INIT phase
+        ctx = self.run_lifecycle_phase(LifecyclePhase.POST_INIT, ctx)
+
+        return ctx.state
 
     @mpl_rc_context
     def update_frame(self, key, ranges=None, element=None):

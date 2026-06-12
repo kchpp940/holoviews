@@ -4021,8 +4021,33 @@ class OverlayPlot(GenericOverlayPlot, LegendPlot):
                 sizing_mode="fixed",
             )
         elif not self.overlaid:
-            self._process_legend(element)
-            self._set_active_tools(plot)
+            # Build initial context from handles after subplots initialized
+            ctx = LifecycleContext(plot=self, element=element, figure=self.handles.get("plot"))
+
+            # CREATE_LEGEND phase
+            def _create_legend_overlay(ctx_inner: LifecycleContext) -> LifecycleContext:
+                self._process_legend(element)
+                return ctx_inner
+
+            ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_LEGEND, ctx, _create_legend_overlay)
+
+            # CREATE_TOOLS phase
+            def _create_tools_overlay(ctx_inner: LifecycleContext) -> LifecycleContext:
+                plot_obj = self.handles.get("plot")
+                if plot_obj is not None and hasattr(plot_obj, "tools"):
+                    self._set_active_tools(plot_obj)
+                return ctx_inner
+
+            ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_TOOLS, ctx, _create_tools_overlay)
+
+            # CREATE_COLORBAR phase (colorbar may already be in handles from subplots)
+            ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_COLORBAR, ctx)
+
+            # FINALIZE_STYLE phase
+            ctx = self.run_lifecycle_phase(LifecyclePhase.FINALIZE_STYLE, ctx)
+
+            # POST_INIT phase
+            ctx = self.run_lifecycle_phase(LifecyclePhase.POST_INIT, ctx)
         self.drawn = True
         self.handles["plots"] = plots
 
