@@ -63,6 +63,7 @@ from ..element import (
 )
 from ..element.util import connect_tri_edges_pd
 from ..streams import PointerXY
+from .context import OperationExecutionContext  # noqa: F401  (neutral, public entry)
 from .resample import LinkableOperation, ResampleOperation2D
 
 DATASHADER_VERSION = _no_import_version("datashader")
