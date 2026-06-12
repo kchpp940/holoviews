@@ -63,7 +63,10 @@ from ..element import (
 )
 from ..element.util import connect_tri_edges_pd
 from ..streams import PointerXY
-from .context import OperationExecutionContext  # noqa: F401  (neutral, public entry)
+from .context import (
+    OperationExecutionContext,  # noqa: F401  (re-exported for external consumers)
+    copy_execution_context_meta,
+)
 from .resample import LinkableOperation, ResampleOperation2D
 
 DATASHADER_VERSION = _no_import_version("datashader")
@@ -1636,12 +1639,16 @@ class shade(LinkableOperation):
                 }
                 img_data = xr.DataArray(arr, coords=coords, dims=(yd.name, xd.name, "band"))
                 img_data = self.add_selector_data(img_data=img_data, sel_data=element.data)
-                return RGB(img_data, **params)
+                result = RGB(img_data, **params)
+                copy_execution_context_meta(element, result)
+                return result
             else:
                 img = tf.shade(array, **shade_opts)
         img_data = self.uint32_to_uint8_xr(img)
         img_data = self.add_selector_data(img_data=img_data, sel_data=element.data)
-        return RGB(img_data, **params)
+        result = RGB(img_data, **params)
+        copy_execution_context_meta(element, result)
+        return result
 
     @classmethod
     def add_selector_data(cls, *, img_data, sel_data):

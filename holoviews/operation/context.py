@@ -13,6 +13,91 @@ SamplingMetadata = Dict[str, Any]
 ProductMetadata = Dict[str, Any]
 ArtifactDict = Dict[str, Any]
 
+_EXECUTION_CONTEXT_ATTR = "_hv_execution_context"
+
+
+def get_execution_context_meta(element: Any, key: Optional[str] = None, default: Any = None) -> Any:
+    """Retrieve execution-context metadata from an output element.
+
+    Parameters
+    ----------
+    element : Element
+        An element previously returned by a rasterize / datashade /
+        resample operation.
+    key : str, optional
+        If provided, returns ``meta[key]`` (or *default* if missing).
+        If omitted, returns the full metadata dict (or ``{}``).
+    default : Any
+        Fallback value when *key* is given but not present.
+
+    Returns
+    -------
+    dict or Any
+        Full metadata dict when *key* is ``None``, otherwise the
+        specific value.
+
+    Examples
+    --------
+    >>> meta = get_execution_context_meta(result)
+    >>> meta["bounds"]
+    (0.0, 0.0, 1.0, 1.0)
+
+    >>> get_execution_context_meta(result, "width")
+    400
+
+    >>> get_execution_context_meta(result, "sampling.x_span")
+    1.0
+    """
+    meta = getattr(element, _EXECUTION_CONTEXT_ATTR, None)
+    if meta is None:
+        meta = {}
+    if key is not None:
+        return meta.get(key, default)
+    return dict(meta)
+
+
+def set_execution_context_meta(element: Any, meta: ProductMetadata) -> None:
+    """Write execution-context metadata onto an element.
+
+    This is the single, stable write-path used by
+    ``OperationExecutionContext.attach_product_meta``.  External callers
+    should normally go through the context's ``attach_product_meta()``
+    method; this function exists for edge-cases where a context object
+    is not available (e.g. propagating metadata through ``shade``).
+
+    Parameters
+    ----------
+    element : Element
+        The output element to annotate.
+    meta : dict
+        The metadata dict to attach.
+    """
+    setattr(element, _EXECUTION_CONTEXT_ATTR, dict(meta))
+
+
+def has_execution_context_meta(element: Any) -> bool:
+    """Return ``True`` if *element* carries execution-context metadata."""
+    return hasattr(element, _EXECUTION_CONTEXT_ATTR)
+
+
+def copy_execution_context_meta(source: Any, target: Any) -> None:
+    """Propagate execution-context metadata from *source* onto *target*.
+
+    Useful when one operation wraps another (e.g. ``datashade`` wraps
+    ``rasterize`` + ``shade``) and the inner result's metadata should
+    flow to the outer result.
+
+    Parameters
+    ----------
+    source : Element
+        The element whose metadata to read.
+    target : Element
+        The element to annotate.
+    """
+    meta = getattr(source, _EXECUTION_CONTEXT_ATTR, None)
+    if meta is not None:
+        setattr(target, _EXECUTION_CONTEXT_ATTR, dict(meta))
+
 
 def _get_operation_params(operation: Any) -> Any:
     """Safe accessor for operation params; works with or without `p` set."""
@@ -568,16 +653,15 @@ class OperationExecutionContext:
 
         ``"clone"`` *(default)*
             Creates a ``shared_data=False`` clone so the original
-            element is never mutated.  The clone receives a
-            ``._execution_context`` attribute carrying the full
-            ``product_meta`` dict.  This is safe for cached / reused
-            elements because the source is untouched.
+            element is never mutated.  The clone is annotated via
+            :func:`set_execution_context_meta`.  This is safe for
+            cached / reused elements because the source is untouched.
 
         ``"inplace"``
-            Writes ``._execution_context`` directly onto the element.
-            Faster, but the element is mutated — only use when the
-            caller has just created the element and no other reference
-            exists.
+            Annotates the element directly via
+            :func:`set_execution_context_meta`.  Faster, but the
+            element is mutated — only use when the caller has just
+            created the element and no other reference exists.
 
         ``"skip"``
             No-op — returns the element unchanged.  Useful for
@@ -599,12 +683,11 @@ class OperationExecutionContext:
             return element
 
         if strategy == "inplace":
-            element._execution_context = dict(self.product_meta)
+            set_execution_context_meta(element, self.product_meta)
             return element
 
-        # "clone" — safe default
         cloned = element.clone(shared_data=False)
-        cloned._execution_context = dict(self.product_meta)
+        set_execution_context_meta(cloned, self.product_meta)
         return cloned
 
     # ==================================================================
@@ -644,8 +727,12 @@ class OperationExecutionContext:
 
 
 __all__ = [
-    "OperationExecutionContext",
-    "SamplingMetadata",
-    "ProductMetadata",
     "ArtifactDict",
+    "OperationExecutionContext",
+    "ProductMetadata",
+    "SamplingMetadata",
+    "copy_execution_context_meta",
+    "get_execution_context_meta",
+    "has_execution_context_meta",
+    "set_execution_context_meta",
 ]

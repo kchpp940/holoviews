@@ -39,6 +39,7 @@ import param
 from ..core import NdOverlay, Overlay
 from ..core.util import dtype_kind
 from ..element.chart import Area
+from .context import set_execution_context_meta
 from .resample import ResampleOperation1D
 
 
@@ -276,7 +277,6 @@ class downsample1d(ResampleOperation1D):
 
     def _process(self, element, key=None, shared_data=None):
         if isinstance(element, (Overlay, NdOverlay)):
-            # Shared data is so we only slice the given data once
             kwargs = {"key": key, "shared_data": {}}
             _process = partial(self._process, **kwargs)
             if isinstance(element, Overlay):
@@ -296,6 +296,16 @@ class downsample1d(ResampleOperation1D):
                     shared_data[key] = element.data
 
         if len(element) <= self.p.width:
+            meta = {
+                "algorithm": self.p.algorithm,
+                "requested_width": self.p.width,
+                "actual_length": len(element),
+                "downsampled": False,
+                "x_range": self.p.x_range,
+                "x_sampling": self.p.x_sampling,
+                "plot_id": getattr(element, '_plot_id', None),
+            }
+            set_execution_context_meta(element, meta)
             return element
         xs, ys = (element.dimension_values(i) for i in range(2))
         if ys.dtype == np.bool_:
@@ -307,7 +317,19 @@ class downsample1d(ResampleOperation1D):
         elif self.p.algorithm == "minmax-lttb":
             kwargs["minmax_ratio"] = self.p.minmax_ratio
         samples = downsample(xs, ys, self.p.width, parallel=self.p.parallel, **kwargs)
-        return element.iloc[samples]
+        result = element.iloc[samples]
+        meta = {
+            "algorithm": self.p.algorithm,
+            "requested_width": self.p.width,
+            "actual_length": len(result),
+            "original_length": len(element),
+            "downsampled": True,
+            "x_range": self.p.x_range,
+            "x_sampling": self.p.x_sampling,
+            "plot_id": getattr(result, '_plot_id', None),
+        }
+        set_execution_context_meta(result, meta)
+        return result
 
     def _compute_mask(self, element):
         """Computes the mask to apply to the element before downsampling."""
