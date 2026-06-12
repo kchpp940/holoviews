@@ -69,6 +69,7 @@ __all__ = [
     "get_side_panels",
     "get_text_extras",
     "get_metadata",
+    "get_execution_context_meta",
     "get_display_payload",
     "DimensionedHoverExtension",
     "DynamicMapExtension",
@@ -576,6 +577,63 @@ def get_metadata(obj: Any) -> Dict[str, Any]:
     return meta
 
 
+def get_execution_context_meta(obj: Any) -> Dict[str, Any]:
+    """Extract execution context metadata from an object produced by a
+    resampling/rasterizing/datashading operation.
+
+    Tries several sources in order:
+
+    1. ``obj._hv_execution_context`` — an
+       :class:`~holoviews.operation.resample.OperationExecutionContext`
+       instance attached by the operation itself.
+    2. ``obj._operation_context`` — a generic operation context dict
+       that may contain ``sampling_meta``, ``bounds``, ``precompute``
+       etc.
+    3. ``obj.callback.operation`` — when the object is a DynamicMap
+       wrapping an Operation.
+
+    Returns a flat dictionary of display-friendly metadata that can be
+    used directly by :class:`OperationContextExtension` or consumed
+    programmatically.  Returns an empty dict if no execution context
+    is found.
+    """
+    ctx: Dict[str, Any] = {}
+
+    hv_ctx = getattr(obj, "_hv_execution_context", None)
+    if hv_ctx is not None:
+        try:
+            meta = hv_ctx.to_metadata_dict()
+            if meta:
+                ctx.update(meta)
+            ctx["_execution_context_obj"] = hv_ctx
+        except Exception:  # noqa: BLE001
+            pass
+
+    op_ctx = getattr(obj, "_operation_context", None)
+    if op_ctx and isinstance(op_ctx, dict):
+        sampling_meta = op_ctx.get("sampling_meta")
+        if isinstance(sampling_meta, dict):
+            for k, v in sampling_meta.items():
+                ctx.setdefault(k, v)
+        if "bounds" in op_ctx and op_ctx["bounds"] is not None:
+            ctx.setdefault("bounds", op_ctx["bounds"])
+        if "precompute" in op_ctx:
+            ctx.setdefault("precompute", op_ctx["precompute"])
+        if "elapsed_ms" in op_ctx:
+            ctx.setdefault("elapsed_ms", op_ctx["elapsed_ms"])
+        if "operation" in op_ctx:
+            ctx.setdefault("operation", op_ctx["operation"])
+
+    callback = getattr(obj, "callback", None)
+    if callback is not None:
+        op = getattr(callback, "operation", None)
+        if op is not None:
+            ctx.setdefault("operation", getattr(op, "__name__", type(op).__name__))
+            ctx.setdefault("operation_type", type(op).__name__)
+
+    return ctx
+
+
 def get_display_payload(obj: Any) -> DisplayPayload:
     """Build a single :class:`DisplayPayload` containing every piece of
     display-extension content for *obj*.
@@ -903,29 +961,25 @@ class MetadataExtension(DisplayExtension):
 
 
 class OperationContextExtension(DisplayExtension):
-    """Surfaces operation execution context for objects that have been
-    produced by an :class:`~holoviews.core.operation.Operation`.
+    """Surfaces operation execution context for objects produced by
+    rasterize / datashade / resample and other operations.
 
-    This extension inspects the object for evidence of recent operation
-    application and exposes:
+    This extension delegates to :func:`get_execution_context_meta` to
+    collect metadata from several possible sources:
 
-    * The operation chain (via :attr:`DynamicMap.operation` when the
-      object is inside a DynamicMap created by ``.apply()`` or
-      ``.map()``).
-    * Per-element ``._operation_context`` dicts that operations can
-      attach during execution to record input hash, timing, and
-      parameter snapshot.
-    * Any ``.operation_pipeline`` list stored on the element (set by
-      operations that support provenance tracking).
+    * ``obj._hv_execution_context`` — an
+      :class:`~holoviews.operation.resample.OperationExecutionContext`
+      providing sampling parameters, bounds, precompute state, etc.
+    * ``obj._operation_context`` — a free-form dict that operations
+      populate with timing, parameter snapshots, and provenance.
+    * ``obj.operation_pipeline`` — a list of operation steps for
+      provenance chains.
+    * ``obj.callback.operation`` — for DynamicMaps produced by
+      ``.apply()`` / ``.map()``.
 
-    Operations can opt in by setting ``element._operation_context`` in
-    their ``_process`` method, e.g.::
-
-        element._operation_context = {
-            "operation": self.name,
-            "params": self.param.values(),
-            "elapsed_ms": elapsed,
-        }
+    All information is aggregated into a single display payload and is
+    surfaced in HTML side panels, text reprs, notebook MIME metadata
+    and programmatic access via :func:`get_metadata`.
     """
 
     name = "operation_context"
@@ -933,19 +987,13 @@ class OperationContextExtension(DisplayExtension):
     contexts = DisplayContext.ALL
 
     def applies_to(self, obj: Any) -> bool:
-        has_ctx = hasattr(obj, "_operation_context") and obj._operation_context
+        ctx = get_execution_context_meta(obj)
         has_pipeline = hasattr(obj, "operation_pipeline") and obj.operation_pipeline
-        has_op = False
-        callback = getattr(obj, "callback", None)
-        if callback is not None:
-            has_op = getattr(callback, "operation", None) is not None
-        return has_ctx or has_pipeline or has_op
+        return bool(ctx) or has_pipeline
 
     def _collect_context(self, obj: Any) -> Dict[str, Any]:
-        ctx: Dict[str, Any] = {}
-
-        if hasattr(obj, "_operation_context") and obj._operation_context:
-            ctx.update(obj._operation_context)
+        ctx = dict(get_execution_context_meta(obj))
+        ctx.pop("_execution_context_obj", None)
 
         if hasattr(obj, "operation_pipeline") and obj.operation_pipeline:
             pipeline = obj.operation_pipeline
@@ -956,24 +1004,6 @@ class OperationContextExtension(DisplayExtension):
                 }
                 for step in pipeline
             ]
-
-        callback = getattr(obj, "callback", None)
-        if callback is not None:
-            op = getattr(callback, "operation", None)
-            if op is not None:
-                ctx["operation"] = getattr(op, "__name__", type(op).__name__)
-                ctx["operation_type"] = type(op).__name__
-                try:
-                    from .operation import Operation
-                    if isinstance(op, Operation):
-                        op_vals = {
-                            k: v for k, v in op.param.values().items()
-                            if k not in ("name",)
-                        }
-                        if op_vals:
-                            ctx["operation_params"] = op_vals
-                except Exception:  # noqa: BLE001
-                    pass
 
         return ctx
 
@@ -986,6 +1016,8 @@ class OperationContextExtension(DisplayExtension):
             extras.append(("op", ctx["operation"]))
         if "elapsed_ms" in ctx:
             extras.append(("elapsed", f"{ctx['elapsed_ms']:.1f}ms"))
+        if "width" in ctx and "height" in ctx:
+            extras.append(("resolution", f"{ctx['width']}x{ctx['height']}"))
         if "pipeline" in ctx:
             extras.append(("pipeline_depth", len(ctx["pipeline"])))
         return extras
@@ -1000,7 +1032,17 @@ class OperationContextExtension(DisplayExtension):
             return None
 
         rows = ""
-        for k, v in ctx.items():
+        key_order = [
+            "operation", "operation_type", "width", "height", "pixel_ratio",
+            "x_sampling", "y_sampling", "x_range", "y_range", "bounds",
+            "expand", "xtype", "ytype", "use_precompute", "precompute",
+            "elapsed_ms", "precomputed_keys",
+        ]
+        ordered_keys = [k for k in key_order if k in ctx]
+        other_keys = [k for k in ctx if k not in key_order and k != "pipeline" and k != "operation_params"]
+
+        for k in ordered_keys + other_keys:
+            v = ctx[k]
             if k == "operation_params":
                 param_rows = "".join(
                     f'<tr><td style="padding:1px 6px 1px 0;color:#666;">{html.escape(str(pk))}</td>'

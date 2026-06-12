@@ -333,6 +333,67 @@ class OperationExecutionContext:
         """Check if a key exists in the precomputed cache."""
         return self.plot_id is not None and self.plot_id in self.precomputed
 
+    def to_metadata_dict(self) -> dict:
+        """Export a flat metadata dict suitable for display and provenance.
+
+        This is consumed by the display extension system to surface
+        execution context in hover tooltips, side panels, notebook repr
+        and MIME metadata.  Only scalar / serialisable values are
+        included; raw numpy arrays are omitted.
+        """
+        meta = {
+            "width": self.width,
+            "height": self.height,
+            "pixel_ratio": self.pixel_ratio,
+            "x_sampling": self.x_sampling,
+            "y_sampling": self.y_sampling,
+            "expand": self.expand,
+            "ndim": self.ndim,
+            "xtype": self.xtype,
+            "ytype": self.ytype,
+            "use_precompute": self.use_precompute,
+        }
+        if self.x_range is not None:
+            meta["x_range"] = tuple(self.x_range)
+        if self.y_range is not None:
+            meta["y_range"] = tuple(self.y_range)
+        if self.bounds is not None:
+            meta["bounds"] = tuple(self.bounds)
+        if self.xunit:
+            meta["x_unit"] = self.xunit
+        if self.yunit:
+            meta["y_unit"] = self.yunit
+        if self.x_dim is not None:
+            meta["x_dim"] = str(self.x_dim)
+        if self.y_dim is not None:
+            meta["y_dim"] = str(self.y_dim)
+        if self.precomputed and self.plot_id is not None:
+            meta["precomputed_keys"] = sorted(
+                k for k in self.precomputed.keys() if k == self.plot_id
+            )
+        if self.metadata:
+            meta.update(self.metadata)
+        return meta
+
+    def attach_to_element(self, element):
+        """Attach this context's metadata to *element* so that the
+        display extension system can surface it.
+
+        The context object is stored as ``element._hv_execution_context``
+        and a summary metadata is also mirrored into
+        ``element._operation_context`` for compatibility with the
+        OperationContextExtension.
+        """
+        meta = self.to_metadata_dict()
+        element._hv_execution_context = self
+        if not hasattr(element, "_operation_context") or not element._operation_context:
+            element._operation_context = {}
+        if isinstance(element._operation_context, dict):
+            element._operation_context.setdefault("sampling_meta", meta)
+            element._operation_context.setdefault("bounds", self.bounds)
+            element._operation_context.setdefault("precompute", self.use_precompute)
+        return element
+
 
 class LinkableOperation(Operation):
     """Abstract baseclass for operations supporting linked inputs."""
