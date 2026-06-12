@@ -72,6 +72,7 @@ __all__ = [
     "get_display_payload",
     "DimensionedHoverExtension",
     "DynamicMapExtension",
+    "OperationContextExtension",
     "MetadataExtension",
 ]
 
@@ -410,6 +411,7 @@ class DisplayExtensionRegistry:
     def _register_defaults(self) -> None:
         self._extensions[DimensionedHoverExtension.name] = DimensionedHoverExtension()
         self._extensions[DynamicMapExtension.name] = DynamicMapExtension()
+        self._extensions[OperationContextExtension.name] = OperationContextExtension()
         self._extensions[MetadataExtension.name] = MetadataExtension()
         self._sort()
 
@@ -687,7 +689,15 @@ class DimensionedHoverExtension(DisplayExtension):
 
 
 class DynamicMapExtension(DisplayExtension):
-    """Exposes DynamicMap operation info, stream list and cache stats."""
+    """Exposes DynamicMap runtime state: callback, streams (with their
+    current parameter values), cache utilisation, unbounded dimensions,
+    and the underlying operation when the DynamicMap wraps an
+    :class:`~holoviews.core.operation.Operation`.
+
+    All information is drawn from the live DynamicMap object so that
+    the side panel, text repr and metadata always reflect the current
+    state at render time.
+    """
 
     name = "dynamicmap"
     priority = 500
@@ -697,53 +707,142 @@ class DynamicMapExtension(DisplayExtension):
         from .spaces import DynamicMap
         return isinstance(obj, DynamicMap)
 
-    def get_text_extras(self, obj: Any) -> Optional[List[Tuple[str, Any]]]:
-        extras: List[Tuple[str, Any]] = []
-        if obj.operation is not None:
-            extras.append(("operation", getattr(obj.operation, "__name__", str(obj.operation))))
-        extras.append(("streams", len(obj.streams)))
+    def _collect_runtime_state(self, obj: Any) -> Dict[str, Any]:
+        """Harvest live runtime information from a DynamicMap instance."""
+        state: Dict[str, Any] = {}
+
+        callback = getattr(obj, "callback", None)
+        if callback is not None:
+            op = getattr(callback, "operation", None)
+            if op is not None:
+                state["operation"] = getattr(op, "__name__", str(op))
+                try:
+                    from .operation import Operation
+                    if isinstance(op, Operation):
+                        op_params = {
+                            k: v for k, v in op.param.values().items()
+                            if k not in ("name",)
+                        }
+                        if op_params:
+                            state["operation_params"] = op_params
+                        state["operation_type"] = type(op).__name__
+                except Exception:  # noqa: BLE001
+                    pass
+            state["callback"] = getattr(callback, "__name__", type(callback).__name__)
+            if hasattr(callback, "callable"):
+                inner = callback.callable
+                state["callback"] = getattr(inner, "__name__", str(inner))
+
+        stream_info: List[Dict[str, Any]] = []
+        for s in obj.streams:
+            info: Dict[str, Any] = {"type": type(s).__name__}
+            try:
+                params = s.param.objects("existing")
+                vals = {k: v for k, v in params.items() if k != "name"}
+                if vals:
+                    info["parameters"] = vals
+            except Exception:  # noqa: BLE001
+                pass
+            stream_info.append(info)
+        state["streams"] = stream_info
+        state["stream_count"] = len(obj.streams)
+
         try:
-            extras.append(("cache_size", len(obj.data)))
+            cache_used = len(obj.data)
+            state["cache_used"] = cache_used
+            state["cache_capacity"] = obj.cache_size
+            if obj.cache_size > 0:
+                state["cache_fill_pct"] = round(100 * cache_used / obj.cache_size, 1)
         except Exception:  # noqa: BLE001
             pass
+
+        unbounded = obj.unbounded
+        if unbounded:
+            state["unbounded_dims"] = unbounded
+
+        positional = getattr(obj, "positional_stream_args", False)
+        if positional:
+            state["positional_stream_args"] = True
+
+        return state
+
+    def get_text_extras(self, obj: Any) -> Optional[List[Tuple[str, Any]]]:
+        state = self._collect_runtime_state(obj)
+        extras: List[Tuple[str, Any]] = []
+        if "operation" in state:
+            extras.append(("operation", state["operation"]))
+        extras.append(("streams", state.get("stream_count", 0)))
+        if "cache_used" in state:
+            extras.append(("cache", f"{state['cache_used']}/{state.get('cache_capacity', '?')}"))
+        if "unbounded_dims" in state:
+            extras.append(("unbounded", state["unbounded_dims"]))
         return extras
 
     def get_metadata(self, obj: Any) -> Optional[Dict[str, Any]]:
-        meta: Dict[str, Any] = {
-            "streams": [type(s).__name__ for s in obj.streams],
-        }
-        if obj.operation is not None:
-            meta["operation"] = getattr(obj.operation, "__name__", str(obj.operation))
-            try:
-                from .operation import Operation
-                if isinstance(obj.operation, Operation):
-                    meta["operation_params"] = {
-                        k: v for k, v in obj.operation.param.values().items()
-                        if k not in ("name",)
-                    }
-            except Exception:  # noqa: BLE001
-                pass
-        try:
-            meta["cache_size"] = len(obj.data)
-        except Exception:  # noqa: BLE001
-            pass
-        return meta
+        return self._collect_runtime_state(obj)
 
     def get_html_panel(self, obj: Any) -> Optional[str]:
-        meta = self.get_metadata(obj) or {}
-        if not meta:
+        state = self._collect_runtime_state(obj)
+        if not state:
             return None
-        rows = "".join(
-            f'<tr><td style="font-weight:bold;padding:2px 8px 2px 0;text-align:left;'
-            f'vertical-align:top;color:#555;">{html.escape(str(k))}</td>'
-            f'<td style="padding:2px 0;text-align:left;">{html.escape(str(v))}</td></tr>'
-            for k, v in meta.items()
+
+        sections: List[str] = []
+
+        if "operation" in state:
+            op_type = state.get("operation_type", "")
+            label = f"{state['operation']} ({op_type})" if op_type else state["operation"]
+            sections.append(
+                f'<div style="margin-bottom:6px;">'
+                f'<span style="font-weight:bold;color:#4a6b00;">Operation:</span> '
+                f'{html.escape(label)}</div>'
+            )
+            if "operation_params" in state:
+                param_rows = "".join(
+                    f'<tr><td style="padding:1px 8px 1px 0;color:#666;">{html.escape(str(k))}</td>'
+                    f'<td style="padding:1px 0;">{html.escape(str(v))}</td></tr>'
+                    for k, v in state["operation_params"].items()
+                )
+                sections.append(
+                    f'<div style="margin-left:12px;margin-bottom:4px;">'
+                    f'<table style="border-collapse:collapse;font-size:11px;">{param_rows}</table></div>'
+                )
+
+        stream_rows = ""
+        for s in state.get("streams", []):
+            param_count = len(s.get("parameters", {}))
+            stream_rows += (
+                f'<tr><td style="padding:1px 0;">{html.escape(s["type"])}'
+                f'<span style="color:#999;"> ({param_count} params)</span></td></tr>'
+            )
+        if stream_rows:
+            sections.append(
+                f'<div style="margin-bottom:6px;">'
+                f'<span style="font-weight:bold;color:#4a6b00;">Streams ({state.get("stream_count", 0)}):</span></div>'
+                f'<div style="margin-left:12px;">'
+                f'<table style="border-collapse:collapse;font-size:11px;">{stream_rows}</table></div>'
+            )
+
+        cache_used = state.get("cache_used", "?")
+        cache_cap = state.get("cache_capacity", "?")
+        fill = state.get("cache_fill_pct")
+        fill_str = f" ({fill}%)" if fill is not None else ""
+        sections.append(
+            f'<div><span style="font-weight:bold;color:#4a6b00;">Cache:</span> '
+            f'{cache_used}/{cache_cap}{fill_str}</div>'
         )
+
+        if "unbounded_dims" in state:
+            sections.append(
+                f'<div style="color:#b94a00;"><span style="font-weight:bold;">Unbounded:</span> '
+                f'{html.escape(str(state["unbounded_dims"]))}</div>'
+            )
+
+        content = "".join(sections)
         return (
             f'<div class="hv-dynamicmap-panel" style="font-family:monospace;font-size:12px;'
             f'padding:8px;border-left:3px solid #76b900;background:#f7fbf2;margin-bottom:6px;">'
-            f'<div style="font-weight:bold;margin-bottom:4px;color:#4a6b00;">DynamicMap Info</div>'
-            f'<table style="border-collapse:collapse;">{rows}</table></div>'
+            f'<div style="font-weight:bold;margin-bottom:6px;color:#4a6b00;">DynamicMap Runtime</div>'
+            f'{content}</div>'
         )
 
     def get_panel_specs(self, obj: Any) -> Optional[List[PanelSpec]]:
@@ -801,3 +900,141 @@ class MetadataExtension(DisplayExtension):
         if html_panel is None:
             return None
         return [PanelSpec(title="Metadata", html_content=html_panel, position="right", priority=300)]
+
+
+class OperationContextExtension(DisplayExtension):
+    """Surfaces operation execution context for objects that have been
+    produced by an :class:`~holoviews.core.operation.Operation`.
+
+    This extension inspects the object for evidence of recent operation
+    application and exposes:
+
+    * The operation chain (via :attr:`DynamicMap.operation` when the
+      object is inside a DynamicMap created by ``.apply()`` or
+      ``.map()``).
+    * Per-element ``._operation_context`` dicts that operations can
+      attach during execution to record input hash, timing, and
+      parameter snapshot.
+    * Any ``.operation_pipeline`` list stored on the element (set by
+      operations that support provenance tracking).
+
+    Operations can opt in by setting ``element._operation_context`` in
+    their ``_process`` method, e.g.::
+
+        element._operation_context = {
+            "operation": self.name,
+            "params": self.param.values(),
+            "elapsed_ms": elapsed,
+        }
+    """
+
+    name = "operation_context"
+    priority = 400
+    contexts = DisplayContext.ALL
+
+    def applies_to(self, obj: Any) -> bool:
+        has_ctx = hasattr(obj, "_operation_context") and obj._operation_context
+        has_pipeline = hasattr(obj, "operation_pipeline") and obj.operation_pipeline
+        has_op = False
+        callback = getattr(obj, "callback", None)
+        if callback is not None:
+            has_op = getattr(callback, "operation", None) is not None
+        return has_ctx or has_pipeline or has_op
+
+    def _collect_context(self, obj: Any) -> Dict[str, Any]:
+        ctx: Dict[str, Any] = {}
+
+        if hasattr(obj, "_operation_context") and obj._operation_context:
+            ctx.update(obj._operation_context)
+
+        if hasattr(obj, "operation_pipeline") and obj.operation_pipeline:
+            pipeline = obj.operation_pipeline
+            ctx["pipeline"] = [
+                {
+                    "operation": getattr(step, "__name__", type(step).__name__),
+                    "type": type(step).__name__,
+                }
+                for step in pipeline
+            ]
+
+        callback = getattr(obj, "callback", None)
+        if callback is not None:
+            op = getattr(callback, "operation", None)
+            if op is not None:
+                ctx["operation"] = getattr(op, "__name__", type(op).__name__)
+                ctx["operation_type"] = type(op).__name__
+                try:
+                    from .operation import Operation
+                    if isinstance(op, Operation):
+                        op_vals = {
+                            k: v for k, v in op.param.values().items()
+                            if k not in ("name",)
+                        }
+                        if op_vals:
+                            ctx["operation_params"] = op_vals
+                except Exception:  # noqa: BLE001
+                    pass
+
+        return ctx
+
+    def get_text_extras(self, obj: Any) -> Optional[List[Tuple[str, Any]]]:
+        ctx = self._collect_context(obj)
+        if not ctx:
+            return None
+        extras: List[Tuple[str, Any]] = []
+        if "operation" in ctx:
+            extras.append(("op", ctx["operation"]))
+        if "elapsed_ms" in ctx:
+            extras.append(("elapsed", f"{ctx['elapsed_ms']:.1f}ms"))
+        if "pipeline" in ctx:
+            extras.append(("pipeline_depth", len(ctx["pipeline"])))
+        return extras
+
+    def get_metadata(self, obj: Any) -> Optional[Dict[str, Any]]:
+        ctx = self._collect_context(obj)
+        return ctx if ctx else None
+
+    def get_html_panel(self, obj: Any) -> Optional[str]:
+        ctx = self._collect_context(obj)
+        if not ctx:
+            return None
+
+        rows = ""
+        for k, v in ctx.items():
+            if k == "operation_params":
+                param_rows = "".join(
+                    f'<tr><td style="padding:1px 6px 1px 0;color:#666;">{html.escape(str(pk))}</td>'
+                    f'<td style="padding:1px 0;">{html.escape(str(pv))}</td></tr>'
+                    for pk, pv in v.items()
+                )
+                rows += (
+                    f'<tr><td style="font-weight:bold;padding:2px 8px 2px 0;vertical-align:top;color:#555;">'
+                    f'{html.escape(str(k))}</td>'
+                    f'<td><table style="border-collapse:collapse;font-size:11px;">{param_rows}</table></td></tr>'
+                )
+            elif k == "pipeline":
+                steps = ", ".join(s.get("operation", "?") for s in v)
+                rows += (
+                    f'<tr><td style="font-weight:bold;padding:2px 8px 2px 0;color:#555;">'
+                    f'{html.escape(str(k))}</td>'
+                    f'<td style="padding:2px 0;">{html.escape(steps)}</td></tr>'
+                )
+            else:
+                rows += (
+                    f'<tr><td style="font-weight:bold;padding:2px 8px 2px 0;color:#555;">'
+                    f'{html.escape(str(k))}</td>'
+                    f'<td style="padding:2px 0;">{html.escape(str(v))}</td></tr>'
+                )
+
+        return (
+            f'<div class="hv-operation-panel" style="font-family:monospace;font-size:12px;'
+            f'padding:8px;border-left:3px solid #b97a00;background:#fbf5f0;margin-bottom:6px;">'
+            f'<div style="font-weight:bold;margin-bottom:4px;color:#8a5c00;">Operation Context</div>'
+            f'<table style="border-collapse:collapse;">{rows}</table></div>'
+        )
+
+    def get_panel_specs(self, obj: Any) -> Optional[List[PanelSpec]]:
+        html_panel = self.get_html_panel(obj)
+        if html_panel is None:
+            return None
+        return [PanelSpec(title="OperationContext", html_content=html_panel, position="right", priority=400)]

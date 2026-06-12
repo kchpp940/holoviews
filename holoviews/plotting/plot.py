@@ -1505,6 +1505,22 @@ class GenericElementPlot(DimensionedPlot):
             except Exception as e:
                 self.param.warning(f"Plotting hook {hook!r} could not be applied:\n\n {e}")
 
+    def _get_payload(self, element):
+        """Build and cache a :class:`~holoviews.core.display_extension.DisplayPayload`
+        for *element*.  Subclasses and downstream code should call this
+        instead of the module-level ``get_display_payload`` so that a
+        single payload instance is shared across hover, panel, and
+        metadata consumers within the same plot.
+        """
+        from ..core.display_extension import get_display_payload
+
+        payload = self.__dict__.get("_cached_payload")
+        if payload is not None and payload.source_obj is element:
+            return payload
+        payload = get_display_payload(element)
+        self.__dict__["_cached_payload"] = payload
+        return payload
+
     def get_aspect(self, xspan, yspan):
         """Should define the aspect ratio of the plot."""
 

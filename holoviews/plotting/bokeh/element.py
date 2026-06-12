@@ -543,16 +543,16 @@ class ElementPlot(BokehPlot, GenericElementPlot):
         dims += element.dimensions()
         return list(util.unique_iterator(dims)), {}
 
-    def _prepare_hover_kwargs_from_extensions(self, element):
-        from ...core.display_extension import get_hover_fields
+    def _prepare_hover_kwargs_from_extensions(self, element, payload=None):
+        if payload is None:
+            payload = self._get_payload(element)
 
-        hover_specs = get_hover_fields(element)
-        if not hover_specs:
+        if not payload.hover_specs:
             return None, {}
 
         tooltips = []
         formatters = {}
-        for spec in hover_specs:
+        for spec in payload.hover_specs:
             if not spec.enabled:
                 continue
             label = spec.label or spec.name
@@ -609,13 +609,13 @@ class ElementPlot(BokehPlot, GenericElementPlot):
                     tooltip = tooltip.replace(f"@{{{name}}}", tuple_[1])
         return tooltip
 
-    def _prepare_hover_kwargs(self, element):
+    def _prepare_hover_kwargs(self, element, payload=None):
         from ...util.transform import dim
 
         use_element_hover_config = element.hover_fields is not None
 
         if use_element_hover_config:
-            ext_tooltips, ext_hover_opts = self._prepare_hover_kwargs_from_extensions(element)
+            ext_tooltips, ext_hover_opts = self._prepare_hover_kwargs_from_extensions(element, payload=payload)
             if ext_tooltips is not None:
                 tooltips = ext_tooltips
                 hover_opts = dict(ext_hover_opts)
@@ -725,12 +725,12 @@ class ElementPlot(BokehPlot, GenericElementPlot):
 
         return tooltips, hover_opts
 
-    def _init_tools(self, element, callbacks=None):
+    def _init_tools(self, element, callbacks=None, payload=None):
         """Processes the list of tools to be supplied to the plot."""
         if callbacks is None:
             callbacks = []
 
-        tooltips, hover_opts = self._prepare_hover_kwargs(element)
+        tooltips, hover_opts = self._prepare_hover_kwargs(element, payload=payload)
 
         if not tooltips:
             tooltips = None
@@ -840,10 +840,10 @@ class ElementPlot(BokehPlot, GenericElementPlot):
 
         return copied_tools
 
-    def _update_hover(self, element):
+    def _update_hover(self, element, payload=None):
         tool = self.handles["hover"]
         if "hv_created" in tool.tags:
-            tooltips, _hover_opts = self._prepare_hover_kwargs(element)
+            tooltips, _hover_opts = self._prepare_hover_kwargs(element, payload=payload)
             tool.tooltips = tooltips
         else:
             plot_opts = element.opts.get("plot", "bokeh")
@@ -853,20 +853,20 @@ class ElementPlot(BokehPlot, GenericElementPlot):
             if new_hover:
                 tool.tooltips = new_hover[0].tooltips
 
-    def _get_hover_data(self, data, element, dimensions=None):
+    def _get_hover_data(self, data, element, dimensions=None, payload=None):
         """Initializes hover data based on Element dimension values.
         If empty initializes with no data.
 
         """
-        from ...core.display_extension import get_hover_data as ext_get_hover_data
-
         has_hover = "hover" in self.handles
         if not has_hover and not self.overlay_dims:
             return
 
         if has_hover and not self.static_source:
             if element.hover_fields is not None:
-                hover_data = ext_get_hover_data(element)
+                if payload is None:
+                    payload = self._get_payload(element)
+                hover_data = payload.hover_data
                 for k, v in hover_data.items():
                     if k not in data:
                         data[k] = v
@@ -1270,7 +1270,8 @@ class ElementPlot(BokehPlot, GenericElementPlot):
             title = ""
 
         if self.toolbar != "disable":
-            tools = self._init_tools(element)
+            payload = self._get_payload(element)
+            tools = self._init_tools(element, payload=payload)
             properties["tools"] = tools
             properties["toolbar_location"] = self.toolbar
         else:
@@ -2756,7 +2757,8 @@ class ElementPlot(BokehPlot, GenericElementPlot):
             self._updated = True
 
         if "hover" in self.handles:
-            self._update_hover(element)
+            payload = self._get_payload(element)
+            self._update_hover(element, payload=payload)
             if "cds" in self.handles:
                 cds = self.handles["cds"]
                 self._postprocess_hover(renderer, cds)

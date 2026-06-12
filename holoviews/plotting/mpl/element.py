@@ -253,13 +253,16 @@ class ElementPlot(GenericElementPlot, MPLPlot):
 
     def _get_mpl_format_coord(self, element):
         """Generate a format_coord function for matplotlib axis status bar."""
-        from ...core.display_extension import get_hover_fields, get_hover_data
-
         if element.hover_fields is None:
             return None
 
-        hover_specs = get_hover_fields(element)
-        hover_data = get_hover_data(element)
+        payload = self._get_payload(element)
+
+        if not payload.hover_data:
+            return None
+
+        hover_specs = payload.hover_specs
+        hover_data = payload.hover_data
         sanitized_names = list(hover_data.keys())
         n_points = len(next(iter(hover_data.values()))) if hover_data else 0
 
