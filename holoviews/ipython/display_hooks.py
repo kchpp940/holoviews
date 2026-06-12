@@ -224,15 +224,26 @@ def display_hook(fn):
 
 @display_hook
 def element_display(element, max_frames):
+    from ..plotting.renderer import Renderer, MIME_TYPES
+
     backend = Store.current_backend
     if type(element) not in Store.registry[backend]:
         return None
 
-    return render(element)
+    result = render(element)
+    if result is None:
+        return None
+    data, meta = result
+
+    payload = Renderer.payload(element)
+    payload.update_mime_metadata(meta, MIME_TYPES["jlab-hv-exec"])
+    return data, meta
 
 
 @display_hook
 def map_display(vmap, max_frames):
+    from ..plotting.renderer import Renderer, MIME_TYPES
+
     if not isinstance(vmap, (HoloMap, DynamicMap)):
         return None
 
@@ -243,11 +254,20 @@ def map_display(vmap, max_frames):
         max_frame_warning(max_frames)
         return None
 
-    return render(vmap)
+    result = render(vmap)
+    if result is None:
+        return None
+    data, meta = result
+
+    payload = Renderer.payload(vmap)
+    payload.update_mime_metadata(meta, MIME_TYPES["jlab-hv-exec"])
+    return data, meta
 
 
 @display_hook
 def layout_display(layout, max_frames):
+    from ..plotting.renderer import Renderer, MIME_TYPES
+
     if isinstance(layout, AdjointLayout):
         layout = Layout(layout).opts(layout.opts.get("plot"))
     if not isinstance(layout, (Layout, NdLayout)):
@@ -258,11 +278,20 @@ def layout_display(layout, max_frames):
         max_frame_warning(max_frames)
         return None
 
-    return render(layout)
+    result = render(layout)
+    if result is None:
+        return None
+    data, meta = result
+
+    payload = Renderer.payload(layout)
+    payload.update_mime_metadata(meta, MIME_TYPES["jlab-hv-exec"])
+    return data, meta
 
 
 @display_hook
 def grid_display(grid, max_frames):
+    from ..plotting.renderer import Renderer, MIME_TYPES
+
     if not isinstance(grid, GridSpace):
         return None
 
@@ -271,7 +300,14 @@ def grid_display(grid, max_frames):
         max_frame_warning(max_frames)
         return None
 
-    return render(grid)
+    result = render(grid)
+    if result is None:
+        return None
+    data, meta = result
+
+    payload = Renderer.payload(grid)
+    payload.update_mime_metadata(meta, MIME_TYPES["jlab-hv-exec"])
+    return data, meta
 
 
 def display(obj, raw_output=False, **kwargs):

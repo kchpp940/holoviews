@@ -2,16 +2,6 @@ from ..core import Overlay  # noqa: F401
 from ..core.operation import Operation
 from ..core.options import Compositor
 from ..element.util import categorical_aggregate2d
-from .context import (
-    ArtifactDict,
-    OperationExecutionContext,
-    ProductMetadata,
-    SamplingMetadata,
-    copy_execution_context_meta,
-    get_execution_context_meta,
-    has_execution_context_meta,
-    set_execution_context_meta,
-)
 from .element import (
     apply_when,
     chain,
@@ -28,6 +18,7 @@ from .element import (
     image_overlay,
     interpolate_curve,
     method,
+    operation,
     threshold,
     transform,
 )
@@ -38,32 +29,25 @@ for _obj in list(locals().values()):
 
 
 __all__ = [
-    "ArtifactDict",
     "Compositor",
     "Operation",
-    "OperationExecutionContext",
-    "ProductMetadata",
-    "SamplingMetadata",
     "apply_when",
     "categorical_aggregate2d",
     "chain",
     "collapse",
     "contours",
     "convolve",
-    "copy_execution_context_meta",
     "decimate",
     "dendrogram",
     "factory",
     "function",
-    "get_execution_context_meta",
     "gradient",
     "gridmatrix",
-    "has_execution_context_meta",
     "histogram",
     "image_overlay",
     "interpolate_curve",
     "method",
-    "set_execution_context_meta",
+    "operation",
     "threshold",
     "transform",
 ]

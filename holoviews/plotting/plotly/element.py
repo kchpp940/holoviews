@@ -283,20 +283,22 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
 
     def _get_plotly_customdata_and_template(self, element):
         """Generate customdata array and hovertemplate for Plotly backend."""
+        from ...core.display_extension import get_hover_fields, get_hover_data
+
         if element.hover_fields is None:
             return None, None
 
-        hover_fields = element._get_hover_fields()
-        hover_data = element._get_hover_data()
+        hover_specs = get_hover_fields(element)
+        hover_data = get_hover_data(element)
         sanitized_names = list(hover_data.keys())
         n_points = len(next(iter(hover_data.values()))) if hover_data else 0
 
         customdata = np.column_stack([hover_data[k] for k in sanitized_names]) if sanitized_names else None
 
         hovertemplate_parts = []
-        for i, field in enumerate(hover_fields):
-            label = element._get_hover_field_label(field)
-            formatter = element._get_hover_formatter(field)
+        for i, spec in enumerate(hover_specs):
+            label = spec.label or spec.name
+            formatter = spec.formatter
             if formatter is not None and callable(formatter):
                 hovertemplate_parts.append(f"<b>{label}</b>: %{{customdata[{i}]}}")
             elif formatter is not None:

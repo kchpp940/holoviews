@@ -323,6 +323,33 @@ class Renderer(Exporter):
             obj = self_or_cls.get_plot(obj=obj, renderer=renderer, **kwargs)
         return obj.state
 
+    @bothmethod
+    def payload(self_or_cls, obj):
+        """Build a unified :class:`~holoviews.core.display_extension.DisplayPayload`
+        containing all display-extension content for *obj*.
+
+        The payload is a single container that aggregates hover specs,
+        side panels, text extras and metadata from every registered
+        display extension.  It is consumed by :meth:`components`, the
+        IPython display hooks, and the backends, ensuring the same
+        information appears consistently across all rendering paths.
+
+        Parameters
+        ----------
+        obj:
+            The HoloViews object (or :class:`Plot` instance) being
+            rendered.
+
+        Returns
+        -------
+        DisplayPayload
+            Populated payload ready to be consumed by rendering code.
+        """
+        from ..core.display_extension import get_display_payload
+
+        source_obj = obj.object if isinstance(obj, Plot) else obj
+        return get_display_payload(source_obj)
+
     def _validate(self, obj, fmt, **kwargs):
         """Helper method to be used in the __call__ method to get a
         suitable plot or widget object and the appropriate format.
@@ -424,6 +451,8 @@ class Renderer(Exporter):
         document.
 
         """
+        payload = self.payload(obj)
+
         if isinstance(obj, Plot):
             plot = obj
         else:
@@ -431,7 +460,10 @@ class Renderer(Exporter):
 
         if not isinstance(plot, Viewable):
             html = self._figure_data(plot, fmt, as_script=True, **kwargs)
-            return {"text/html": html}, {MIME_TYPES["jlab-hv-exec"]: {}}
+            html = payload.wrap_html(html)
+            jlab_meta = {MIME_TYPES["jlab-hv-exec"]: {}}
+            payload.update_mime_metadata(jlab_meta, MIME_TYPES["jlab-hv-exec"])
+            return {"text/html": html}, jlab_meta
 
         registry = list(Stream.registry.items())
         objects = plot.object.traverse(lambda x: x)
@@ -447,8 +479,14 @@ class Renderer(Exporter):
             load_notebook(config.inline)
         embed = not (dynamic or streams or self.widget_mode == "live") or config.embed
         if embed or config.comms == "default":
-            return self._render_panel(plot, embed, comm)
-        return self._render_ipywidget(plot)
+            data, meta = self._render_panel(plot, embed, comm)
+        else:
+            data, meta = self._render_ipywidget(plot)
+
+        if "text/html" in data:
+            data["text/html"] = payload.wrap_html(data["text/html"])
+        payload.update_mime_metadata(meta, MIME_TYPES["jlab-hv-exec"])
+        return data, meta
 
     def _render_panel(self, plot, embed=False, comm=True):
         comm = self.comm_manager.get_server_comm() if comm else None
