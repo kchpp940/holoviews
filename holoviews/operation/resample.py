@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from typing import Any, Optional, Tuple
+
 import numpy as np
 import param
 from param.parameterized import bothmethod
@@ -8,6 +11,339 @@ from ..core import Dataset, Operation
 from ..core.util import datetime_types, dt_to_int, isfinite, max_range
 from ..element import Image
 from ..streams import PlotSize, RangeX, RangeXY
+
+
+@dataclass
+class OperationExecutionContext:
+    """Unified execution context for resampling/rasterizing operations.
+
+    Consolidates all sampling parameters, range calculations, pixel dimensions,
+    and precomputation state that was previously scattered across
+    ResampleOperation2D, AggregationOperation, and individual _process methods.
+    """
+
+    element: Any
+    x_dim: Optional[Any] = None
+    y_dim: Optional[Any] = None
+    ndim: int = 2
+    default_y_range: Optional[Tuple[float, float]] = None
+
+    x_range: Optional[Tuple[float, float]] = None
+    y_range: Optional[Tuple[float, float]] = None
+    width: int = 400
+    height: int = 400
+    pixel_ratio: float = 1.0
+    x_sampling: Optional[float] = None
+    y_sampling: Optional[float] = None
+    expand: bool = True
+    target: Optional[Dataset] = None
+
+    xunit: float = 0.0
+    yunit: float = 0.0
+    xs: Optional[np.ndarray] = None
+    ys: Optional[np.ndarray] = None
+    xtype: str = "numeric"
+    ytype: str = "numeric"
+
+    x_range_dt: Optional[Tuple[Any, Any]] = None
+    y_range_dt: Optional[Tuple[Any, Any]] = None
+    xs_dt: Optional[np.ndarray] = None
+    ys_dt: Optional[np.ndarray] = None
+
+    bounds: Optional[Tuple[float, float, float, float]] = None
+    precomputed: dict = field(default_factory=dict)
+    use_precompute: bool = False
+    plot_id: Optional[Any] = None
+
+    metadata: dict = field(default_factory=dict)
+
+    @classmethod
+    def create(cls, operation: Any, element: Any,
+               x_dim: Optional[Any] = None, y_dim: Optional[Any] = None,
+               ndim: int = 2, default: Optional[Tuple[float, float]] = None,
+               use_cache: bool = True) -> "OperationExecutionContext":
+        """Factory method to create and compute a complete execution context.
+
+        Args:
+            operation: The operation instance containing parameters
+            element: The input element to process
+            x_dim: x dimension(s), can be a single dimension or list
+            y_dim: y dimension(s), can be a single dimension or list
+            ndim: Number of dimensions (1 or 2)
+            default: Default y_range if not specified
+            use_cache: Whether to use operation's precomputed cache
+
+        Returns:
+            Fully populated OperationExecutionContext
+        """
+        if hasattr(operation, 'p'):
+            p = operation.p
+        else:
+            p = operation
+
+        def get_param(name, default_val=None):
+            if hasattr(p, name):
+                return getattr(p, name)
+            return default_val
+
+        ctx = cls(
+            element=element,
+            x_dim=x_dim,
+            y_dim=y_dim,
+            ndim=ndim,
+            default_y_range=default,
+            x_range=get_param('x_range'),
+            y_range=get_param('y_range'),
+            width=get_param('width', 400),
+            height=get_param('height', 400),
+            pixel_ratio=get_param('pixel_ratio'),
+            x_sampling=get_param('x_sampling'),
+            y_sampling=get_param('y_sampling'),
+            expand=get_param('expand', True),
+            target=get_param('target'),
+            use_precompute=get_param('precompute', False),
+            precomputed=getattr(operation, '_precomputed', {}) if use_cache else {},
+            plot_id=getattr(element, '_plot_id', None),
+        )
+        ctx._operation = operation
+
+        ctx._compute_ranges()
+        ctx._compute_dimensions()
+        ctx._apply_pixel_ratio()
+        ctx._apply_sampling_limits()
+        ctx._compute_units_and_coords()
+        ctx._compute_bounds()
+        ctx._transform_datetimes()
+
+        return ctx
+
+    def _compute_ranges(self) -> None:
+        """Compute x_range and y_range from target, params, or element data."""
+        x = self.x_dim if isinstance(self.x_dim, list) else ([self.x_dim] if self.x_dim else None)
+        y = self.y_dim if isinstance(self.y_dim, list) else ([self.y_dim] if self.y_dim else None)
+
+        if self.target is not None:
+            x0, y0, x1, y1 = self.target.bounds.lbrt()
+            self.x_range = (x0, x1)
+            self.y_range = (y0, y1)
+            arr = self.target.dimension_values(2, flat=False)
+            self.height, self.width = arr.shape
+            return
+
+        p_x_range = self.x_range
+
+        if x is None:
+            self.x_range = p_x_range or (-0.5, 0.5)
+        elif self.expand or not p_x_range:
+            if p_x_range and all(isfinite(v) for v in p_x_range):
+                self.x_range = p_x_range
+            else:
+                self.x_range = max_range([self.element.range(xd) for xd in x])
+        else:
+            x0, x1 = p_x_range
+            ex0, ex1 = max_range([self.element.range(xd) for xd in x])
+            self.x_range = (
+                np.nanmin([np.nanmax([x0, ex0]), ex1]),
+                np.nanmax([np.nanmin([x1, ex1]), ex0]),
+            )
+
+        p_y_range = self.y_range
+
+        if y is None and self.ndim == 2:
+            self.y_range = p_y_range or self.default_y_range or (-0.5, 0.5)
+        elif self.expand or not p_y_range:
+            if p_y_range and all(isfinite(v) for v in p_y_range):
+                self.y_range = p_y_range
+            elif self.default_y_range is None and y is not None:
+                self.y_range = max_range([self.element.range(yd) for yd in y])
+            else:
+                self.y_range = self.default_y_range
+        else:
+            y0, y1 = p_y_range
+            if self.default_y_range is None and y is not None:
+                ey0, ey1 = max_range([self.element.range(yd) for yd in y])
+            else:
+                ey0, ey1 = self.default_y_range or (0, 0)
+            self.y_range = (
+                np.nanmin([np.nanmax([y0, ey0]), ey1]),
+                np.nanmax([np.nanmin([y1, ey1]), ey0]),
+            )
+
+    def _compute_dimensions(self) -> None:
+        """Determine dimension types (numeric vs datetime) and convert ranges."""
+        xstart, xend = self.x_range
+
+        if isinstance(xstart, str) or isinstance(xend, str):
+            raise ValueError("Categorical data is not supported")
+        elif isinstance(xstart, datetime_types) or isinstance(xend, datetime_types):
+            xstart, xend = dt_to_int(xstart, "ns"), dt_to_int(xend, "ns")
+            self.xtype = "datetime"
+        elif not np.isfinite(xstart) and not np.isfinite(xend):
+            xstart, xend = 0, 0
+            x = self.x_dim[0] if isinstance(self.x_dim, list) else self.x_dim
+            if x and self.element.get_dimension_type(x) in datetime_types:
+                self.xtype = "datetime"
+
+        if self.ndim == 2 and self.y_range is not None:
+            ystart, yend = self.y_range
+            if isinstance(ystart, str) or isinstance(yend, str):
+                raise ValueError("Categorical data is not supported")
+            elif isinstance(ystart, datetime_types) or isinstance(yend, datetime_types):
+                ystart, yend = dt_to_int(ystart, "ns"), dt_to_int(yend, "ns")
+                self.ytype = "datetime"
+            elif not np.isfinite(ystart) and not np.isfinite(yend):
+                ystart, yend = 0, 0
+                y = self.y_dim[0] if isinstance(self.y_dim, list) else self.y_dim
+                if y and self.element.get_dimension_type(y) in datetime_types:
+                    self.ytype = "datetime"
+            self.y_range = (ystart, yend)
+
+        self.x_range = (xstart, xend)
+
+    def _apply_pixel_ratio(self) -> None:
+        """Adjust width and height based on pixel ratio."""
+        if hasattr(self, '_operation') and hasattr(self._operation, '_get_pixel_ratio'):
+            pixel_ratio = self._operation._get_pixel_ratio()
+        elif self.pixel_ratio is not None:
+            pixel_ratio = self.pixel_ratio
+        else:
+            try:
+                from panel import state
+                if state.browser_info and isinstance(
+                    state.browser_info.device_pixel_ratio, (int, float)
+                ):
+                    pixel_ratio = state.browser_info.device_pixel_ratio
+                else:
+                    pixel_ratio = 1
+            except Exception:
+                pixel_ratio = 1
+
+        self.pixel_ratio = pixel_ratio
+        self.width = int(self.width * pixel_ratio)
+        self.height = int(self.height * pixel_ratio)
+
+    def _apply_sampling_limits(self) -> None:
+        """Apply x_sampling and y_sampling to limit width/height."""
+        xstart, xend = self.x_range
+        xspan = xend - xstart
+
+        if self.ndim == 2 and self.y_range is not None:
+            ystart, yend = self.y_range
+            yspan = yend - ystart
+        else:
+            yspan = 0
+
+        if self.x_sampling and xspan > 0:
+            self.width = int(min([(xspan / self.x_sampling), self.width]))
+        if self.y_sampling and yspan > 0:
+            self.height = int(min([(yspan / self.y_sampling), self.height]))
+
+    def _compute_units_and_coords(self) -> None:
+        """Compute xunit, yunit and xs, ys coordinate arrays."""
+        xstart, xend = self.x_range
+        xspan = xend - xstart
+
+        if self.ndim == 2 and self.y_range is not None:
+            ystart, yend = self.y_range
+            yspan = yend - ystart
+        else:
+            ystart, yend = 0, 0
+            yspan = 0
+
+        if xstart == xend or self.width == 0:
+            self.xunit, self.width = 0, 0
+        else:
+            self.xunit = float(xspan) / self.width
+
+        if ystart == yend or self.height == 0:
+            self.yunit, self.height = 0, 0
+        else:
+            self.yunit = float(yspan) / self.height
+
+        self.xs = np.linspace(
+            xstart + self.xunit / 2.0, xend - self.xunit / 2.0, self.width
+        ) if self.width > 0 else np.array([])
+
+        self.ys = np.linspace(
+            ystart + self.yunit / 2.0, yend - self.yunit / 2.0, self.height
+        ) if self.height > 0 else np.array([])
+
+    def _compute_bounds(self) -> None:
+        """Compute the bounds tuple from ranges."""
+        x0, x1 = self.x_range
+        if self.ndim == 2 and self.y_range is not None:
+            y0, y1 = self.y_range
+        else:
+            y0, y1 = 0, 0
+        self.bounds = (x0, y0, x1, y1)
+
+    def _transform_datetimes(self) -> None:
+        """Transform integer datetime values back to datetime64 for output."""
+        xstart, xend = self.x_range
+        if self.ndim == 2 and self.y_range is not None:
+            ystart, yend = self.y_range
+        else:
+            ystart, yend = 0, 0
+
+        xs, ys = self.xs, self.ys
+
+        if self.xtype == "datetime":
+            xstart, xend = np.array([xstart, xend]).astype("datetime64[ns]")
+            xs = xs.astype("datetime64[ns]") if xs is not None else None
+        if self.ytype == "datetime":
+            ystart, yend = np.array([ystart, yend]).astype("datetime64[ns]")
+            ys = ys.astype("datetime64[ns]") if ys is not None else None
+
+        self.x_range_dt = (xstart, xend)
+        self.y_range_dt = (ystart, yend)
+        self.xs_dt = xs
+        self.ys_dt = ys
+
+    def get_sampling_result(self) -> Tuple[
+        Tuple[Tuple[float, float], Tuple[float, float]],
+        Tuple[np.ndarray, np.ndarray],
+        Tuple[int, int],
+        Tuple[str, str]
+    ]:
+        """Return the original _get_sampling tuple format for backward compatibility."""
+        return (
+            (self.x_range, self.y_range),
+            (self.xs, self.ys),
+            (self.width, self.height),
+            (self.xtype, self.ytype),
+        )
+
+    def get_dt_transform_result(self) -> Tuple[
+        Tuple[Tuple[Any, Any], Tuple[Any, Any]],
+        Tuple[np.ndarray, np.ndarray]
+    ]:
+        """Return the original _dt_transform tuple format for backward compatibility."""
+        return (
+            (self.x_range_dt, self.y_range_dt),
+            (self.xs_dt, self.ys_dt),
+        )
+
+    def is_empty(self) -> bool:
+        """Check if the context represents an empty/zero-size grid."""
+        return self.width == 0 or self.height == 0
+
+    def cache_result(self, key: Any = None, value: Any = None) -> None:
+        """Store a value in the precomputed cache if precomputing is enabled."""
+        cache_key = key if key is not None else self.plot_id
+        if self.use_precompute and cache_key is not None:
+            self.precomputed[cache_key] = value
+
+    def get_cached(self, key: Any = None) -> Optional[Any]:
+        """Retrieve a value from the precomputed cache."""
+        cache_key = key if key is not None else self.plot_id
+        if cache_key is not None and cache_key in self.precomputed:
+            return self.precomputed[cache_key]
+        return None
+
+    def has_cached(self, key: Any = None) -> bool:
+        """Check if a key exists in the precomputed cache."""
+        cache_key = key if key is not None else self.plot_id
+        return cache_key is not None and cache_key in self.precomputed
 
 
 class LinkableOperation(Operation):
@@ -158,118 +494,80 @@ class ResampleOperation2D(ResampleOperation1D):
         inst._precomputed = {}
         return inst
 
-    def _get_sampling(self, element, x, y, ndim=2, default=None):
-        target = self.p.target
-        if not isinstance(x, list) and x is not None:
-            x = [x]
-        if not isinstance(y, list) and y is not None:
-            y = [y]
+    def _create_execution_context(self, element, x, y, ndim=2, default=None):
+        """Create a unified OperationExecutionContext for this operation.
 
-        if target:
-            x0, y0, x1, y1 = target.bounds.lbrt()
-            x_range, y_range = (x0, x1), (y0, y1)
-            height, width = target.dimension_values(2, flat=False).shape
-        else:
-            if x is None:
-                x_range = self.p.x_range or (-0.5, 0.5)
-            elif self.p.expand or not self.p.x_range:
-                if self.p.x_range and all(isfinite(v) for v in self.p.x_range):
-                    x_range = self.p.x_range
-                else:
-                    x_range = max_range([element.range(xd) for xd in x])
-            else:
-                x0, x1 = self.p.x_range
-                ex0, ex1 = max_range([element.range(xd) for xd in x])
-                x_range = (
-                    np.nanmin([np.nanmax([x0, ex0]), ex1]),
-                    np.nanmax([np.nanmin([x1, ex1]), ex0]),
-                )
+        This is the preferred method for new code. It consolidates all
+        sampling parameters, range calculations, and pixel dimensions
+        into a single context object that can be passed through the
+        entire execution pipeline.
 
-            if y is None and ndim == 2:
-                y_range = self.p.y_range or default or (-0.5, 0.5)
-            elif self.p.expand or not self.p.y_range:
-                if self.p.y_range and all(isfinite(v) for v in self.p.y_range):
-                    y_range = self.p.y_range
-                elif default is None:
-                    y_range = max_range([element.range(yd) for yd in y])
-                else:
-                    y_range = default
-            else:
-                y0, y1 = self.p.y_range
-                if default is None:
-                    ey0, ey1 = max_range([element.range(yd) for yd in y])
-                else:
-                    ey0, ey1 = default
-                y_range = (
-                    np.nanmin([np.nanmax([y0, ey0]), ey1]),
-                    np.nanmax([np.nanmin([y1, ey1]), ey0]),
-                )
-            width, height = self.p.width, self.p.height
-        (xstart, xend), (ystart, yend) = x_range, y_range
+        Args:
+            element: The input element to process
+            x: x dimension(s)
+            y: y dimension(s)
+            ndim: Number of dimensions (1 or 2)
+            default: Default y_range if not specified
 
-        xtype = "numeric"
-        if isinstance(xstart, str) or isinstance(xend, str):
-            raise ValueError("Categorical data is not supported")
-        elif isinstance(xstart, datetime_types) or isinstance(xend, datetime_types):
-            xstart, xend = dt_to_int(xstart, "ns"), dt_to_int(xend, "ns")
-            xtype = "datetime"
-        elif not np.isfinite(xstart) and not np.isfinite(xend):
-            xstart, xend = 0, 0
-            if x and element.get_dimension_type(x[0]) in datetime_types:
-                xtype = "datetime"
-
-        ytype = "numeric"
-        if isinstance(ystart, str) or isinstance(yend, str):
-            raise ValueError("Categorical data is not supported")
-        elif isinstance(ystart, datetime_types) or isinstance(yend, datetime_types):
-            ystart, yend = dt_to_int(ystart, "ns"), dt_to_int(yend, "ns")
-            ytype = "datetime"
-        elif not np.isfinite(ystart) and not np.isfinite(yend):
-            ystart, yend = 0, 0
-            if y and element.get_dimension_type(y[0]) in datetime_types:
-                ytype = "datetime"
-
-        # Adjust width and height depending on pixel ratio
-        pixel_ratio = self._get_pixel_ratio()
-        width = int(width * pixel_ratio)
-        height = int(height * pixel_ratio)
-
-        # Compute highest allowed sampling density
-        xspan = xend - xstart
-        yspan = yend - ystart
-        if self.p.x_sampling:
-            width = int(min([(xspan / self.p.x_sampling), width]))
-        if self.p.y_sampling:
-            height = int(min([(yspan / self.p.y_sampling), height]))
-        if xstart == xend or width == 0:
-            xunit, width = 0, 0
-        else:
-            xunit = float(xspan) / width
-        if ystart == yend or height == 0:
-            yunit, height = 0, 0
-        else:
-            yunit = float(yspan) / height
-
-        xs, ys = (
-            np.linspace(xstart + xunit / 2.0, xend - xunit / 2.0, width),
-            np.linspace(ystart + yunit / 2.0, yend - yunit / 2.0, height),
+        Returns:
+            OperationExecutionContext with all computed values
+        """
+        return OperationExecutionContext.create(
+            operation=self,
+            element=element,
+            x_dim=x,
+            y_dim=y,
+            ndim=ndim,
+            default=default,
         )
-        return ((xstart, xend), (ystart, yend)), (xs, ys), (width, height), (xtype, ytype)
+
+    def _get_sampling(self, element, x, y, ndim=2, default=None):
+        """Legacy method for backward compatibility.
+
+        Prefer using _create_execution_context for new code.
+        """
+        ctx = self._create_execution_context(element, x, y, ndim, default)
+        return ctx.get_sampling_result()
 
     def _get_pixel_ratio(self):
-        if self.p.pixel_ratio is None:
-            from panel import state
+        pixel_ratio = getattr(self.p, 'pixel_ratio', None) if hasattr(self, 'p') else getattr(self, 'pixel_ratio', None)
+        if pixel_ratio is None:
+            try:
+                from panel import state
 
-            if state.browser_info and isinstance(
-                state.browser_info.device_pixel_ratio, (int, float)
-            ):
-                return state.browser_info.device_pixel_ratio
-            else:
+                if state.browser_info and isinstance(
+                    state.browser_info.device_pixel_ratio, (int, float)
+                ):
+                    return state.browser_info.device_pixel_ratio
+                else:
+                    return 1
+            except Exception:
                 return 1
         else:
-            return self.p.pixel_ratio
+            return pixel_ratio
 
-    def _dt_transform(self, x_range, y_range, xs, ys, xtype, ytype):
+    def _dt_transform(self, x_range=None, y_range=None, xs=None, ys=None,
+                      xtype=None, ytype=None, ctx=None):
+        """Transform datetime ranges and coordinates.
+
+        Can be called with either individual parameters (legacy) or
+        with an OperationExecutionContext (preferred).
+
+        Args:
+            x_range: x range tuple (legacy)
+            y_range: y range tuple (legacy)
+            xs: x coordinates array (legacy)
+            ys: y coordinates array (legacy)
+            xtype: x dimension type (legacy)
+            ytype: y dimension type (legacy)
+            ctx: OperationExecutionContext (preferred)
+
+        Returns:
+            Tuple of transformed ranges and coordinates
+        """
+        if ctx is not None:
+            return ctx.get_dt_transform_result()
+
         (xstart, xend), (ystart, yend) = x_range, y_range
         if xtype == "datetime":
             xstart, xend = np.array([xstart, xend]).astype("datetime64[ns]")

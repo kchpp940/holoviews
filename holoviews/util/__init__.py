@@ -914,7 +914,6 @@ def render(obj, backend: _BackendT | None = None, **kwargs):
         plot = renderer_obj.get_plot(obj)
         if len(plot) > 1:
             return plot.anim(fps=renderer_obj.fps)
-        return renderer_obj.get_plot_state(plot)
     return renderer_obj.get_plot_state(obj)
 
 

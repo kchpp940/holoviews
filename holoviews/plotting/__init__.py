@@ -10,15 +10,6 @@ from ..core.options import Compositor, Cycle
 from ..element import RGB, Area, Image, ImageStack, Polygons, QuadMesh, Raster
 from ..element.sankey import Sankey, _layout_sankey
 from ..operation.stats import bivariate_kde, univariate_kde
-from .lifecycle import (  # noqa: F401
-    DebugHook,
-    LifecycleContext,
-    LifecycleHook,
-    LifecycleMixin,
-    LifecyclePhase,
-    ThemeHook,
-    hook_for,
-)
 from .plot import Plot
 from .renderer import HTML_TAGS, Renderer  # noqa: F401
 from .util import apply_nodata, flatten_stack, list_cmaps  # noqa: F401

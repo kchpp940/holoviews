@@ -27,7 +27,6 @@ from ...core.util import dtype_kind
 from ...element import Graph, Path
 from ...streams import Stream
 from ...util.transform import dim
-from ..lifecycle import LifecycleContext, LifecyclePhase
 from ..plot import GenericElementPlot, GenericOverlayPlot
 from ..util import color_intervals, dim_range_key, process_cmap
 from .plot import MPLPlot, mpl_rc_context
@@ -147,86 +146,6 @@ class ElementPlot(GenericElementPlot, MPLPlot):
             except Exception as e:
                 self.param.warning(f"Plotting hook {hook!r} could not be applied:\n\n {e}")
 
-    def _finalize_axis_core(
-        self,
-        key,
-        element=None,
-        title=None,
-        dimensions=None,
-        ranges=None,
-        xticks=None,
-        yticks=None,
-        zticks=None,
-        xlabel=None,
-        ylabel=None,
-        zlabel=None,
-    ):
-        """Core axis configuration logic, without lifecycle context creation.
-
-        This method contains the core axes configuration that should happen
-        during the CREATE_AXES phase. Legend, colorbar, and tools configuration
-        are handled in their respective lifecycle phases.
-        """
-        if element is None:
-            element = self._get_frame(key)
-        self.current_frame = element
-        if not dimensions and element and not self.subplots:
-            el = element.traverse(lambda x: x, [Element])
-            if el:
-                el = el[0]
-                dimensions = el.nodes.dimensions() if isinstance(el, Graph) else el.dimensions()
-        axis = self.handles["axis"]
-
-        subplots = list(self.subplots.values()) if self.subplots else []
-
-        if self.zorder == 0 and key is not None:
-            if self.bgcolor:
-                if MPL_VERSION <= (1, 5, 9):
-                    axis.set_axis_bgcolor(self.bgcolor)
-                else:
-                    axis.set_facecolor(self.bgcolor)
-
-            title = self._format_title(key)
-            if self.show_title and title is not None:
-                fontsize = self._fontsize("title")
-                if "title" in self.handles:
-                    self.handles["title"].set_text(title)
-                else:
-                    self.handles["title"] = axis.set_title(title, **fontsize)
-
-            self._subplot_label(axis)
-
-            if element is not None and not any(not sp._has_axes for sp in [self, *subplots]):
-                if dimensions:
-                    self._set_labels(axis, dimensions, xlabel, ylabel, zlabel)
-                else:
-                    if self.xlabel is not None:
-                        axis.set_xlabel(self.xlabel)
-                    if self.ylabel is not None:
-                        axis.set_ylabel(self.ylabel)
-                    if self.zlabel is not None and hasattr(axis, "set_zlabel"):
-                        axis.set_zlabel(self.zlabel)
-
-                if not subplots:
-                    self._update_grid(axis)
-
-                if self.logx:
-                    axis.set_xscale("log")
-                if self.logy:
-                    axis.set_yscale("log")
-
-                if not (isinstance(self.projection, str) and self.projection == "3d"):
-                    self._set_axis_position(axis, "x", self.xaxis)
-                    self._set_axis_position(axis, "y", self.yaxis)
-
-                if self.apply_ticks:
-                    self._finalize_ticks(axis, dimensions, xticks, yticks, zticks)
-
-                self._set_axis_limits(axis, element, subplots, ranges)
-
-            if self.aspect is not None and self.projection != "polar" and not self.adjoined:
-                self._set_aspect(axis, self.aspect)
-
     def _finalize_axis(
         self,
         key,
@@ -259,14 +178,6 @@ class ElementPlot(GenericElementPlot, MPLPlot):
         axis = self.handles["axis"]
 
         subplots = list(self.subplots.values()) if self.subplots else []
-        ctx = LifecycleContext(
-            plot=self,
-            element=element,
-            ranges=ranges,
-            key=key,
-            axes=axis,
-            figure=axis.figure,
-        )
         if self.zorder == 0 and key is not None:
             if self.bgcolor:
                 if MPL_VERSION <= (1, 5, 9):
@@ -304,7 +215,6 @@ class ElementPlot(GenericElementPlot, MPLPlot):
                     if legend:
                         legend.set_visible(self.show_legend)
                         self.handles["bbox_extra_artists"] += [legend]
-                    ctx.legend = legend
                     # Apply grid settings
                     self._update_grid(axis)
 
@@ -330,7 +240,6 @@ class ElementPlot(GenericElementPlot, MPLPlot):
                     format_coord = self._get_mpl_format_coord(element)
                     if format_coord is not None:
                         axis.format_coord = format_coord
-                    ctx.tools = {"format_coord": format_coord}
 
             # Apply aspects
             if self.aspect is not None and self.projection != "polar" and not self.adjoined:
@@ -338,10 +247,6 @@ class ElementPlot(GenericElementPlot, MPLPlot):
 
         if not subplots and not self.drawn:
             self._finalize_artist(element)
-
-        if self.zorder == 0 and key is not None:
-            if "cax" in self.handles:
-                ctx.colorbar = self.handles.get("cax")
 
         self._execute_hooks(element)
         return super()._finalize_axis(key)
@@ -815,87 +720,17 @@ class ElementPlot(GenericElementPlot, MPLPlot):
 
         ranges = util.match_spec(element, ranges)
 
-        ctx = LifecycleContext(
-            plot=self,
-            element=element,
-            ranges=ranges,
-            key=key,
-        )
-
-        ctx = self.run_lifecycle_phase(LifecyclePhase.PRE_INIT, ctx)
-
-        def _create_figure(ctx: LifecycleContext) -> LifecycleContext:
-            fig = ax.figure
-            self.handles["fig"] = fig
-            return ctx.update(figure=fig, layout=fig)
-
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_FIGURE, ctx, _create_figure)
-
         style = dict(zorder=self.zorder, **self.style[self.cyclic_index])
         if self.show_legend:
             style["label"] = element.label
-
-        def _create_glyphs(ctx: LifecycleContext) -> LifecycleContext:
-            handles, axis_kwargs = self.render_artists(element, ranges, style, ax)
-            self.handles.update(handles)
-            ctx.extra["axis_kwargs"] = axis_kwargs
-            return ctx.update(glyphs=handles.get("artist"))
-
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_GLYPHS, ctx, _create_glyphs)
+        handles, axis_kwargs = self.render_artists(element, ranges, style, ax)
+        self.handles.update(handles)
 
         trigger = self._trigger
         self._trigger = []
         Stream.trigger(trigger)
 
-        def _create_axes(ctx: LifecycleContext) -> LifecycleContext:
-            axis_kwargs = ctx.extra.get("axis_kwargs", {})
-            self._finalize_axis_core(ctx.key, element, ranges, **axis_kwargs)
-            return ctx.update(axes=ax)
-
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_AXES, ctx, _create_axes)
-
-        def _create_legend(ctx: LifecycleContext) -> LifecycleContext:
-            legend = ax.get_legend()
-            if legend and self.zorder == 0:
-                legend.set_visible(self.show_legend)
-                self.handles["bbox_extra_artists"] += [legend]
-            return ctx.update(legend=legend)
-
-        def _create_colorbar(ctx: LifecycleContext) -> LifecycleContext:
-            colorbar = None
-            for artist in ax.get_children():
-                if hasattr(artist, "colorbar") and artist.colorbar is not None:
-                    colorbar = artist.colorbar
-                    break
-            if "cax" in self.handles:
-                colorbar = self.handles["cax"]
-            return ctx.update(colorbar=colorbar)
-
-        def _create_tools(ctx: LifecycleContext) -> LifecycleContext:
-            format_coord = self._get_mpl_format_coord(element)
-            if format_coord is not None:
-                ax.format_coord = format_coord
-            tools_dict = {
-                "format_coord": format_coord,
-                "hover_data": element._get_hover_data() if hasattr(element, "_get_hover_data") else None,
-            }
-            return ctx.update(tools=tools_dict)
-
-        def _finalize_style(ctx: LifecycleContext) -> LifecycleContext:
-            if not self.drawn:
-                self._finalize_artist(element)
-            self._execute_hooks(element)
-            self.drawn = True
-            return ctx.update(state=ax.figure)
-
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_LEGEND, ctx, _create_legend)
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_COLORBAR, ctx, _create_colorbar)
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_TOOLS, ctx, _create_tools)
-        ctx = self.run_lifecycle_phase(LifecyclePhase.FINALIZE_STYLE, ctx, _finalize_style)
-
-        ctx = self.run_lifecycle_phase(LifecyclePhase.POST_INIT, ctx)
-
-        return ctx.state
+        return self._finalize_axis(self.keys[-1], element=element, ranges=ranges, **axis_kwargs)
 
     def init_artists(self, ax, plot_args, plot_kwargs):
         """Initializes the artist based on the plot method declared on
@@ -1662,65 +1497,12 @@ class OverlayPlot(LegendPlot, GenericOverlayPlot):
                 frame = element.get(k, None)
                 subplot.current_frame = frame
 
-        # Build initial context after subplots initialized
-        ctx = LifecycleContext(
-            plot=self,
-            element=element,
-            ranges=ranges,
-            key=key,
-            axes=axis,
-            figure=axis.figure,
+        if self.show_legend and element is not None:
+            self._adjust_legend(element, axis)
+
+        return self._finalize_axis(
+            key, element=element, ranges=ranges, title=self._format_title(key)
         )
-
-        # CREATE_LEGEND phase
-        def _create_legend_overlay(ctx_inner: LifecycleContext) -> LifecycleContext:
-            if self.show_legend and element is not None:
-                self._adjust_legend(element, axis)
-            legend = axis.get_legend()
-            return ctx_inner.update(legend=legend)
-
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_LEGEND, ctx, _create_legend_overlay)
-
-        # CREATE_COLORBAR phase
-        def _create_colorbar_overlay(ctx_inner: LifecycleContext) -> LifecycleContext:
-            colorbar = None
-            if "cax" in self.handles:
-                colorbar = self.handles["cax"]
-            else:
-                for artist in axis.get_children():
-                    if hasattr(artist, "colorbar") and artist.colorbar is not None:
-                        colorbar = artist.colorbar
-                        break
-            return ctx_inner.update(colorbar=colorbar)
-
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_COLORBAR, ctx, _create_colorbar_overlay)
-
-        # CREATE_TOOLS phase
-        def _create_tools_overlay(ctx_inner: LifecycleContext) -> LifecycleContext:
-            format_coord = self._get_mpl_format_coord(element) if element is not None else None
-            if format_coord is not None:
-                axis.format_coord = format_coord
-            tools_dict = {
-                "format_coord": format_coord,
-                "hover_data": element._get_hover_data() if element is not None and hasattr(element, "_get_hover_data") else None,
-            }
-            return ctx_inner.update(tools=tools_dict)
-
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_TOOLS, ctx, _create_tools_overlay)
-
-        # FINALIZE_STYLE phase
-        def _finalize_style_overlay(ctx_inner: LifecycleContext) -> LifecycleContext:
-            self._finalize_artist(element)
-            self._execute_hooks(element)
-            self.drawn = True
-            return ctx_inner.update(state=axis.figure)
-
-        ctx = self.run_lifecycle_phase(LifecyclePhase.FINALIZE_STYLE, ctx, _finalize_style_overlay)
-
-        # POST_INIT phase
-        ctx = self.run_lifecycle_phase(LifecyclePhase.POST_INIT, ctx)
-
-        return ctx.state
 
     @mpl_rc_context
     def update_frame(self, key, ranges=None, element=None):

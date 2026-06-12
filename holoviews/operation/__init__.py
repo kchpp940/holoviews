@@ -2,6 +2,7 @@ from ..core import Overlay  # noqa: F401
 from ..core.operation import Operation
 from ..core.options import Compositor
 from ..element.util import categorical_aggregate2d
+from .resample import OperationExecutionContext
 from .element import (
     apply_when,
     chain,
@@ -18,7 +19,6 @@ from .element import (
     image_overlay,
     interpolate_curve,
     method,
-    operation,
     threshold,
     transform,
 )
@@ -31,6 +31,7 @@ for _obj in list(locals().values()):
 __all__ = [
     "Compositor",
     "Operation",
+    "OperationExecutionContext",
     "apply_when",
     "categorical_aggregate2d",
     "chain",
@@ -47,7 +48,6 @@ __all__ = [
     "image_overlay",
     "interpolate_curve",
     "method",
-    "operation",
     "threshold",
     "transform",
 ]

@@ -587,32 +587,41 @@ class aggregate(LineAggregationOperation):
             )
             return overlay_aggregate(element, **params)
 
-        if element._plot_id in self._precomputed:
-            x, y, data, glyph = self._precomputed[element._plot_id]
+        ctx = self._create_execution_context(element, None, None)
+
+        if ctx.has_cached(element._plot_id):
+            x, y, data, glyph = ctx.get_cached(element._plot_id)
         else:
             x, y, data, glyph = self.get_agg_data(element, category_name)
 
-        if self.p.precompute:
-            self._precomputed[element._plot_id] = x, y, data, glyph
-        (x_range, y_range), (xs, ys), (width, height), (xtype, ytype) = self._get_sampling(
-            element, x, y
-        )
-        ((x0, x1), (y0, y1)), (xs, ys) = self._dt_transform(x_range, y_range, xs, ys, xtype, ytype)
+        ctx.cache_result(element._plot_id, (x, y, data, glyph))
+        ctx.x_dim = x
+        ctx.y_dim = y
+        ctx._compute_ranges()
+        ctx._compute_dimensions()
+        ctx._apply_pixel_ratio()
+        ctx._apply_sampling_limits()
+        ctx._compute_units_and_coords()
+        ctx._compute_bounds()
+        ctx._transform_datetimes()
+
+        ((x0, x1), (y0, y1)), (xs, ys) = ctx.get_dt_transform_result()
 
         params = self._get_agg_params(element, x, y, agg_fn, (x0, y0, x1, y1))
 
-        if x is None or y is None or width == 0 or height == 0:
-            return self._empty_agg(element, x, y, width, height, xs, ys, agg_fn, **params)
+        if x is None or y is None or ctx.is_empty():
+            return self._empty_agg(element, x, y, ctx.width, ctx.height, xs, ys, agg_fn, **params)
         elif getattr(data, "interface", None) is not DaskInterface and not len(data):
             empty_val = 0 if isinstance(agg_fn, ds.count) else np.nan
             xarray = xr.DataArray(
-                np.full((height, width), empty_val),
+                np.full((ctx.height, ctx.width), empty_val),
                 dims=[y.name, x.name],
                 coords={x.name: xs, y.name: ys},
             )
             return self.p.element_type(xarray, **params)
 
-        cvs = ds.Canvas(plot_width=width, plot_height=height, x_range=x_range, y_range=y_range)
+        cvs = ds.Canvas(plot_width=ctx.width, plot_height=ctx.height,
+                        x_range=ctx.x_range, y_range=ctx.y_range)
 
         dfdata = PandasInterface.as_dframe(data)
         cvs_fn = getattr(cvs, glyph)
@@ -622,9 +631,9 @@ class aggregate(LineAggregationOperation):
 
         if "x_axis" in agg.coords and "y_axis" in agg.coords:
             agg = agg.rename({"x_axis": x, "y_axis": y})
-        if xtype == "datetime":
+        if ctx.xtype == "datetime":
             agg[x.name] = agg[x.name].astype("datetime64[ns]")
-        if ytype == "datetime":
+        if ctx.ytype == "datetime":
             agg[y.name] = agg[y.name].astype("datetime64[ns]")
 
         if agg_state == AggState.AGG_BY:
@@ -699,7 +708,6 @@ class overlay_aggregate(aggregate):
                 "with count, sum or mean reduction."
             )
 
-        # Compute overall bounds
         dims = element.last.dimensions()[0:2]
         ndims = len(dims)
         if ndims == 1:
@@ -707,15 +715,14 @@ class overlay_aggregate(aggregate):
         else:
             x, y = dims
 
-        info = self._get_sampling(element, x, y, ndims)
-        (x_range, y_range), (xs, ys), (_width, _height), (xtype, ytype) = info
-        ((x0, x1), (y0, y1)), _ = self._dt_transform(x_range, y_range, xs, ys, xtype, ytype)
+        ctx = self._create_execution_context(element, x, y, ndims)
+        ((x0, x1), (y0, y1)), _ = ctx.get_dt_transform_result()
         agg_params = dict(
             {k: v for k, v in dict(self.param.values(), **self.p).items() if k in aggregate.param},
             x_range=(x0, x1),
             y_range=(y0, y1),
         )
-        bbox = (x0, y0, x1, y1)
+        bbox = ctx.bounds
 
         # Create aggregate instance for sum, count operations, breaking mean
         # into two aggregates
@@ -792,21 +799,21 @@ class area_aggregate(AggregationOperation):
             default = (y0, y1)
 
         ystack = element.vdims[1].name if len(element.vdims) > 1 else None
-        info = self._get_sampling(element, x, y, ndim=2, default=default)
-        (x_range, y_range), (xs, ys), (width, height), (xtype, ytype) = info
-        ((x0, x1), (y0, y1)), (xs, ys) = self._dt_transform(x_range, y_range, xs, ys, xtype, ytype)
+        ctx = self._create_execution_context(element, x, y, ndim=2, default=default)
+        ((x0, x1), (y0, y1)), (xs, ys) = ctx.get_dt_transform_result()
 
         df = PandasInterface.as_dframe(element)
 
-        cvs = ds.Canvas(plot_width=width, plot_height=height, x_range=x_range, y_range=y_range)
+        cvs = ds.Canvas(plot_width=ctx.width, plot_height=ctx.height,
+                        x_range=ctx.x_range, y_range=ctx.y_range)
 
         params = self._get_agg_params(element, x, y, agg_fn, (x0, y0, x1, y1))
 
-        if width == 0 or height == 0:
-            return self._empty_agg(element, x, y, width, height, xs, ys, agg_fn, **params)
+        if ctx.is_empty():
+            return self._empty_agg(element, x, y, ctx.width, ctx.height, xs, ys, agg_fn, **params)
 
         agg = cvs.area(df, x.name, y.name, agg_fn, axis=0, y_stack=ystack)
-        if xtype == "datetime":
+        if ctx.xtype == "datetime":
             agg[x.name] = agg[x.name].astype("datetime64[ns]")
 
         return self.p.element_type(agg, **params)
@@ -874,9 +881,10 @@ class spikes_aggregate(LineAggregationOperation):
             x, y = element.kdims[0], None
             default = (float(self.p.offset), float(self.p.offset + spike_length))
             rename_dict = {"x": x.name}
-        info = self._get_sampling(element, x, y, ndim=1, default=default)
-        (x_range, y_range), (xs, ys), (width, height), (xtype, ytype) = info
-        ((x0, x1), (y0, y1)), (xs, ys) = self._dt_transform(x_range, y_range, xs, ys, xtype, ytype)
+        ctx = self._create_execution_context(element, x, y, ndim=1, default=default)
+        if not self.p.expand and y is None:
+            ctx.height = 1
+        ((x0, x1), (y0, y1)), (xs, ys) = ctx.get_dt_transform_result()
 
         value_cols = [] if agg_fn.column is None else [agg_fn.column]
         if y is None:
@@ -885,21 +893,20 @@ class spikes_aggregate(LineAggregationOperation):
             df["y0"] = float(self.p.offset)
             df["y1"] = float(self.p.offset + spike_length)
             yagg = ["y0", "y1"]
-            if not self.p.expand:
-                height = 1
         else:
             df = element.dframe([x, y, *value_cols]).copy()
             df["y0"] = np.array(0, df.dtypes[y.name])
             yagg = ["y0", y.name]
-        if xtype == "datetime":
+        if ctx.xtype == "datetime":
             df[x.name] = cast_array_to_int64(df[x.name].astype("datetime64[ns]"))
 
         params = self._get_agg_params(element, x, y, agg_fn, (x0, y0, x1, y1))
 
-        if width == 0 or height == 0:
-            return self._empty_agg(element, x, y, width, height, xs, ys, agg_fn, **params)
+        if ctx.is_empty():
+            return self._empty_agg(element, x, y, ctx.width, ctx.height, xs, ys, agg_fn, **params)
 
-        cvs = ds.Canvas(plot_width=width, plot_height=height, x_range=x_range, y_range=y_range)
+        cvs = ds.Canvas(plot_width=ctx.width, plot_height=ctx.height,
+                        x_range=ctx.x_range, y_range=ctx.y_range)
 
         agg_kwargs = {}
         if DATASHADER_GE_0_14_0:
@@ -907,7 +914,7 @@ class spikes_aggregate(LineAggregationOperation):
 
         rename_dict = {k: v for k, v in rename_dict.items() if k != v}
         agg = cvs.line(df, x.name, yagg, agg_fn, axis=1, **agg_kwargs).rename(rename_dict)
-        if xtype == "datetime":
+        if ctx.xtype == "datetime":
             agg[x.name] = agg[x.name].astype("datetime64[ns]")
 
         return self.p.element_type(agg, **params)
@@ -932,17 +939,16 @@ class geom_aggregate(AggregationOperation):
     def _process(self, element, key=None):
         agg_fn, sel_fn, agg_state = self._get_agg_state(element)
         x0d, y0d, x1d, y1d = element.kdims
-        info = self._get_sampling(element, [x0d, x1d], [y0d, y1d], ndim=1)
-        (x_range, y_range), (xs, ys), (width, height), (xtype, ytype) = info
-        ((x0, x1), (y0, y1)), (xs, ys) = self._dt_transform(x_range, y_range, xs, ys, xtype, ytype)
+        ctx = self._create_execution_context(element, [x0d, x1d], [y0d, y1d], ndim=1)
+        ((x0, x1), (y0, y1)), (xs, ys) = ctx.get_dt_transform_result()
 
         df = element.interface.as_dframe(element)
-        if xtype == "datetime" or ytype == "datetime":
+        if ctx.xtype == "datetime" or ctx.ytype == "datetime":
             df = df.copy()
-        if xtype == "datetime":
+        if ctx.xtype == "datetime":
             df[x0d.name] = cast_array_to_int64(df[x0d.name].astype("datetime64[ns]"))
             df[x1d.name] = cast_array_to_int64(df[x1d.name].astype("datetime64[ns]"))
-        if ytype == "datetime":
+        if ctx.ytype == "datetime":
             df[y0d.name] = cast_array_to_int64(df[y0d.name].astype("datetime64[ns]"))
             df[y1d.name] = cast_array_to_int64(df[y1d.name].astype("datetime64[ns]"))
 
@@ -952,19 +958,20 @@ class geom_aggregate(AggregationOperation):
 
         params = self._get_agg_params(element, x0d, y0d, agg_fn, (x0, y0, x1, y1))
 
-        if width == 0 or height == 0:
-            return self._empty_agg(element, x0d, y0d, width, height, xs, ys, agg_fn, **params)
+        if ctx.is_empty():
+            return self._empty_agg(element, x0d, y0d, ctx.width, ctx.height, xs, ys, agg_fn, **params)
 
-        cvs = ds.Canvas(plot_width=width, plot_height=height, x_range=x_range, y_range=y_range)
+        cvs = ds.Canvas(plot_width=ctx.width, plot_height=ctx.height,
+                        x_range=ctx.x_range, y_range=ctx.y_range)
 
         agg = self._apply_aggregate_with_agg_state(
             df, cvs, agg_fn, (x0d.name, x1d.name), (y0d.name, y1d.name), agg_state, sel_fn, params
         )
 
         xdim, ydim = list(agg.coords)[:2]
-        if xtype == "datetime":
+        if ctx.xtype == "datetime":
             agg[xdim] = agg[xdim].astype("datetime64[ns]")
-        if ytype == "datetime":
+        if ctx.ytype == "datetime":
             agg[ydim] = agg[ydim].astype("datetime64[ns]")
 
         params["kdims"] = [xdim, ydim]
@@ -1072,18 +1079,13 @@ class regrid(AggregationOperation):
         return arrays
 
     def _process(self, element, key=None):
-        # Compute coords, anges and size
         x, y = element.kdims
         coords = tuple(element.dimension_values(d, expanded=False) for d in [x, y])
-        info = self._get_sampling(element, x, y)
-        (x_range, y_range), (xs, ys), (width, height), (xtype, ytype) = info
+        ctx = self._create_execution_context(element, x, y)
 
-        # Disable upsampling by clipping size and ranges
-        (xstart, xend), (ystart, yend) = (x_range, y_range)
+        (xstart, xend), (ystart, yend) = (ctx.x_range, ctx.y_range)
         xspan, yspan = (xend - xstart), (yend - ystart)
         interp = self.p.interpolation
-        # Convert interpolation method to datashader format
-        # False/None means no interpolation (use nearest neighbor)
         if interp in (False, None):
             interp = "nearest"
         elif interp == "bilinear":
@@ -1099,44 +1101,45 @@ class regrid(AggregationOperation):
                 y0, y1 = dt_to_int(y0, "ns"), dt_to_int(y1, "ns")
             exspan, eyspan = (x1 - x0), (y1 - y0)
             if np.isfinite(exspan) and exspan > 0 and xspan > 0:
-                width = max([min([int((xspan / exspan) * len(coords[0])), width]), 1])
+                ctx.width = max([min([int((xspan / exspan) * len(coords[0])), ctx.width]), 1])
             else:
-                width = 0
+                ctx.width = 0
             if np.isfinite(eyspan) and eyspan > 0 and yspan > 0:
-                height = max([min([int((yspan / eyspan) * len(coords[1])), height]), 1])
+                ctx.height = max([min([int((yspan / eyspan) * len(coords[1])), ctx.height]), 1])
             else:
-                height = 0
-            xunit = float(xspan) / width if width else 0
-            yunit = float(yspan) / height if height else 0
-            xs, ys = (
-                np.linspace(xstart + xunit / 2.0, xend - xunit / 2.0, width),
-                np.linspace(ystart + yunit / 2.0, yend - yunit / 2.0, height),
-            )
+                ctx.height = 0
+            ctx.xunit = float(xspan) / ctx.width if ctx.width else 0
+            ctx.yunit = float(yspan) / ctx.height if ctx.height else 0
+            ctx.xs = np.linspace(
+                xstart + ctx.xunit / 2.0, xend - ctx.xunit / 2.0, ctx.width
+            ) if ctx.width > 0 else np.array([])
+            ctx.ys = np.linspace(
+                ystart + ctx.yunit / 2.0, yend - ctx.yunit / 2.0, ctx.height
+            ) if ctx.height > 0 else np.array([])
+            ctx._transform_datetimes()
 
-        # Compute bounds (converting datetimes)
-        ((x0, x1), (y0, y1)), (xs, ys) = self._dt_transform(x_range, y_range, xs, ys, xtype, ytype)
+        ((x0, x1), (y0, y1)), (xs, ys) = ctx.get_dt_transform_result()
 
         params = dict(bounds=(x0, y0, x1, y1))
-        if width == 0 or height == 0:
-            if width == 0:
+        if ctx.is_empty():
+            if ctx.width == 0:
                 params["xdensity"] = 1
-            if height == 0:
+            if ctx.height == 0:
                 params["ydensity"] = 1
-            return element.clone((xs, ys, np.zeros((height, width))), **params)
+            return element.clone((xs, ys, np.zeros((ctx.height, ctx.width))), **params)
 
-        cvs = ds.Canvas(plot_width=width, plot_height=height, x_range=x_range, y_range=y_range)
+        cvs = ds.Canvas(plot_width=ctx.width, plot_height=ctx.height,
+                        x_range=ctx.x_range, y_range=ctx.y_range)
 
-        # Apply regridding to each value dimension
         regridded = {}
-        arrays = self._get_xarrays(element, coords, xtype, ytype)
+        arrays = self._get_xarrays(element, coords, ctx.xtype, ctx.ytype)
         agg_fn = self._get_aggregator(element, self.p.aggregator, add_field=False)
         for vd, xarr in arrays.items():
             rarray = cvs.raster(xarr, upsample_method=interp, downsample_method=agg_fn)
 
-            # Convert datetime coordinates
-            if xtype == "datetime":
+            if ctx.xtype == "datetime":
                 rarray[x.name] = rarray[x.name].astype("datetime64[ns]")
-            if ytype == "datetime":
+            if ctx.ytype == "datetime":
                 rarray[y.name] = rarray[y.name].astype("datetime64[ns]")
             regridded[vd] = rarray
         regridded = xr.Dataset(regridded)
@@ -1227,8 +1230,7 @@ class trimesh_rasterize(aggregate):
             x, y = element.nodes.kdims[:2]
         else:
             x, y = element.kdims
-        info = self._get_sampling(element, x, y)
-        (x_range, y_range), (xs, ys), (width, height), (_xtype, _ytype) = info
+        ctx = self._create_execution_context(element, x, y)
 
         agg = self.p.aggregator
         interp = self.p.interpolation or None
@@ -1253,21 +1255,20 @@ class trimesh_rasterize(aggregate):
         elif getattr(agg, "column", None) is None:
             agg = self._get_aggregator(element, self.p.aggregator)
 
-        if element._plot_id in self._precomputed:
-            precomputed = self._precomputed[element._plot_id]
+        if ctx.has_cached(element._plot_id):
+            precomputed = ctx.get_cached(element._plot_id)
         elif wireframe:
             precomputed = self._precompute_wireframe(element, agg)
         else:
             precomputed = self._precompute(element, agg)
-        bounds = (x_range[0], y_range[0], x_range[1], y_range[1])
-        params = self._get_agg_params(element, x, y, agg, bounds)
+        params = self._get_agg_params(element, x, y, agg, ctx.bounds)
 
-        if width == 0 or height == 0:
-            if width == 0:
+        if ctx.is_empty():
+            if ctx.width == 0:
                 params["xdensity"] = 1
-            if height == 0:
+            if ctx.height == 0:
                 params["ydensity"] = 1
-            return Image((xs, ys, np.zeros((height, width))), **params)
+            return Image((ctx.xs, ctx.ys, np.zeros((ctx.height, ctx.width))), **params)
 
         if wireframe:
             segments = precomputed["segments"]
@@ -1276,9 +1277,11 @@ class trimesh_rasterize(aggregate):
             pts = precomputed["vertices"]
             mesh = precomputed["mesh"]
         if precompute:
-            self._precomputed = {element._plot_id: precomputed}
+            ctx.cache_result(element._plot_id, precomputed)
+            self._precomputed = ctx.precomputed
 
-        cvs = ds.Canvas(plot_width=width, plot_height=height, x_range=x_range, y_range=y_range)
+        cvs = ds.Canvas(plot_width=ctx.width, plot_height=ctx.height,
+                        x_range=ctx.x_range, y_range=ctx.y_range)
         if wireframe:
             rename_dict = {k: v for k, v in zip("xy", (x.name, y.name), strict=None) if k != v}
             agg = cvs.line(
@@ -1311,28 +1314,27 @@ class quadmesh_rasterize(trimesh_rasterize):
 
         x, y = element.kdims
         agg_fn = self._get_aggregator(element, self.p.aggregator)
-        info = self._get_sampling(element, x, y)
-        (x_range, y_range), (xs, ys), (width, height), (xtype, ytype) = info
-        if xtype == "datetime":
+        ctx = self._create_execution_context(element, x, y)
+        if ctx.xtype == "datetime":
             data[x.name] = data[x.name].astype("datetime64[ns]").astype("int64")
-        if ytype == "datetime":
+        if ctx.ytype == "datetime":
             data[y.name] = data[y.name].astype("datetime64[ns]").astype("int64")
 
-        # Compute bounds (converting datetimes)
-        ((x0, x1), (y0, y1)), (xs, ys) = self._dt_transform(x_range, y_range, xs, ys, xtype, ytype)
+        ((x0, x1), (y0, y1)), (xs, ys) = ctx.get_dt_transform_result()
         params = dict(get_param_values(element), datatype=["xarray"], bounds=(x0, y0, x1, y1))
 
-        if width == 0 or height == 0:
-            return self._empty_agg(element, x, y, width, height, xs, ys, agg_fn, **params)
+        if ctx.is_empty():
+            return self._empty_agg(element, x, y, ctx.width, ctx.height, xs, ys, agg_fn, **params)
 
-        cvs = ds.Canvas(plot_width=width, plot_height=height, x_range=x_range, y_range=y_range)
+        cvs = ds.Canvas(plot_width=ctx.width, plot_height=ctx.height,
+                        x_range=ctx.x_range, y_range=ctx.y_range)
 
         vdim = getattr(agg_fn, "column", element.vdims[0].name)
         agg = cvs.quadmesh(data[vdim], x.name, y.name, agg_fn)
         xdim, ydim = list(agg.dims)[:2][::-1]
-        if xtype == "datetime":
+        if ctx.xtype == "datetime":
             agg[xdim] = agg[xdim].astype("datetime64[ns]")
-        if ytype == "datetime":
+        if ctx.ytype == "datetime":
             agg[ydim] = agg[ydim].astype("datetime64[ns]")
 
         return Image(agg, **params)
@@ -1638,20 +1640,20 @@ class geometry_rasterize(LineAggregationOperation):
     def _process(self, element, key=None):
         agg_fn = self._get_aggregator(element, self.p.aggregator)
         xdim, ydim = element.kdims
-        info = self._get_sampling(element, xdim, ydim)
-        (x_range, y_range), (xs, ys), (width, height), (_xtype, _ytype) = info
-        x0, x1 = x_range
-        y0, y1 = y_range
+        ctx = self._create_execution_context(element, xdim, ydim)
+        x0, x1 = ctx.x_range
+        y0, y1 = ctx.y_range
 
         params = self._get_agg_params(element, xdim, ydim, agg_fn, (x0, y0, x1, y1))
 
-        if width == 0 or height == 0:
-            return self._empty_agg(element, xdim, ydim, width, height, xs, ys, agg_fn, **params)
+        if ctx.is_empty():
+            return self._empty_agg(element, xdim, ydim, ctx.width, ctx.height, ctx.xs, ctx.ys, agg_fn, **params)
 
-        cvs = ds.Canvas(plot_width=width, plot_height=height, x_range=x_range, y_range=y_range)
+        cvs = ds.Canvas(plot_width=ctx.width, plot_height=ctx.height,
+                        x_range=ctx.x_range, y_range=ctx.y_range)
 
-        if element._plot_id in self._precomputed:
-            data, col = self._precomputed[element._plot_id]
+        if ctx.has_cached(element._plot_id):
+            data, col = ctx.get_cached(element._plot_id)
         else:
             if ("spatialpandas" not in element.interface.datatype) and (
                 not (DATASHADER_GE_0_16_0 and "geodataframe" in element.interface.datatype)
@@ -1660,8 +1662,7 @@ class geometry_rasterize(LineAggregationOperation):
             data = element.data
             col = element.interface.geo_column(data)
 
-        if self.p.precompute:
-            self._precomputed[element._plot_id] = (data, col)
+        ctx.cache_result(element._plot_id, (data, col))
 
         category_name = self._get_category_column_name(agg_fn)
         if category_name and data[category_name].dtype.name != "category":
