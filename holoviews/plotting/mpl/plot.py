@@ -29,7 +29,7 @@ from ...core import (
 )
 from ...core.options import SkipRendering, Store
 from ...core.util import int_to_alpha, int_to_roman, wrap_tuple_streams
-from ..lifecycle import LifecycleMixin
+from ..lifecycle import LifecycleContext, LifecycleMixin, LifecyclePhase
 from ..plot import (
     DimensionedPlot,
     GenericAdjointLayoutPlot,
@@ -317,6 +317,20 @@ class MPLPlot(LifecycleMixin, DimensionedPlot):
     def state(self):
         return self.handles["fig"]
 
+    def _get_resolved(self, element):
+        """Get resolved options for an element.
+
+        Returns an object with .plot.options and .style.options attributes.
+        """
+
+        class ResolvedOptions:
+            pass
+
+        resolved = ResolvedOptions()
+        resolved.plot = Store.lookup_options(self.renderer.backend, element, "plot")
+        resolved.style = Store.lookup_options(self.renderer.backend, element, "style")
+        return resolved
+
     def anim(self, start=0, stop=None, fps=30):
         """Method to return a matplotlib animation. The start and stop
         frames may be specified as well as the fps.
@@ -601,20 +615,100 @@ class GridPlot(CompositePlot):
         axis = self.handles["axis"]
         subplot_kwargs = {}
         ranges = self.compute_ranges(self.layout, key, ranges)
+        all_axes = []
+        all_artists = []
+
+        ctx = LifecycleContext(
+            plot=self,
+            element=self.layout,
+            ranges=ranges,
+            key=key,
+        )
+        ctx.extra["axis"] = axis
+        ctx.extra["all_axes"] = all_axes
+        ctx.extra["all_artists"] = all_artists
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.PRE_INIT, ctx)
+
         for subplot in self.subplots.values():
             subplot.initialize_plot(ranges=ranges, **subplot_kwargs)
+            if hasattr(subplot, "handles"):
+                if "axis" in subplot.handles:
+                    all_axes.append(subplot.handles["axis"])
+                if "artist" in subplot.handles:
+                    all_artists.append(subplot.handles["artist"])
 
-        if self.show_title:
-            title = axis.set_title(self._format_title(key), **self._fontsize("title"))
-            self.handles["title"] = title
+        def _create_figure(ctx: LifecycleContext) -> LifecycleContext:
+            if self.show_title:
+                title = axis.set_title(self._format_title(key), **self._fontsize("title"))
+                self.handles["title"] = title
 
-        self._readjust_axes(axis)
-        self.drawn = True
-        if self.subplot:
-            return self.handles["axis"]
-        if self._close_figures:
-            plt.close(self.handles["fig"])
-        return self.handles["fig"]
+            self._readjust_axes(axis)
+            self.drawn = True
+            fig = self.handles["fig"]
+            return ctx.update(figure=fig, layout=fig)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_FIGURE, ctx, _create_figure)
+
+        def _create_axes(ctx: LifecycleContext) -> LifecycleContext:
+            all_axes = ctx.extra["all_axes"]
+            all_axes.append(ctx.extra["axis"])
+            return ctx.update(axes=tuple(all_axes) if all_axes else None)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_AXES, ctx, _create_axes)
+
+        def _create_glyphs(ctx: LifecycleContext) -> LifecycleContext:
+            return ctx.update(glyphs=ctx.extra["all_artists"] if ctx.extra["all_artists"] else None)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_GLYPHS, ctx, _create_glyphs)
+
+        def _create_legend(ctx: LifecycleContext) -> LifecycleContext:
+            legends = []
+            for ax in ctx.extra["all_axes"]:
+                legend = ax.get_legend()
+                if legend:
+                    legends.append(legend)
+            return ctx.update(legend=legends[0] if legends else None)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_LEGEND, ctx, _create_legend)
+
+        def _create_colorbar(ctx: LifecycleContext) -> LifecycleContext:
+            colorbar = None
+            for subplot in self.subplots.values():
+                if hasattr(subplot, "colorbar") and subplot.colorbar:
+                    colorbar = subplot.colorbar
+                    break
+            return ctx.update(colorbar=colorbar)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_COLORBAR, ctx, _create_colorbar)
+
+        def _create_tools(ctx: LifecycleContext) -> LifecycleContext:
+            format_coord = None
+            for subplot in self.subplots.values():
+                if hasattr(subplot, "_get_mpl_format_coord"):
+                    elem = getattr(subplot, "hmap", None)
+                    if elem is not None and hasattr(elem, "last"):
+                        format_coord = subplot._get_mpl_format_coord(elem.last)
+                        break
+            tools_dict = {
+                "format_coord": format_coord,
+            }
+            return ctx.update(tools=tools_dict)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_TOOLS, ctx, _create_tools)
+
+        def _finalize_style(ctx: LifecycleContext) -> LifecycleContext:
+            fig = self.handles["fig"]
+            if self.subplot:
+                return ctx.update(state=self.handles["axis"])
+            if self._close_figures:
+                plt.close(self.handles["fig"])
+            return ctx.update(state=fig)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.FINALIZE_STYLE, ctx, _finalize_style)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.POST_INIT, ctx)
+
+        return ctx.state
 
     def _readjust_axes(self, axis):
         if self.subplot:
@@ -758,6 +852,17 @@ class AdjointLayoutPlot(MPLPlot, GenericAdjointLayoutPlot):
         self.layout_type = layout_type
         self.view_positions = self.layout_dict[self.layout_type]
 
+        # Ensure keys is set - inherit from main subplot if available
+        if "keys" not in params or params["keys"] is None:
+            main_plot = subplots.get("main") if isinstance(subplots, dict) else None
+            if main_plot is not None and getattr(main_plot, "keys", None) is not None:
+                params["keys"] = main_plot.keys
+            else:
+                params["keys"] = [0]
+
+        # AdjointLayoutPlot is always nested inside another plot
+        self.top_level = False
+
         # The supplied (axes, view) objects as indexed by position
         self.subaxes = {pos: ax for ax, pos in zip(subaxes, self.view_positions, strict=None)}
         super().__init__(subplots=subplots, **params)
@@ -771,6 +876,22 @@ class AdjointLayoutPlot(MPLPlot, GenericAdjointLayoutPlot):
         empty axes as necessary.
 
         """
+        key = self.keys[-1]
+        ranges = self.compute_ranges(self.layout, key, ranges)
+        all_axes = []
+        all_artists = []
+
+        ctx = LifecycleContext(
+            plot=self,
+            element=self.layout,
+            ranges=ranges,
+            key=key,
+        )
+        ctx.extra["all_axes"] = all_axes
+        ctx.extra["all_artists"] = all_artists
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.PRE_INIT, ctx)
+
         for pos in self.view_positions:
             # Pos will be one of 'main', 'top' or 'right' or None
             view = self.layout.get(pos, None)
@@ -778,12 +899,84 @@ class AdjointLayoutPlot(MPLPlot, GenericAdjointLayoutPlot):
             ax = self.subaxes.get(pos, None)
             # If no view object or empty position, disable the axis
             if None in [view, pos, subplot]:
-                ax.set_axis_off()
+                if ax is not None:
+                    ax.set_axis_off()
                 continue
             subplot.initialize_plot(ranges=ranges)
+            if hasattr(subplot, "handles"):
+                if "axis" in subplot.handles:
+                    all_axes.append(subplot.handles["axis"])
+                if "artist" in subplot.handles:
+                    all_artists.append(subplot.handles["artist"])
 
         self.adjust_positions()
         self.drawn = True
+
+        def _create_figure(ctx: LifecycleContext) -> LifecycleContext:
+            fig = self.handles.get("fig")
+            main_ax = None
+            for ax in ctx.extra["all_axes"]:
+                if ax is not None:
+                    main_ax = ax
+                    break
+            return ctx.update(figure=fig, layout=fig)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_FIGURE, ctx, _create_figure)
+
+        def _create_axes(ctx: LifecycleContext) -> LifecycleContext:
+            return ctx.update(axes=tuple(ctx.extra["all_axes"]) if ctx.extra["all_axes"] else None)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_AXES, ctx, _create_axes)
+
+        def _create_glyphs(ctx: LifecycleContext) -> LifecycleContext:
+            return ctx.update(glyphs=ctx.extra["all_artists"] if ctx.extra["all_artists"] else None)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_GLYPHS, ctx, _create_glyphs)
+
+        def _create_legend(ctx: LifecycleContext) -> LifecycleContext:
+            legends = []
+            for ax in ctx.extra["all_axes"]:
+                if ax is not None:
+                    legend = ax.get_legend()
+                    if legend:
+                        legends.append(legend)
+            return ctx.update(legend=legends[0] if legends else None)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_LEGEND, ctx, _create_legend)
+
+        def _create_colorbar(ctx: LifecycleContext) -> LifecycleContext:
+            colorbar = None
+            for subplot in self.subplots.values():
+                if hasattr(subplot, "colorbar") and subplot.colorbar:
+                    colorbar = subplot.colorbar
+                    break
+            return ctx.update(colorbar=colorbar)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_COLORBAR, ctx, _create_colorbar)
+
+        def _create_tools(ctx: LifecycleContext) -> LifecycleContext:
+            format_coord = None
+            for subplot in self.subplots.values():
+                if hasattr(subplot, "_get_mpl_format_coord"):
+                    elem = getattr(subplot, "hmap", None)
+                    if elem is not None and hasattr(elem, "last"):
+                        format_coord = subplot._get_mpl_format_coord(elem.last)
+                        break
+            tools_dict = {
+                "format_coord": format_coord,
+            }
+            return ctx.update(tools=tools_dict)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_TOOLS, ctx, _create_tools)
+
+        def _finalize_style(ctx: LifecycleContext) -> LifecycleContext:
+            fig = self.handles.get("fig")
+            return ctx.update(state=fig)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.FINALIZE_STYLE, ctx, _finalize_style)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.POST_INIT, ctx)
+
+        return ctx.state
 
     def adjust_positions(self, redraw=True):
         """Make adjustments to the positions of subplots (if available)
@@ -1258,8 +1451,27 @@ class LayoutPlot(GenericLayoutPlot, CompositePlot):
     def initialize_plot(self):
         key = self.keys[-1]
         ranges = self.compute_ranges(self.layout, key, None)
+        all_axes = []
+        all_artists = []
+
+        ctx = LifecycleContext(
+            plot=self,
+            element=self.layout,
+            ranges=ranges,
+            key=key,
+        )
+        ctx.extra["all_axes"] = all_axes
+        ctx.extra["all_artists"] = all_artists
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.PRE_INIT, ctx)
+
         for subplot in self.subplots.values():
             subplot.initialize_plot(ranges=ranges)
+            if hasattr(subplot, "handles"):
+                if "axis" in subplot.handles:
+                    all_axes.append(subplot.handles["axis"])
+                if "artist" in subplot.handles:
+                    all_artists.append(subplot.handles["artist"])
 
         # Create title handle
         title_obj = None
@@ -1269,36 +1481,104 @@ class LayoutPlot(GenericLayoutPlot, CompositePlot):
             self.handles["title"] = title_obj
             self.handles["bbox_extra_artists"] += [title_obj]
 
-        fig = self.handles["fig"]
-        if (
-            not self.traverse(specs=[GridPlot])
-            and not isinstance(self.fig_inches, tuple)
-            and self.v17_layout_format
-        ):
-            traverse_fn = lambda x: x.handles.get("bbox_extra_artists", None)
-            extra_artists = list(
-                chain.from_iterable(
-                    artists for artists in self.traverse(traverse_fn) if artists is not None
+        def _create_figure(ctx: LifecycleContext) -> LifecycleContext:
+            fig = self.handles["fig"]
+            if (
+                not self.traverse(specs=[GridPlot])
+                and not isinstance(self.fig_inches, tuple)
+                and self.v17_layout_format
+            ):
+                traverse_fn = lambda x: x.handles.get("bbox_extra_artists", None)
+                extra_artists = list(
+                    chain.from_iterable(
+                        artists for artists in self.traverse(traverse_fn) if artists is not None
+                    )
                 )
-            )
-            fix_aspect(
-                fig,
-                self.rows,
-                self.cols,
-                title_obj,
-                extra_artists,
-                vspace=self.vspace * self.fig_scale,
-                hspace=self.hspace * self.fig_scale,
-            )
-            colorbars = self.traverse(specs=[lambda x: hasattr(x, "colorbar")])
-            for cbar_plot in colorbars:
-                if cbar_plot.colorbar:
-                    cbar_plot._draw_colorbar(redraw=False)
-            adjoineds = self.traverse(specs=[AdjointLayoutPlot])
-            for adjoined in adjoineds:
-                if len(adjoined.subplots) > 1:
-                    adjoined.adjust_positions(redraw=False)
-        return self._finalize_axis(None)
+                fix_aspect(
+                    fig,
+                    self.rows,
+                    self.cols,
+                    title_obj,
+                    extra_artists,
+                    vspace=self.vspace * self.fig_scale,
+                    hspace=self.hspace * self.fig_scale,
+                )
+                colorbars = self.traverse(specs=[lambda x: hasattr(x, "colorbar")])
+                for cbar_plot in colorbars:
+                    if cbar_plot.colorbar:
+                        cbar_plot._draw_colorbar(redraw=False)
+                adjoineds = self.traverse(specs=[AdjointLayoutPlot])
+                for adjoined in adjoineds:
+                    if len(adjoined.subplots) > 1:
+                        adjoined.adjust_positions(redraw=False)
+            return ctx.update(figure=fig, layout=fig)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_FIGURE, ctx, _create_figure)
+
+        def _create_axes(ctx: LifecycleContext) -> LifecycleContext:
+            return ctx.update(axes=tuple(ctx.extra["all_axes"]) if ctx.extra["all_axes"] else None)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_AXES, ctx, _create_axes)
+
+        def _create_glyphs(ctx: LifecycleContext) -> LifecycleContext:
+            return ctx.update(glyphs=ctx.extra["all_artists"] if ctx.extra["all_artists"] else None)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_GLYPHS, ctx, _create_glyphs)
+
+        def _create_legend(ctx: LifecycleContext) -> LifecycleContext:
+            legends = []
+            for ax in ctx.extra["all_axes"]:
+                if ax is not None:
+                    legend = ax.get_legend()
+                    if legend:
+                        legends.append(legend)
+            return ctx.update(legend=legends[0] if legends else None)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_LEGEND, ctx, _create_legend)
+
+        def _create_colorbar(ctx: LifecycleContext) -> LifecycleContext:
+            colorbar = None
+            for subplot in self.subplots.values():
+                if hasattr(subplot, "colorbar") and subplot.colorbar:
+                    colorbar = subplot.colorbar
+                    break
+            return ctx.update(colorbar=colorbar)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_COLORBAR, ctx, _create_colorbar)
+
+        def _create_tools(ctx: LifecycleContext) -> LifecycleContext:
+            format_coord = None
+            for subplot in self.subplots.values():
+                if hasattr(subplot, "_get_mpl_format_coord"):
+                    elem = getattr(subplot, "hmap", None)
+                    if elem is not None and hasattr(elem, "last"):
+                        format_coord = subplot._get_mpl_format_coord(elem.last)
+                        break
+            tools_dict = {
+                "format_coord": format_coord,
+            }
+            return ctx.update(tools=tools_dict)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_TOOLS, ctx, _create_tools)
+
+        def _finalize_style(ctx: LifecycleContext) -> LifecycleContext:
+            # _finalize_axis logic
+            if "title" in self.handles:
+                self.handles["title"].set_visible(self.show_title)
+
+            self.drawn = True
+            fig = self.handles["fig"]
+            if self.subplot:
+                return ctx.update(state=self.handles["axis"])
+            else:
+                if not getattr(self, "overlaid", False) and self._close_figures:
+                    plt.close(fig)
+                return ctx.update(state=fig)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.FINALIZE_STYLE, ctx, _finalize_style)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.POST_INIT, ctx)
+
+        return ctx.state
 
 
 class AdjoinedPlot(DimensionedPlot):

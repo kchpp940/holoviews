@@ -10,6 +10,7 @@ import os
 from contextlib import contextmanager
 from functools import partial
 from io import BytesIO, StringIO
+from typing import List
 
 import param
 from bokeh.document import Document
@@ -38,6 +39,7 @@ from ..core.io import Exporter
 from ..core.options import Compositor, SkipRendering, Store, StoreOptions
 from ..core.util import unbound_dimensions
 from ..core.util.dependencies import _no_import_version
+from .lifecycle import LifecycleHook
 from ..streams import Stream
 from . import Plot
 from .util import collate, displayable, initialize_dynamic
@@ -233,6 +235,9 @@ class Renderer(Exporter):
     # Whether to render plots with Panel
     _render_with_panel = False
 
+    # Lifecycle hooks to be registered on all plots created by this renderer
+    lifecycle_hooks: List[LifecycleHook] = []
+
     def __init__(self, **params):
         self.last_plot = None
         super().__init__(**params)
@@ -284,6 +289,14 @@ class Renderer(Exporter):
             if isinstance(obj, AdjointLayout):
                 obj = Layout(obj)
             plot = self_or_cls.plotting_class(obj)(obj, renderer=renderer, **plot_opts)
+
+            # Register lifecycle hooks from renderer to all plots BEFORE initialize
+            if isinstance(self_or_cls, Renderer) and self_or_cls.lifecycle_hooks:
+                for p in plot.traverse():
+                    if hasattr(p, "register_lifecycle_hook"):
+                        for hook in self_or_cls.lifecycle_hooks:
+                            p.register_lifecycle_hook(hook)
+
             defaults = [kd.default for kd in plot.dimensions]
             init_key = tuple(
                 v if d is None else d for v, d in zip(plot.keys[0], defaults, strict=None)
@@ -291,6 +304,12 @@ class Renderer(Exporter):
             plot.update(init_key)
         else:
             plot = obj
+            # Register lifecycle hooks from renderer to all plots
+            if isinstance(self_or_cls, Renderer) and self_or_cls.lifecycle_hooks:
+                for p in plot.traverse():
+                    if hasattr(p, "register_lifecycle_hook"):
+                        for hook in self_or_cls.lifecycle_hooks:
+                            p.register_lifecycle_hook(hook)
 
         # Trigger streams which were marked as requiring an update
         triggers = []

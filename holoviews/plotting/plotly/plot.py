@@ -6,7 +6,7 @@ from ...core import AdjointLayout, Empty, GridMatrix, GridSpace, HoloMap, NdLayo
 from ...core.options import Store
 from ...core.util import wrap_tuple
 from ...element import Histogram
-from ..lifecycle import LifecycleMixin
+from ..lifecycle import LifecycleContext, LifecycleMixin, LifecyclePhase
 from ..plot import (
     CallbackPlot,
     DimensionedPlot,
@@ -43,6 +43,20 @@ class PlotlyPlot(LifecycleMixin, DimensionedPlot, CallbackPlot):
         else:
             self.current_key = None
             self.current_frame = None
+
+    def _get_resolved(self, element):
+        """Get resolved options for an element.
+
+        Returns an object with .plot.options and .style.options attributes.
+        """
+
+        class ResolvedOptions:
+            pass
+
+        resolved = ResolvedOptions()
+        resolved.plot = Store.lookup_options(self.renderer.backend, element, "plot")
+        resolved.style = Store.lookup_options(self.renderer.backend, element, "style")
+        return resolved
 
     def initialize_plot(self, ranges=None, is_geo=False):
         return self.generate_plot(self.keys[-1], ranges, is_geo=is_geo)
@@ -210,10 +224,25 @@ class LayoutPlot(PlotlyPlot, GenericLayoutPlot):
         ranges = self.compute_ranges(self.layout, self.keys[-1], None)
         plots = [[] for i in range(self.rows)]
         insert_rows = []
+        all_figs = []
+
+        ctx = LifecycleContext(
+            plot=self,
+            element=self.layout,
+            ranges=ranges,
+            key=key,
+        )
+        ctx.extra["plots"] = plots
+        ctx.extra["all_figs"] = all_figs
+        ctx.extra["insert_rows"] = insert_rows
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.PRE_INIT, ctx)
+
         for r, c in self.coords:
             subplot = self.subplots.get((r, c), None)
             if subplot is not None:
                 subplots = subplot.generate_plot(key, ranges=ranges, is_geo=is_geo)
+                all_figs.extend(subplots)
 
                 # Computes plotting offsets depending on
                 # number of adjoined plots
@@ -235,20 +264,78 @@ class LayoutPlot(PlotlyPlot, GenericLayoutPlot):
 
                 plots[r + offset] += [subplot]
 
-        fig = figure_grid(
-            list(reversed(plots)), column_spacing=self.hspacing, row_spacing=self.vspacing
-        )
+        def _create_figure(ctx: LifecycleContext) -> LifecycleContext:
+            plots = ctx.extra["plots"]
+            fig = figure_grid(
+                list(reversed(plots)), column_spacing=self.hspacing, row_spacing=self.vspacing
+            )
 
-        # Configure axis matching
-        if self.shared_axes:
-            configure_matching_axes_from_dims(fig)
+            # Configure axis matching
+            if self.shared_axes:
+                configure_matching_axes_from_dims(fig)
 
-        fig["layout"].update(title=self._format_title(key))
+            fig["layout"].update(title=self._format_title(key))
 
-        self.drawn = True
+            self.drawn = True
 
-        self.handles["fig"] = fig
-        return self.handles["fig"]
+            self.handles["fig"] = fig
+            return ctx.update(figure=fig, layout=fig["layout"])
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_FIGURE, ctx, _create_figure)
+
+        def _create_glyphs(ctx: LifecycleContext) -> LifecycleContext:
+            all_traces = []
+            for f in ctx.extra["all_figs"]:
+                if f is not None and "data" in f:
+                    all_traces.extend(f["data"])
+            return ctx.update(glyphs=all_traces)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_GLYPHS, ctx, _create_glyphs)
+
+        def _create_axes(ctx: LifecycleContext) -> LifecycleContext:
+            all_axes = {}
+            fig = ctx.figure
+            if fig is not None and "layout" in fig:
+                for k, v in fig["layout"].items():
+                    if k.startswith("xaxis") or k.startswith("yaxis"):
+                        all_axes[k] = v
+            return ctx.update(axes=all_axes)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_AXES, ctx, _create_axes)
+
+        def _create_legend(ctx: LifecycleContext) -> LifecycleContext:
+            legend = None
+            fig = ctx.figure
+            if fig is not None and "layout" in fig and "legend" in fig["layout"]:
+                legend = fig["layout"]["legend"]
+            return ctx.update(legend=legend)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_LEGEND, ctx, _create_legend)
+
+        def _create_colorbar(ctx: LifecycleContext) -> LifecycleContext:
+            colorbars = []
+            for trace in ctx.glyphs or []:
+                if "colorbar" in trace:
+                    colorbars.append(trace["colorbar"])
+            return ctx.update(colorbar=colorbars[0] if colorbars else None)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_COLORBAR, ctx, _create_colorbar)
+
+        def _create_tools(ctx: LifecycleContext) -> LifecycleContext:
+            tools_dict = {
+                "hover": ctx.figure.get("layout", {}).get("hovermode") if ctx.figure else None,
+            }
+            return ctx.update(tools=tools_dict)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_TOOLS, ctx, _create_tools)
+
+        def _finalize_style(ctx: LifecycleContext) -> LifecycleContext:
+            return ctx.update(state=ctx.figure)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.FINALIZE_STYLE, ctx, _finalize_style)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.POST_INIT, ctx)
+
+        return ctx.state
 
 
 class AdjointLayoutPlot(PlotlyPlot, GenericAdjointLayoutPlot):
@@ -260,6 +347,17 @@ class AdjointLayoutPlot(PlotlyPlot, GenericAdjointLayoutPlot):
         # Type may be set to 'Embedded Dual' by a call it grid_situate
         self.layout_type = layout_type
         self.view_positions = self.layout_dict[self.layout_type]["positions"]
+
+        # Ensure keys is set - inherit from main subplot if available
+        if "keys" not in params or params["keys"] is None:
+            main_plot = subplots.get("main") if isinstance(subplots, dict) else None
+            if main_plot is not None and getattr(main_plot, "keys", None) is not None:
+                params["keys"] = main_plot.keys
+            else:
+                params["keys"] = [0]
+
+        # AdjointLayoutPlot is always nested inside another plot
+        self.top_level = False
 
         # The supplied (axes, view) objects as indexed by position
         super().__init__(subplots=subplots, **params)
@@ -276,15 +374,94 @@ class AdjointLayoutPlot(PlotlyPlot, GenericAdjointLayoutPlot):
 
     def generate_plot(self, key, ranges=None, is_geo=False):
         adjoined_plots = []
+        all_figs = []
+
+        ctx = LifecycleContext(
+            plot=self,
+            element=self.layout,
+            ranges=ranges,
+            key=key,
+        )
+        ctx.extra["adjoined_plots"] = adjoined_plots
+        ctx.extra["all_figs"] = all_figs
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.PRE_INIT, ctx)
+
         for pos in ["main", "right", "top"]:
             # Pos will be one of 'main', 'top' or 'right' or None
             subplot = self.subplots.get(pos, None)
             # If no view object or empty position, disable the axis
             if subplot:
-                adjoined_plots.append(subplot.generate_plot(key, ranges=ranges, is_geo=is_geo))
+                fig = subplot.generate_plot(key, ranges=ranges, is_geo=is_geo)
+                adjoined_plots.append(fig)
+                all_figs.append(fig)
         if not adjoined_plots:
             adjoined_plots = [None]
-        return adjoined_plots
+
+        def _create_figure(ctx: LifecycleContext) -> LifecycleContext:
+            # For AdjointLayout, the figure is the main subplot
+            main_fig = None
+            for f in ctx.extra["adjoined_plots"]:
+                if f is not None:
+                    main_fig = f
+                    break
+            return ctx.update(figure=main_fig, layout=adjoined_plots)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_FIGURE, ctx, _create_figure)
+
+        def _create_glyphs(ctx: LifecycleContext) -> LifecycleContext:
+            all_traces = []
+            for f in ctx.extra["all_figs"]:
+                if f is not None and "data" in f:
+                    all_traces.extend(f["data"])
+            return ctx.update(glyphs=all_traces)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_GLYPHS, ctx, _create_glyphs)
+
+        def _create_axes(ctx: LifecycleContext) -> LifecycleContext:
+            all_axes = {}
+            fig = ctx.figure
+            if fig is not None and "layout" in fig:
+                for k, v in fig["layout"].items():
+                    if k.startswith("xaxis") or k.startswith("yaxis"):
+                        all_axes[k] = v
+            return ctx.update(axes=all_axes)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_AXES, ctx, _create_axes)
+
+        def _create_legend(ctx: LifecycleContext) -> LifecycleContext:
+            legend = None
+            fig = ctx.figure
+            if fig is not None and "layout" in fig and "legend" in fig["layout"]:
+                legend = fig["layout"]["legend"]
+            return ctx.update(legend=legend)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_LEGEND, ctx, _create_legend)
+
+        def _create_colorbar(ctx: LifecycleContext) -> LifecycleContext:
+            colorbars = []
+            for trace in ctx.glyphs or []:
+                if "colorbar" in trace:
+                    colorbars.append(trace["colorbar"])
+            return ctx.update(colorbar=colorbars[0] if colorbars else None)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_COLORBAR, ctx, _create_colorbar)
+
+        def _create_tools(ctx: LifecycleContext) -> LifecycleContext:
+            tools_dict = {
+                "hover": ctx.figure.get("layout", {}).get("hovermode") if ctx.figure else None,
+            }
+            return ctx.update(tools=tools_dict)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_TOOLS, ctx, _create_tools)
+
+        def _finalize_style(ctx: LifecycleContext) -> LifecycleContext:
+            return ctx.update(state=ctx.extra["adjoined_plots"])
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.FINALIZE_STYLE, ctx, _finalize_style)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.POST_INIT, ctx)
+
+        return ctx.state
 
 
 class GridPlot(PlotlyPlot, GenericCompositePlot):
@@ -364,34 +541,106 @@ class GridPlot(PlotlyPlot, GenericCompositePlot):
     def generate_plot(self, key, ranges=None, is_geo=False):
         ranges = self.compute_ranges(self.layout, self.keys[-1], None)
         plots = [[] for r in range(self.cols)]
+        all_figs = []
+
+        ctx = LifecycleContext(
+            plot=self,
+            element=self.layout,
+            ranges=ranges,
+            key=key,
+        )
+        ctx.extra["plots"] = plots
+        ctx.extra["all_figs"] = all_figs
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.PRE_INIT, ctx)
+
         for i, coord in enumerate(self.layout.keys(full_grid=True)):
             r = i % self.cols
             subplot = self.subplots.get(wrap_tuple(coord), None)
             if subplot is not None:
                 plot = subplot.initialize_plot(ranges=ranges, is_geo=is_geo)
                 plots[r].append(plot)
+                all_figs.append(plot)
             else:
                 plots[r].append(None)
 
         # Compute final width/height
         w, h = self._get_size(subplot.width, subplot.height)
 
-        fig = figure_grid(
-            plots,
-            column_spacing=self.hspacing,
-            row_spacing=self.vspacing,
-            share_xaxis=True,
-            share_yaxis=True,
-            width=w,
-            height=h,
-        )
+        def _create_figure(ctx: LifecycleContext) -> LifecycleContext:
+            plots = ctx.extra["plots"]
+            fig = figure_grid(
+                plots,
+                column_spacing=self.hspacing,
+                row_spacing=self.vspacing,
+                share_xaxis=True,
+                share_yaxis=True,
+                width=w,
+                height=h,
+            )
 
-        fig["layout"].update(title=self._format_title(key))
+            fig["layout"].update(title=self._format_title(key))
 
-        self.drawn = True
+            self.drawn = True
 
-        self.handles["fig"] = fig
-        return self.handles["fig"]
+            self.handles["fig"] = fig
+            return ctx.update(figure=fig, layout=fig["layout"])
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_FIGURE, ctx, _create_figure)
+
+        def _create_glyphs(ctx: LifecycleContext) -> LifecycleContext:
+            all_traces = []
+            for f in ctx.extra["all_figs"]:
+                if f is not None and "data" in f:
+                    all_traces.extend(f["data"])
+            return ctx.update(glyphs=all_traces)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_GLYPHS, ctx, _create_glyphs)
+
+        def _create_axes(ctx: LifecycleContext) -> LifecycleContext:
+            all_axes = {}
+            fig = ctx.figure
+            if fig is not None and "layout" in fig:
+                for k, v in fig["layout"].items():
+                    if k.startswith("xaxis") or k.startswith("yaxis"):
+                        all_axes[k] = v
+            return ctx.update(axes=all_axes)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_AXES, ctx, _create_axes)
+
+        def _create_legend(ctx: LifecycleContext) -> LifecycleContext:
+            legend = None
+            fig = ctx.figure
+            if fig is not None and "layout" in fig and "legend" in fig["layout"]:
+                legend = fig["layout"]["legend"]
+            return ctx.update(legend=legend)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_LEGEND, ctx, _create_legend)
+
+        def _create_colorbar(ctx: LifecycleContext) -> LifecycleContext:
+            colorbars = []
+            for trace in ctx.glyphs or []:
+                if "colorbar" in trace:
+                    colorbars.append(trace["colorbar"])
+            return ctx.update(colorbar=colorbars[0] if colorbars else None)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_COLORBAR, ctx, _create_colorbar)
+
+        def _create_tools(ctx: LifecycleContext) -> LifecycleContext:
+            tools_dict = {
+                "hover": ctx.figure.get("layout", {}).get("hovermode") if ctx.figure else None,
+            }
+            return ctx.update(tools=tools_dict)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_TOOLS, ctx, _create_tools)
+
+        def _finalize_style(ctx: LifecycleContext) -> LifecycleContext:
+            return ctx.update(state=ctx.figure)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.FINALIZE_STYLE, ctx, _finalize_style)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.POST_INIT, ctx)
+
+        return ctx.state
 
     def _get_size(self, width, height):
         max_dim = max(self.layout.shape)

@@ -42,7 +42,7 @@ from ...core.util import (
 )
 from ...selection import NoOpSelectionDisplay
 from ..links import Link
-from ..lifecycle import LifecycleMixin
+from ..lifecycle import LifecycleContext, LifecycleMixin, LifecyclePhase
 from ..plot import (
     CallbackPlot,
     DimensionedPlot,
@@ -400,6 +400,20 @@ class CompositePlot(BokehPlot):
 
     """
 
+    def _get_resolved(self, element):
+        """Get resolved options for an element.
+
+        Returns an object with .plot.options and .style.options attributes.
+        """
+
+        class ResolvedOptions:
+            pass
+
+        resolved = ResolvedOptions()
+        resolved.plot = Store.lookup_options(self.renderer.backend, element, "plot")
+        resolved.style = Store.lookup_options(self.renderer.backend, element, "style")
+        return resolved
+
     sizing_mode = param.Selector(
         default=None,
         objects=[
@@ -689,6 +703,18 @@ class GridPlot(CompositePlot, GenericCompositePlot):
         ranges = self.compute_ranges(self.layout, self.keys[-1], None)
         passed_plots = list(plots)
         plots = [[None for c in range(self.cols)] for r in range(self.rows)]
+
+        ctx = LifecycleContext(
+            plot=self,
+            element=self.layout,
+            ranges=ranges,
+            key=self.keys[-1],
+        )
+        ctx.extra["passed_plots"] = passed_plots
+        ctx.extra["plots_grid"] = plots
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.PRE_INIT, ctx)
+
         for i, coord in enumerate(self.layout.keys(full_grid=True)):
             r = i % self.rows
             c = i // self.rows
@@ -700,34 +726,89 @@ class GridPlot(CompositePlot, GenericCompositePlot):
             else:
                 passed_plots.append(None)
 
-        plot = gridplot(
-            plots[::-1],
-            merge_tools=False,
-            sizing_mode=self.sizing_mode,
-            toolbar_location=self.toolbar,
-        )
-        if self.sync_legends:
-            sync_legends(plot)
-        plot = self._make_axes(plot)
-        if hasattr(plot, "toolbar") and self.merge_tools:
-            plot.toolbar = merge_tools(plots, hide_toolbar=True)
-        title = self._get_title_div(self.keys[-1])
-        if title:
-            plot = Column(title, plot)
-            self.handles["title"] = title
+        def _create_figure(ctx: LifecycleContext) -> LifecycleContext:
+            plots = ctx.extra["plots_grid"]
+            fig = gridplot(
+                plots[::-1],
+                merge_tools=False,
+                sizing_mode=self.sizing_mode,
+                toolbar_location=self.toolbar,
+            )
+            if self.sync_legends:
+                sync_legends(fig)
+            fig = self._make_axes(fig)
+            if hasattr(fig, "toolbar") and self.merge_tools:
+                fig.toolbar = merge_tools(plots, hide_toolbar=True)
+            title = self._get_title_div(self.keys[-1])
+            if title:
+                fig = Column(title, fig)
+                self.handles["title"] = title
 
-        self.handles["plot"] = plot
-        self.handles["plots"] = plots
+            self.handles["plot"] = fig
+            self.handles["plots"] = plots
 
-        if self.shared_datasource:
-            self.sync_sources()
+            if self.shared_datasource:
+                self.sync_sources()
 
-        if self.top_level:
-            self.init_links()
+            if self.top_level:
+                self.init_links()
 
-        self.drawn = True
+            self.drawn = True
+            return ctx.update(figure=fig, layout=fig)
 
-        return self.handles["plot"]
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_FIGURE, ctx, _create_figure)
+
+        def _create_axes(ctx: LifecycleContext) -> LifecycleContext:
+            all_axes = []
+            plots = ctx.extra["plots_grid"]
+            for row in plots:
+                for p in row:
+                    if p is not None and hasattr(p, "xaxis"):
+                        all_axes.extend(p.xaxis)
+                    if p is not None and hasattr(p, "yaxis"):
+                        all_axes.extend(p.yaxis)
+            return ctx.update(axes=tuple(all_axes) if all_axes else None)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_AXES, ctx, _create_axes)
+
+        def _create_legend(ctx: LifecycleContext) -> LifecycleContext:
+            all_legends = []
+            plots = ctx.extra["plots_grid"]
+            for row in plots:
+                for p in row:
+                    if p is not None and hasattr(p, "legend"):
+                        all_legends.extend(p.legend)
+            legend = all_legends[0] if all_legends else None
+            return ctx.update(legend=legend)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_LEGEND, ctx, _create_legend)
+
+        def _create_tools(ctx: LifecycleContext) -> LifecycleContext:
+            all_tools = []
+            plots = ctx.extra["plots_grid"]
+            hover_tool = None
+            for row in plots:
+                for p in row:
+                    if p is not None and hasattr(p, "tools"):
+                        all_tools.extend(p.tools)
+                        for tool in p.tools:
+                            if hasattr(tool, "tooltips"):
+                                hover_tool = tool
+            tools_dict = {
+                "all": all_tools,
+                "hover": hover_tool,
+            }
+            return ctx.update(tools=tools_dict)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_TOOLS, ctx, _create_tools)
+
+        def _finalize_style(ctx: LifecycleContext) -> LifecycleContext:
+            return ctx.update(state=ctx.figure)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.FINALIZE_STYLE, ctx, _finalize_style)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.POST_INIT, ctx)
+
+        return ctx.state
 
     def _make_axes(self, plot):
         width, height = self.renderer.get_size(plot)
@@ -1055,9 +1136,24 @@ class LayoutPlot(CompositePlot, GenericLayoutPlot):
         r_offset = 0
         col_offsets = defaultdict(int)
         tab_plots = []
+        all_subplots = []
 
         stretch_width = False
         stretch_height = False
+
+        ctx = LifecycleContext(
+            plot=self,
+            element=self.layout,
+            ranges=ranges,
+            key=self.keys[-1],
+        )
+        ctx.extra["opts"] = opts
+        ctx.extra["plot_grid"] = plot_grid
+        ctx.extra["tab_plots"] = tab_plots
+        ctx.extra["all_subplots"] = all_subplots
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.PRE_INIT, ctx)
+
         for r in range(self.rows):
             # Compute row offset
             row = [(k, sp) for k, sp in self.subplots.items() if k[0] == r]
@@ -1080,6 +1176,7 @@ class LayoutPlot(CompositePlot, GenericLayoutPlot):
 
                 shared_plots = list(passed_plots) if self.shared_axes else None
                 subplots = subplot.initialize_plot(ranges=ranges, plots=shared_plots)
+                all_subplots.extend(subplots)
                 nsubplots = len(subplots)
 
                 modes = {
@@ -1146,41 +1243,91 @@ class LayoutPlot(CompositePlot, GenericLayoutPlot):
         else:
             sizing_mode = None
 
-        # Wrap in appropriate layout model
-        if self.tabs:
-            plots = filter_toolboxes([p for t, p in tab_plots])
-            panels = [TabPanel(child=child, title=t) for t, child in tab_plots]
-            layout_plot = Tabs(tabs=panels, sizing_mode=sizing_mode)
-        else:
-            plot_grid = filter_toolboxes(plot_grid)
-            layout_plot = gridplot(
-                children=plot_grid,
-                toolbar_location=self.toolbar,
-                merge_tools=False,
-                sizing_mode=sizing_mode,
-            )
-            if self.sync_legends:
-                sync_legends(layout_plot)
-            if self.merge_tools:
-                layout_plot.toolbar = merge_tools(plot_grid, autohide=self.autohide_toolbar)
+        def _create_figure(ctx: LifecycleContext) -> LifecycleContext:
+            plot_grid = ctx.extra["plot_grid"]
+            tab_plots = ctx.extra["tab_plots"]
+            # Wrap in appropriate layout model
+            if self.tabs:
+                plots = filter_toolboxes([p for t, p in tab_plots])
+                panels = [TabPanel(child=child, title=t) for t, child in tab_plots]
+                layout_plot = Tabs(tabs=panels, sizing_mode=sizing_mode)
+            else:
+                plot_grid = filter_toolboxes(plot_grid)
+                layout_plot = gridplot(
+                    children=plot_grid,
+                    toolbar_location=self.toolbar,
+                    merge_tools=False,
+                    sizing_mode=sizing_mode,
+                )
+                if self.sync_legends:
+                    sync_legends(layout_plot)
+                if self.merge_tools:
+                    layout_plot.toolbar = merge_tools(plot_grid, autohide=self.autohide_toolbar)
 
-        title = self._get_title_div(self.keys[-1])
-        if title:
-            self.handles["title"] = title
-            layout_plot = Column(title, layout_plot, sizing_mode=sizing_mode)
+            title = self._get_title_div(self.keys[-1])
+            if title:
+                self.handles["title"] = title
+                layout_plot = Column(title, layout_plot, sizing_mode=sizing_mode)
 
-        self.handles["plot"] = layout_plot
-        self.handles["plots"] = plots
+            self.handles["plot"] = layout_plot
+            self.handles["plots"] = plots if self.tabs else all_subplots
 
-        if self.shared_datasource:
-            self.sync_sources()
+            if self.shared_datasource:
+                self.sync_sources()
 
-        if self.top_level:
-            self.init_links()
+            if self.top_level:
+                self.init_links()
 
-        self.drawn = True
+            self.drawn = True
+            return ctx.update(figure=layout_plot, layout=layout_plot)
 
-        return self.handles["plot"]
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_FIGURE, ctx, _create_figure)
+
+        def _create_axes(ctx: LifecycleContext) -> LifecycleContext:
+            all_axes = []
+            for p in ctx.extra["all_subplots"]:
+                if p is not None and hasattr(p, "xaxis"):
+                    all_axes.extend(p.xaxis)
+                if p is not None and hasattr(p, "yaxis"):
+                    all_axes.extend(p.yaxis)
+            return ctx.update(axes=tuple(all_axes) if all_axes else None)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_AXES, ctx, _create_axes)
+
+        def _create_legend(ctx: LifecycleContext) -> LifecycleContext:
+            all_legends = []
+            for p in ctx.extra["all_subplots"]:
+                if p is not None and hasattr(p, "legend"):
+                    all_legends.extend(p.legend)
+            legend = all_legends[0] if all_legends else None
+            return ctx.update(legend=legend)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_LEGEND, ctx, _create_legend)
+
+        def _create_tools(ctx: LifecycleContext) -> LifecycleContext:
+            all_tools = []
+            hover_tool = None
+            for p in ctx.extra["all_subplots"]:
+                if p is not None and hasattr(p, "tools"):
+                    all_tools.extend(p.tools)
+                    for tool in p.tools:
+                        if hasattr(tool, "tooltips"):
+                            hover_tool = tool
+            tools_dict = {
+                "all": all_tools,
+                "hover": hover_tool,
+            }
+            return ctx.update(tools=tools_dict)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_TOOLS, ctx, _create_tools)
+
+        def _finalize_style(ctx: LifecycleContext) -> LifecycleContext:
+            return ctx.update(state=ctx.figure)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.FINALIZE_STYLE, ctx, _finalize_style)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.POST_INIT, ctx)
+
+        return ctx.state
 
     @update_shared_sources
     def update_frame(self, key, ranges=None):
@@ -1209,6 +1356,17 @@ class AdjointLayoutPlot(BokehPlot, GenericAdjointLayoutPlot):
         self.layout_type = layout_type
         self.view_positions = self.layout_dict[self.layout_type]["positions"]
 
+        # Ensure keys is set - inherit from main subplot if available
+        if "keys" not in params or params["keys"] is None:
+            main_plot = subplots.get("main") if isinstance(subplots, dict) else None
+            if main_plot is not None and getattr(main_plot, "keys", None) is not None:
+                params["keys"] = main_plot.keys
+            else:
+                params["keys"] = [0]
+
+        # AdjointLayoutPlot is always nested inside another plot
+        self.top_level = False
+
         # The supplied (axes, view) objects as indexed by position
         super().__init__(subplots=subplots, **params)
 
@@ -1225,6 +1383,19 @@ class AdjointLayoutPlot(BokehPlot, GenericAdjointLayoutPlot):
         if plots is None:
             plots = []
         adjoined_plots = []
+        all_subplots = []
+
+        ctx = LifecycleContext(
+            plot=self,
+            element=self.layout,
+            ranges=ranges,
+            key=self.keys[-1],
+        )
+        ctx.extra["adjoined_plots"] = adjoined_plots
+        ctx.extra["all_subplots"] = all_subplots
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.PRE_INIT, ctx)
+
         for pos in self.view_positions:
             # Pos will be one of 'main', 'top' or 'right' or None
             subplot = self.subplots.get(pos, None)
@@ -1233,9 +1404,68 @@ class AdjointLayoutPlot(BokehPlot, GenericAdjointLayoutPlot):
                 adjoined_plots.append(empty_plot(0, 0))
             else:
                 passed_plots = plots + adjoined_plots
-                adjoined_plots.append(subplot.initialize_plot(ranges=ranges, plots=passed_plots))
-        self.drawn = True
-        return adjoined_plots or [None]
+                subplot_result = subplot.initialize_plot(ranges=ranges, plots=passed_plots)
+                adjoined_plots.append(subplot_result)
+                all_subplots.extend(subplot_result if isinstance(subplot_result, list) else [subplot_result])
+
+        def _create_figure(ctx: LifecycleContext) -> LifecycleContext:
+            adjoined_plots = ctx.extra["adjoined_plots"]
+            self.drawn = True
+            # For AdjointLayout, the figure is the main subplot
+            main_plot = None
+            for p in adjoined_plots:
+                if p is not None and not (hasattr(p, "id") and p.id == "empty-plot"):
+                    main_plot = p
+                    break
+            return ctx.update(figure=main_plot, layout=adjoined_plots)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_FIGURE, ctx, _create_figure)
+
+        def _create_axes(ctx: LifecycleContext) -> LifecycleContext:
+            all_axes = []
+            for p in ctx.extra["all_subplots"]:
+                if p is not None and hasattr(p, "xaxis"):
+                    all_axes.extend(p.xaxis)
+                if p is not None and hasattr(p, "yaxis"):
+                    all_axes.extend(p.yaxis)
+            return ctx.update(axes=tuple(all_axes) if all_axes else None)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_AXES, ctx, _create_axes)
+
+        def _create_legend(ctx: LifecycleContext) -> LifecycleContext:
+            all_legends = []
+            for p in ctx.extra["all_subplots"]:
+                if p is not None and hasattr(p, "legend"):
+                    all_legends.extend(p.legend)
+            legend = all_legends[0] if all_legends else None
+            return ctx.update(legend=legend)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_LEGEND, ctx, _create_legend)
+
+        def _create_tools(ctx: LifecycleContext) -> LifecycleContext:
+            all_tools = []
+            hover_tool = None
+            for p in ctx.extra["all_subplots"]:
+                if p is not None and hasattr(p, "tools"):
+                    all_tools.extend(p.tools)
+                    for tool in p.tools:
+                        if hasattr(tool, "tooltips"):
+                            hover_tool = tool
+            tools_dict = {
+                "all": all_tools,
+                "hover": hover_tool,
+            }
+            return ctx.update(tools=tools_dict)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_TOOLS, ctx, _create_tools)
+
+        def _finalize_style(ctx: LifecycleContext) -> LifecycleContext:
+            return ctx.update(state=ctx.extra["adjoined_plots"])
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.FINALIZE_STYLE, ctx, _finalize_style)
+        ctx = self.run_lifecycle_phase(LifecyclePhase.POST_INIT, ctx)
+
+        return ctx.state
 
     def update_frame(self, key, ranges=None):
         plot = None

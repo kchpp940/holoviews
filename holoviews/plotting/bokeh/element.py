@@ -2553,25 +2553,25 @@ class ElementPlot(BokehPlot, GenericElementPlot):
 
         ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_FIGURE, ctx, _create_figure)
 
-        def _create_axes(ctx: LifecycleContext) -> LifecycleContext:
-            axes_tuple = (self.handles["xaxis"], self.handles["yaxis"])
-            return ctx.update(axes=axes_tuple)
-
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_AXES, ctx, _create_axes)
-
         def _create_glyphs(ctx: LifecycleContext) -> LifecycleContext:
             source = ctx.extra["source"]
             if self.autorange:
                 self._setup_autorange()
             self._init_glyphs(ctx.figure, element, ctx.ranges, source)
-            if not self.overlaid:
-                self._update_plot(ctx.key, ctx.figure, style_element)
-                self._update_ranges(style_element, ctx.ranges)
             glyph = self.handles.get("glyph")
             glyph_renderer = self.handles.get("glyph_renderer")
             return ctx.update(glyphs=glyph_renderer if glyph_renderer is not None else glyph)
 
         ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_GLYPHS, ctx, _create_glyphs)
+
+        def _create_axes(ctx: LifecycleContext) -> LifecycleContext:
+            if not self.overlaid:
+                self._update_plot(ctx.key, ctx.figure, style_element)
+                self._update_ranges(style_element, ctx.ranges)
+            axes_tuple = (self.handles["xaxis"], self.handles["yaxis"])
+            return ctx.update(axes=axes_tuple)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_AXES, ctx, _create_axes)
 
         for cb in self.callbacks:
             cb.initialize()

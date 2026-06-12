@@ -147,6 +147,86 @@ class ElementPlot(GenericElementPlot, MPLPlot):
             except Exception as e:
                 self.param.warning(f"Plotting hook {hook!r} could not be applied:\n\n {e}")
 
+    def _finalize_axis_core(
+        self,
+        key,
+        element=None,
+        title=None,
+        dimensions=None,
+        ranges=None,
+        xticks=None,
+        yticks=None,
+        zticks=None,
+        xlabel=None,
+        ylabel=None,
+        zlabel=None,
+    ):
+        """Core axis configuration logic, without lifecycle context creation.
+
+        This method contains the core axes configuration that should happen
+        during the CREATE_AXES phase. Legend, colorbar, and tools configuration
+        are handled in their respective lifecycle phases.
+        """
+        if element is None:
+            element = self._get_frame(key)
+        self.current_frame = element
+        if not dimensions and element and not self.subplots:
+            el = element.traverse(lambda x: x, [Element])
+            if el:
+                el = el[0]
+                dimensions = el.nodes.dimensions() if isinstance(el, Graph) else el.dimensions()
+        axis = self.handles["axis"]
+
+        subplots = list(self.subplots.values()) if self.subplots else []
+
+        if self.zorder == 0 and key is not None:
+            if self.bgcolor:
+                if MPL_VERSION <= (1, 5, 9):
+                    axis.set_axis_bgcolor(self.bgcolor)
+                else:
+                    axis.set_facecolor(self.bgcolor)
+
+            title = self._format_title(key)
+            if self.show_title and title is not None:
+                fontsize = self._fontsize("title")
+                if "title" in self.handles:
+                    self.handles["title"].set_text(title)
+                else:
+                    self.handles["title"] = axis.set_title(title, **fontsize)
+
+            self._subplot_label(axis)
+
+            if element is not None and not any(not sp._has_axes for sp in [self, *subplots]):
+                if dimensions:
+                    self._set_labels(axis, dimensions, xlabel, ylabel, zlabel)
+                else:
+                    if self.xlabel is not None:
+                        axis.set_xlabel(self.xlabel)
+                    if self.ylabel is not None:
+                        axis.set_ylabel(self.ylabel)
+                    if self.zlabel is not None and hasattr(axis, "set_zlabel"):
+                        axis.set_zlabel(self.zlabel)
+
+                if not subplots:
+                    self._update_grid(axis)
+
+                if self.logx:
+                    axis.set_xscale("log")
+                if self.logy:
+                    axis.set_yscale("log")
+
+                if not (isinstance(self.projection, str) and self.projection == "3d"):
+                    self._set_axis_position(axis, "x", self.xaxis)
+                    self._set_axis_position(axis, "y", self.yaxis)
+
+                if self.apply_ticks:
+                    self._finalize_ticks(axis, dimensions, xticks, yticks, zticks)
+
+                self._set_axis_limits(axis, element, subplots, ranges)
+
+            if self.aspect is not None and self.projection != "polar" and not self.adjoined:
+                self._set_aspect(axis, self.aspect)
+
     def _finalize_axis(
         self,
         key,
@@ -751,11 +831,6 @@ class ElementPlot(GenericElementPlot, MPLPlot):
 
         ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_FIGURE, ctx, _create_figure)
 
-        def _create_axes(ctx: LifecycleContext) -> LifecycleContext:
-            return ctx.update(axes=ax)
-
-        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_AXES, ctx, _create_axes)
-
         style = dict(zorder=self.zorder, **self.style[self.cyclic_index])
         if self.show_legend:
             style["label"] = element.label
@@ -772,8 +847,18 @@ class ElementPlot(GenericElementPlot, MPLPlot):
         self._trigger = []
         Stream.trigger(trigger)
 
+        def _create_axes(ctx: LifecycleContext) -> LifecycleContext:
+            axis_kwargs = ctx.extra.get("axis_kwargs", {})
+            self._finalize_axis_core(ctx.key, element, ranges, **axis_kwargs)
+            return ctx.update(axes=ax)
+
+        ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_AXES, ctx, _create_axes)
+
         def _create_legend(ctx: LifecycleContext) -> LifecycleContext:
             legend = ax.get_legend()
+            if legend and self.zorder == 0:
+                legend.set_visible(self.show_legend)
+                self.handles["bbox_extra_artists"] += [legend]
             return ctx.update(legend=legend)
 
         def _create_colorbar(ctx: LifecycleContext) -> LifecycleContext:
@@ -787,17 +872,21 @@ class ElementPlot(GenericElementPlot, MPLPlot):
             return ctx.update(colorbar=colorbar)
 
         def _create_tools(ctx: LifecycleContext) -> LifecycleContext:
-            format_coord = getattr(ax, "format_coord", None)
+            format_coord = self._get_mpl_format_coord(element)
+            if format_coord is not None:
+                ax.format_coord = format_coord
             tools_dict = {
                 "format_coord": format_coord,
-                "hover_data": None,
+                "hover_data": element._get_hover_data() if hasattr(element, "_get_hover_data") else None,
             }
             return ctx.update(tools=tools_dict)
 
         def _finalize_style(ctx: LifecycleContext) -> LifecycleContext:
-            axis_kwargs = ctx.extra.get("axis_kwargs", {})
-            result = self._finalize_axis(self.keys[-1], element=element, ranges=ranges, **axis_kwargs)
-            return ctx.update(state=result)
+            if not self.drawn:
+                self._finalize_artist(element)
+            self._execute_hooks(element)
+            self.drawn = True
+            return ctx.update(state=ax.figure)
 
         ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_LEGEND, ctx, _create_legend)
         ctx = self.run_lifecycle_phase(LifecyclePhase.CREATE_COLORBAR, ctx, _create_colorbar)

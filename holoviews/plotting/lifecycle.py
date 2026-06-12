@@ -26,20 +26,197 @@ Architecture Overview:
 
 Lifecycle Phases (in order):
 
-    1.  pre_init        - Before any plot initialization begins
-    2.  create_figure   - Create the figure/canvas
-    3.  create_layout   - Create layout/container
-    4.  create_axes     - Create axes with labels, ticks, ranges
-    5.  create_glyphs   - Create glyphs/artists/traces from data
-    6.  create_legend   - Create legend
-    7.  create_colorbar - Create colorbar
-    8.  create_tools    - Create tools (hover, zoom, pan, etc.)
-    9.  finalize_style  - Apply final styling (themes, fonts, etc.)
-    10. post_init       - After all initialization is complete
+    1.  PRE_INIT        - Before any plot initialization begins
+    2.  CREATE_FIGURE   - Create the figure/canvas
+    3.  CREATE_LAYOUT   - Create layout/container
+    4.  CREATE_AXES     - Create axes with labels, ticks, ranges
+    5.  CREATE_GLYPHS   - Create glyphs/artists/traces from data
+    6.  CREATE_LEGEND   - Create legend
+    7.  CREATE_COLORBAR - Create colorbar
+    8.  CREATE_TOOLS    - Create tools (hover, zoom, pan, etc.)
+    9.  FINALIZE_STYLE  - Apply final styling (themes, fonts, etc.)
+    10. POST_INIT       - After all initialization is complete
 
 Each creation phase (create_*) runs in the pattern:
     run hooks BEFORE phase -> run backend creation -> run hooks AFTER phase
 This ensures hooks always have access to the created, mutable objects.
+
+Lifecycle Phase Contract
+========================
+
+Each phase has a well-defined contract specifying which objects are:
+- R/O: Read-only - available for inspection but modifications may be overwritten
+- R/W: Read-write - modifications will be preserved through subsequent phases
+- OVERWRITTEN: Will be overwritten by a later phase - modify at your own risk
+
+Legend:
+    [R/O]  - Object exists, may be overwritten by later phases
+    [R/W]  - Object exists, modifications are preserved
+    [NEW]  - Object is created by this phase's create_fn
+    [N/A]  - Object does not exist yet
+
+Phase: PRE_INIT
+---------------
+Runs before any backend-specific initialization.
+- element:   [R/W]  The Element being plotted
+- ranges:    [R/W]  Computed ranges for the plot
+- key:       [R/W]  The current key/frame being rendered
+- figure:    [N/A]
+- axes:      [N/A]
+- glyphs:    [N/A]
+- legend:    [N/A]
+- colorbar:  [N/A]
+- tools:     [N/A]
+- layout:    [N/A]
+- state:     [N/A]
+Notes: Good place to validate input or preprocess data.
+
+Phase: CREATE_FIGURE
+--------------------
+Creates the figure/canvas object.
+- Before:
+  figure:    [N/A]
+  All other objects from PRE_INIT are [R/O]
+- After:
+  figure:    [NEW, R/W]  The created figure object
+  layout:    [NEW, R/W]  The figure as layout container
+  element:   [R/O]
+  ranges:    [R/O]
+  axes:      [OVERWRITTEN]  Initial axes may be replaced by CREATE_AXES
+  Others:    [N/A]
+Notes: Figure object is fully mutable after this phase.
+
+Phase: CREATE_LAYOUT
+--------------------
+Creates layout/container (primarily for Plotly and composite plots).
+- Before:
+  figure:    [R/O]
+- After:
+  layout:    [NEW, R/W]  Layout dict (Plotly) or layout object
+  figure:    [R/O]
+  Others:    Inherit from CREATE_FIGURE
+Notes: For Bokeh/MPL, layout is often the same as figure.
+
+Phase: CREATE_AXES
+------------------
+Creates and configures axes with labels, ticks, ranges.
+This is the FINAL phase for axes configuration - modifications here are preserved.
+- Before:
+  figure:    [R/O]
+  glyphs:    [R/O]  Glyphs may be created before axes (backends vary)
+- After:
+  axes:      [NEW, R/W]  Axes tuple (xaxis, yaxis) or Axes object
+  figure:    [R/O]
+  glyphs:    [R/O]
+  All axes properties (labels, ticks, ranges, grid, log scale, etc.) are FINAL
+  after this phase - no subsequent phase will overwrite them.
+Notes: This is the recommended phase for modifying axes properties.
+
+Phase: CREATE_GLYPHS
+--------------------
+Creates glyphs/artists/traces from data.
+- Before:
+  figure:    [R/O]
+  axes:      [R/O]  Do not modify axes here - changes may be overwritten!
+  element:   [R/O]
+  ranges:    [R/O]
+- After:
+  glyphs:    [NEW, R/W]  The created glyph/artist/trace object(s)
+  figure:    [R/O]
+  axes:      [R/W]  Axes are FINAL after CREATE_AXES
+Notes: Glyph creation order varies by backend:
+  - Bokeh: CREATE_GLYPHS before CREATE_AXES
+  - MPL:   CREATE_GLYPHS before CREATE_AXES
+  - Plotly: CREATE_GLYPHS before CREATE_LAYOUT and CREATE_AXES
+
+Phase: CREATE_LEGEND
+--------------------
+Creates the legend.
+- Before:
+  figure:    [R/O]
+  axes:      [R/W]  (FINAL - from CREATE_AXES)
+  glyphs:    [R/O]
+- After:
+  legend:    [NEW, R/W]  The legend object (or None if no legend)
+  figure:    [R/O]
+  axes:      [R/W]  (FINAL)
+  glyphs:    [R/O]
+
+Phase: CREATE_COLORBAR
+----------------------
+Creates the colorbar.
+- Before:
+  figure:    [R/O]
+  axes:      [R/W]  (FINAL)
+  glyphs:    [R/O]
+  legend:    [R/O]
+- After:
+  colorbar:  [NEW, R/W]  The colorbar object (or None if no colorbar)
+  figure:    [R/O]
+  axes:      [R/W]  (FINAL)
+  glyphs:    [R/O]
+  legend:    [R/O]
+
+Phase: CREATE_TOOLS
+-------------------
+Creates tools (hover, zoom, pan, etc.).
+- Before:
+  figure:    [R/O]
+  axes:      [R/W]  (FINAL)
+  glyphs:    [R/O]
+  legend:    [R/O]
+  colorbar:  [R/O]
+- After:
+  tools:     [NEW, R/W]  Dict of tool objects (hover, zoom, etc.)
+  figure:    [R/O]
+  axes:      [R/W]  (FINAL)
+  Others:    [R/O]
+
+Phase: FINALIZE_STYLE
+---------------------
+Applies final styling and executes hooks.
+This is the LAST phase where modifications should be made.
+- Before:
+  ALL objects are available and [R/W]
+  figure:    [R/W]
+  axes:      [R/W]  (FINAL)
+  glyphs:    [R/W]
+  legend:    [R/W]
+  colorbar:  [R/W]
+  tools:     [R/W]
+- After:
+  state:     [NEW, R/W]  The final plot state (figure object)
+  ALL objects are [R/W] but this is the last chance to modify them.
+Notes: This is the recommended phase for theme application and final touches.
+       All modifications here are guaranteed to be preserved.
+
+Phase: POST_INIT
+----------------
+After all initialization is complete.
+- Before:
+  ALL objects are [R/W]
+  state:     [R/W]  The final plot state
+- After:
+  Same as before
+Notes: Good place for cleanup, logging, or post-processing that doesn't
+       modify the visual output.
+
+Summary of Key Modification Points:
+===================================
+- For axes labels/ticks/ranges:   Use CREATE_AXES [after]
+- For glyph styling:              Use CREATE_GLYPHS [after] or FINALIZE_STYLE
+- For legend customization:       Use CREATE_LEGEND [after] or FINALIZE_STYLE
+- For colorbar customization:     Use CREATE_COLORBAR [after] or FINALIZE_STYLE
+- For tool configuration:         Use CREATE_TOOLS [after] or FINALIZE_STYLE
+- For figure-wide styling:        Use FINALIZE_STYLE [before/after]
+- For themes:                     Use FINALIZE_STYLE (guaranteed final)
+- For debugging/logging:          Use any phase, or POST_INIT
+
+WARNING:
+- Do NOT modify axes in CREATE_GLYPHS [after] - they may be overwritten by
+  CREATE_AXES in some backends.
+- Do NOT rely on object presence in phases marked [N/A].
+- Always check for None before accessing optional objects (legend, colorbar, etc.).
 
 Usage for Backend Integration:
 
