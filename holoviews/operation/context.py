@@ -509,6 +509,50 @@ class OperationExecutionContext:
     # ==================================================================
     # Product metadata helpers
     # ==================================================================
+    def finalize_product_meta(self) -> None:
+        """Collect execution context state into ``product_meta``.
+
+        Called automatically by :meth:`attach_product_meta` before
+        attaching.  Merges the following keys into ``product_meta``
+        (existing keys are *not* overwritten):
+
+        ============  ===================================  ===========
+        Key           Source                               Type
+        ============  ===================================  ===========
+        bounds        ctx.bounds                           tuple
+        plot_id       ctx.plot_id                          hashable
+        precompute    ctx.use_precompute                   bool
+        cached        ctx.has_cached()                     bool
+        x_range       ctx.x_range                          tuple
+        y_range       ctx.y_range                          tuple
+        width         ctx.width                            int
+        height        ctx.height                           int
+        pixel_ratio   ctx.pixel_ratio                      float
+        xtype         ctx.xtype                            str
+        ytype         ctx.ytype                            str
+        ============  ===================================  ===========
+
+        Additionally, all entries from ``sampling_meta`` are merged in
+        under the ``sampling.`` prefix (e.g. ``sampling.x_span``).
+        """
+        defaults: ProductMetadata = {
+            "bounds": self.bounds,
+            "plot_id": self.plot_id,
+            "precompute": self.use_precompute,
+            "cached": self.has_cached(),
+            "x_range": self.x_range,
+            "y_range": self.y_range,
+            "width": self.width,
+            "height": self.height,
+            "pixel_ratio": self.pixel_ratio,
+            "xtype": self.xtype,
+            "ytype": self.ytype,
+        }
+        for k, v in defaults.items():
+            self.product_meta.setdefault(k, v)
+        for k, v in self.sampling_meta.items():
+            self.product_meta.setdefault(f"sampling.{k}", v)
+
     def set_product_meta(self, **kwargs: Any) -> None:
         """Atomically update product metadata (output-diagnostics bag)."""
         self.product_meta.update(kwargs)
@@ -517,22 +561,51 @@ class OperationExecutionContext:
         """Lookup a single product-metadata entry."""
         return self.product_meta.get(key, default)
 
-    def attach_product_meta(self, element: Any) -> Any:
-        """Attach ``product_meta`` onto an output element's ``.metadata`` dict.
+    def attach_product_meta(self, element: Any, strategy: str = "clone") -> Any:
+        """Attach execution context metadata to an output element.
 
-        If the element has a ``metadata`` attribute (dict-like), the
-        product_meta entries are merged in-place and the same element
-        is returned.  If the element has no metadata attribute the
-        element is returned unchanged.
+        **Strategy** controls how metadata is written:
 
-        Returns the element so callers can simply chain:
+        ``"clone"`` *(default)*
+            Creates a ``shared_data=False`` clone so the original
+            element is never mutated.  The clone receives a
+            ``._execution_context`` attribute carrying the full
+            ``product_meta`` dict.  This is safe for cached / reused
+            elements because the source is untouched.
+
+        ``"inplace"``
+            Writes ``._execution_context`` directly onto the element.
+            Faster, but the element is mutated — only use when the
+            caller has just created the element and no other reference
+            exists.
+
+        ``"skip"``
+            No-op — returns the element unchanged.  Useful for
+            short-circuit code paths.
+
+        Before attaching, :meth:`finalize_product_meta` is called so
+        that bounds, plot_id, sampling info, etc. are automatically
+        collected from the context.
+
+        Returns the (possibly cloned) element so callers can chain:
         ``return ctx.attach_product_meta(result)``.
         """
+        if strategy == "skip":
+            return element
+
+        self.finalize_product_meta()
+
         if not self.product_meta:
             return element
-        if hasattr(element, 'metadata') and isinstance(element.metadata, dict):
-            element.metadata.update(self.product_meta)
-        return element
+
+        if strategy == "inplace":
+            element._execution_context = dict(self.product_meta)
+            return element
+
+        # "clone" — safe default
+        cloned = element.clone(shared_data=False)
+        cloned._execution_context = dict(self.product_meta)
+        return cloned
 
     # ==================================================================
     # Artifact helpers (for passing arbitrary data between operations)

@@ -611,7 +611,10 @@ class aggregate(LineAggregationOperation):
         params = self._get_agg_params(element, x, y, agg_fn, (x0, y0, x1, y1))
 
         if x is None or y is None or ctx.is_empty():
-            return self._empty_agg(element, x, y, ctx.width, ctx.height, xs, ys, agg_fn, **params)
+            return ctx.attach_product_meta(
+                self._empty_agg(element, x, y, ctx.width, ctx.height, xs, ys, agg_fn, **params),
+                strategy="inplace",
+            )
         elif getattr(data, "interface", None) is not DaskInterface and not len(data):
             empty_val = 0 if isinstance(agg_fn, ds.count) else np.nan
             xarray = xr.DataArray(
@@ -619,7 +622,9 @@ class aggregate(LineAggregationOperation):
                 dims=[y.name, x.name],
                 coords={x.name: xs, y.name: ys},
             )
-            return self.p.element_type(xarray, **params)
+            return ctx.attach_product_meta(
+                self.p.element_type(xarray, **params), strategy="inplace"
+            )
 
         cvs = ds.Canvas(plot_width=ctx.width, plot_height=ctx.height,
                         x_range=ctx.x_range, y_range=ctx.y_range)
@@ -641,7 +646,9 @@ class aggregate(LineAggregationOperation):
             params["vdims"] = list(map(str, agg.coords[agg_fn.column].data))
         elif agg_state == AggState.AGG_SEL_BY:
             params["vdims"] = [d for d in agg.data_vars if d not in agg.attrs["selector_columns"]]
-        return self.p.element_type(agg, **params)
+        return ctx.attach_product_meta(
+            self.p.element_type(agg, **params), strategy="inplace"
+        )
 
     def _apply_datashader(self, dfdata, cvs_fn, agg_fn, x, y, agg_state: AggState):
         agg_kwargs = {}
@@ -774,7 +781,7 @@ class overlay_aggregate(aggregate):
         if is_sum:
             agg.data[column].values[mask] = np.nan
 
-        return agg.clone(bounds=bbox)
+        return ctx.attach_product_meta(agg.clone(bounds=bbox), strategy="inplace")
 
 
 class area_aggregate(AggregationOperation):
@@ -811,13 +818,18 @@ class area_aggregate(AggregationOperation):
         params = self._get_agg_params(element, x, y, agg_fn, (x0, y0, x1, y1))
 
         if ctx.is_empty():
-            return self._empty_agg(element, x, y, ctx.width, ctx.height, xs, ys, agg_fn, **params)
+            return ctx.attach_product_meta(
+                self._empty_agg(element, x, y, ctx.width, ctx.height, xs, ys, agg_fn, **params),
+                strategy="inplace",
+            )
 
         agg = cvs.area(df, x.name, y.name, agg_fn, axis=0, y_stack=ystack)
         if ctx.xtype == "datetime":
             agg[x.name] = agg[x.name].astype("datetime64[ns]")
 
-        return self.p.element_type(agg, **params)
+        return ctx.attach_product_meta(
+            self.p.element_type(agg, **params), strategy="inplace"
+        )
 
 
 class spread_aggregate(area_aggregate):
@@ -904,7 +916,10 @@ class spikes_aggregate(LineAggregationOperation):
         params = self._get_agg_params(element, x, y, agg_fn, (x0, y0, x1, y1))
 
         if ctx.is_empty():
-            return self._empty_agg(element, x, y, ctx.width, ctx.height, xs, ys, agg_fn, **params)
+            return ctx.attach_product_meta(
+                self._empty_agg(element, x, y, ctx.width, ctx.height, xs, ys, agg_fn, **params),
+                strategy="inplace",
+            )
 
         cvs = ds.Canvas(plot_width=ctx.width, plot_height=ctx.height,
                         x_range=ctx.x_range, y_range=ctx.y_range)
@@ -918,7 +933,9 @@ class spikes_aggregate(LineAggregationOperation):
         if ctx.xtype == "datetime":
             agg[x.name] = agg[x.name].astype("datetime64[ns]")
 
-        return self.p.element_type(agg, **params)
+        return ctx.attach_product_meta(
+            self.p.element_type(agg, **params), strategy="inplace"
+        )
 
 
 class geom_aggregate(AggregationOperation):
@@ -960,7 +977,10 @@ class geom_aggregate(AggregationOperation):
         params = self._get_agg_params(element, x0d, y0d, agg_fn, (x0, y0, x1, y1))
 
         if ctx.is_empty():
-            return self._empty_agg(element, x0d, y0d, ctx.width, ctx.height, xs, ys, agg_fn, **params)
+            return ctx.attach_product_meta(
+                self._empty_agg(element, x0d, y0d, ctx.width, ctx.height, xs, ys, agg_fn, **params),
+                strategy="inplace",
+            )
 
         cvs = ds.Canvas(plot_width=ctx.width, plot_height=ctx.height,
                         x_range=ctx.x_range, y_range=ctx.y_range)
@@ -981,7 +1001,9 @@ class geom_aggregate(AggregationOperation):
             params["vdims"] = list(map(str, agg.coords[agg_fn.column].data))
         elif agg_state == AggState.AGG_SEL_BY:
             params["vdims"] = [d for d in agg.data_vars if d not in agg.attrs["selector_columns"]]
-        return self.p.element_type(agg, **params)
+        return ctx.attach_product_meta(
+            self.p.element_type(agg, **params), strategy="inplace"
+        )
 
 
 class segments_aggregate(geom_aggregate, LineAggregationOperation):
@@ -1127,7 +1149,10 @@ class regrid(AggregationOperation):
                 params["xdensity"] = 1
             if ctx.height == 0:
                 params["ydensity"] = 1
-            return element.clone((xs, ys, np.zeros((ctx.height, ctx.width))), **params)
+            return ctx.attach_product_meta(
+                element.clone((xs, ys, np.zeros((ctx.height, ctx.width))), **params),
+                strategy="inplace",
+            )
 
         cvs = ds.Canvas(plot_width=ctx.width, plot_height=ctx.height,
                         x_range=ctx.x_range, y_range=ctx.y_range)
@@ -1145,7 +1170,10 @@ class regrid(AggregationOperation):
             regridded[vd] = rarray
         regridded = xr.Dataset(regridded)
 
-        return element.clone(regridded, datatype=["xarray", *element.datatype], **params)
+        return ctx.attach_product_meta(
+            element.clone(regridded, datatype=["xarray", *element.datatype], **params),
+            strategy="inplace",
+        )
 
 
 class contours_rasterize(aggregate):
@@ -1269,7 +1297,10 @@ class trimesh_rasterize(aggregate):
                 params["xdensity"] = 1
             if ctx.height == 0:
                 params["ydensity"] = 1
-            return Image((ctx.xs, ctx.ys, np.zeros((ctx.height, ctx.width))), **params)
+            return ctx.attach_product_meta(
+                Image((ctx.xs, ctx.ys, np.zeros((ctx.height, ctx.width))), **params),
+                strategy="inplace",
+            )
 
         if wireframe:
             segments = precomputed["segments"]
@@ -1291,7 +1322,7 @@ class trimesh_rasterize(aggregate):
         else:
             interpolate = bool(self.p.interpolation)
             agg = cvs.trimesh(pts, simplices, agg=agg, interp=interpolate, mesh=mesh)
-        return Image(agg, **params)
+        return ctx.attach_product_meta(Image(agg, **params), strategy="inplace")
 
 
 class quadmesh_rasterize(trimesh_rasterize):
@@ -1325,7 +1356,10 @@ class quadmesh_rasterize(trimesh_rasterize):
         params = dict(get_param_values(element), datatype=["xarray"], bounds=(x0, y0, x1, y1))
 
         if ctx.is_empty():
-            return self._empty_agg(element, x, y, ctx.width, ctx.height, xs, ys, agg_fn, **params)
+            return ctx.attach_product_meta(
+                self._empty_agg(element, x, y, ctx.width, ctx.height, xs, ys, agg_fn, **params),
+                strategy="inplace",
+            )
 
         cvs = ds.Canvas(plot_width=ctx.width, plot_height=ctx.height,
                         x_range=ctx.x_range, y_range=ctx.y_range)
@@ -1338,7 +1372,7 @@ class quadmesh_rasterize(trimesh_rasterize):
         if ctx.ytype == "datetime":
             agg[ydim] = agg[ydim].astype("datetime64[ns]")
 
-        return Image(agg, **params)
+        return ctx.attach_product_meta(Image(agg, **params), strategy="inplace")
 
 
 class shade(LinkableOperation):
@@ -1648,7 +1682,10 @@ class geometry_rasterize(LineAggregationOperation):
         params = self._get_agg_params(element, xdim, ydim, agg_fn, (x0, y0, x1, y1))
 
         if ctx.is_empty():
-            return self._empty_agg(element, xdim, ydim, ctx.width, ctx.height, ctx.xs, ctx.ys, agg_fn, **params)
+            return ctx.attach_product_meta(
+                self._empty_agg(element, xdim, ydim, ctx.width, ctx.height, ctx.xs, ctx.ys, agg_fn, **params),
+                strategy="inplace",
+            )
 
         cvs = ds.Canvas(plot_width=ctx.width, plot_height=ctx.height,
                         x_range=ctx.x_range, y_range=ctx.y_range)
@@ -1682,13 +1719,18 @@ class geometry_rasterize(LineAggregationOperation):
         agg = agg.rename(rename_dict)
 
         if agg.ndim == 2:
-            return self.p.element_type(agg, **params)
+            return ctx.attach_product_meta(
+                self.p.element_type(agg, **params), strategy="inplace"
+            )
         else:
             layers = {}
             for c in agg.coords[agg_fn.column].data:
                 cagg = agg.sel(**{agg_fn.column: c})
                 layers[c] = self.p.element_type(cagg, **params)
-            return NdOverlay(layers, kdims=[element.get_dimension(agg_fn.column)])
+            return ctx.attach_product_meta(
+                NdOverlay(layers, kdims=[element.get_dimension(agg_fn.column)]),
+                strategy="inplace",
+            )
 
 
 class rasterize(AggregationOperation):
