@@ -10,6 +10,14 @@ from dataclasses import dataclass, field
 from functools import cache
 from pathlib import Path
 
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except Exception:  # pragma: no cover
+        tomllib = None  # type: ignore[assignment]
+
 from .dependencies import _is_installed, _no_import_version
 
 if t.TYPE_CHECKING:
@@ -171,48 +179,116 @@ _STATIC_EXPORT_DEPS: dict[str, dict[str, dict[str, t.Any]]] = {
     },
 }
 
-_PYPROJECT_EXTRAS: dict[str, list[str]] = {
-    "recommended": ["matplotlib", "plotly"],
-}
 
-_PIXI_FEATURE_GROUPS: dict[str, list[str]] = {
-    "required": ["bokeh", "panel", "param", "numpy", "pandas"],
-    "optional": [
-        "datashader", "matplotlib", "plotly", "xarray", "dask",
-        "cftime", "networkx", "polars", "scipy", "shapely", "pillow",
-        "selenium", "ffmpeg",
-    ],
-    "test-core": ["pytest"],
-    "test-ui": ["playwright"],
-    "test-gpu": ["cudf", "cupy"],
-}
+_HV_ROOT = Path(__file__).resolve().parents[3]
 
-_CI_GROUPS: dict[str, dict[str, t.Any]] = {
-    "core": {
-        "environments": ["test-core"],
-        "backends": ["bokeh"],
-        "optional": False,
-        "description": "Core tests with minimal dependencies (bokeh only)",
-    },
-    "unit": {
-        "environments": ["test-310", "test-311", "test-312", "test-313", "test-314"],
-        "backends": ["bokeh", "matplotlib", "plotly"],
-        "optional": True,
-        "description": "Full unit tests with all backends and optional deps",
-    },
-    "ui": {
-        "environments": ["test-ui"],
-        "backends": ["bokeh"],
-        "optional": True,
-        "description": "Browser UI tests (requires playwright)",
-    },
-    "type": {
-        "environments": ["type"],
-        "backends": [],
-        "optional": False,
-        "description": "Static type checking",
-    },
-}
+
+def _load_toml(path: Path) -> dict[str, t.Any] | None:
+    if tomllib is None or not path.exists():
+        return None
+    try:
+        with path.open("rb") as f:
+            return tomllib.load(f)
+    except Exception:
+        return None
+
+
+def _extract_package_name(dep_spec: str) -> str:
+    for sep in [" ", ">=", "<=", "==", "!=", "~=", ">", "<", ";", "["]:
+        if sep in dep_spec:
+            dep_spec = dep_spec.split(sep)[0]
+    return dep_spec.strip().lower().replace("-", "_").replace(".", "_")
+
+
+def _load_pyproject_extras() -> dict[str, list[str]]:
+    pyproject = _load_toml(_HV_ROOT / "pyproject.toml")
+    if pyproject is None:
+        return {"recommended": ["matplotlib", "plotly"]}
+    extras_raw = pyproject.get("project", {}).get("optional-dependencies", {})
+    result: dict[str, list[str]] = {}
+    for name, deps in extras_raw.items():
+        result[name] = [_extract_package_name(d) for d in deps]
+    return result
+
+
+_PYPROJECT_EXTRAS: dict[str, list[str]] = _load_pyproject_extras()
+
+
+def _load_pixi_feature_groups() -> dict[str, list[str]]:
+    pixi = _load_toml(_HV_ROOT / "pixi.toml")
+    if pixi is None:
+        return {
+            "required": ["bokeh", "panel", "param", "numpy", "pandas"],
+            "optional": [
+                "datashader", "matplotlib", "plotly", "xarray", "dask",
+                "cftime", "networkx", "polars", "scipy", "shapely", "pillow",
+                "selenium", "ffmpeg",
+            ],
+            "test-core": ["pytest"],
+            "test-ui": ["playwright"],
+            "test-gpu": ["cudf", "cupy"],
+        }
+    result: dict[str, list[str]] = {}
+    for feature_name, feature_body in pixi.get("feature", {}).items():
+        deps = feature_body.get("dependencies", {}) if isinstance(feature_body, dict) else {}
+        pkg_names = [
+            _extract_package_name(str(k)) for k in deps.keys()
+        ] if isinstance(deps, dict) else []
+        if pkg_names:
+            result[feature_name] = pkg_names
+    return result
+
+
+_PIXI_FEATURE_GROUPS: dict[str, list[str]] = _load_pixi_feature_groups()
+
+
+def _load_pixi_environments() -> dict[str, list[str]]:
+    pixi = _load_toml(_HV_ROOT / "pixi.toml")
+    if pixi is None:
+        return {
+            "core": ["test-core"],
+            "unit": ["test-310", "test-311", "test-312", "test-313", "test-314"],
+            "ui": ["test-ui"],
+            "type": ["type"],
+        }
+    env_configs = pixi.get("environments", {})
+    result: dict[str, list[str]] = {"core": [], "unit": [], "ui": [], "type": [], "gpu": []}
+    for env_name in env_configs:
+        if env_name == "test-core":
+            result["core"].append(env_name)
+        elif env_name.startswith("test-3"):
+            result["unit"].append(env_name)
+        elif env_name == "test-ui":
+            result["ui"].append(env_name)
+        elif env_name == "test-gpu":
+            result["gpu"].append(env_name)
+        elif env_name == "type":
+            result["type"].append(env_name)
+    return {k: sorted(v) for k, v in result.items() if v}
+
+
+def _load_ci_groups() -> dict[str, dict[str, t.Any]]:
+    envs_map = _load_pixi_environments()
+    defaults: dict[str, dict[str, t.Any]] = {
+        "core": {"backends": ["bokeh"], "optional": False, "description": "Core tests with minimal dependencies (bokeh only)"},
+        "unit": {"backends": ["bokeh", "matplotlib", "plotly"], "optional": True, "description": "Full unit tests with all backends and optional deps"},
+        "ui": {"backends": ["bokeh"], "optional": True, "description": "Browser UI tests (requires playwright)"},
+        "type": {"backends": [], "optional": False, "description": "Static type checking"},
+        "gpu": {"backends": ["bokeh"], "optional": True, "description": "GPU accelerated tests (requires cudf/cupy)"},
+    }
+    result: dict[str, dict[str, t.Any]] = {}
+    for suite, info in defaults.items():
+        if suite in envs_map:
+            result[suite] = {
+                "environments": envs_map[suite],
+                "backends": info["backends"],
+                "optional": info["optional"],
+                "description": info["description"],
+            }
+    return result
+
+
+_CI_GROUPS: dict[str, dict[str, t.Any]] = _load_ci_groups()
 
 
 def _version_tuple_to_str(version_tuple: tuple[int, ...]) -> str:

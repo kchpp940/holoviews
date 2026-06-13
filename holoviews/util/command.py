@@ -8,6 +8,13 @@ from argparse import RawTextHelpFormatter
 from . import examples
 
 
+def _cmd_capabilities(args: argparse.Namespace) -> int:
+    from ..core.util.capabilities import diagnose_all
+
+    print(diagnose_all())
+    return 0
+
+
 def main():
     if len(sys.argv) < 2:
         print("For help with the holoviews command run:\n\nholoviews --help\n")
@@ -19,6 +26,8 @@ def main():
         description=description,
     )
 
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
     parser.add_argument(
         "--install-examples",
         metavar="install_examples",
@@ -27,7 +36,17 @@ def main():
         help="Install examples to the specified directory.",
     )
 
+    cap_parser = subparsers.add_parser(
+        "capabilities",
+        help="Diagnose backend capabilities and optional dependencies",
+        formatter_class=RawTextHelpFormatter,
+    )
+    cap_parser.set_defaults(func=_cmd_capabilities)
+
     args = parser.parse_args()
+
+    if getattr(args, "func", None) is not None:
+        sys.exit(args.func(args))
 
     if args.install_examples is None:
         examples_dir = "holoviews-examples"
