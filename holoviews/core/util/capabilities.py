@@ -143,17 +143,38 @@ _NOTEBOOK_PACKAGES = [
 
 _STATIC_EXPORT_DEPS: dict[str, dict[str, dict[str, t.Any]]] = {
     "png": {
-        "bokeh": {"packages": ["selenium"], "requires_webdriver": True},
+        "bokeh": {
+            "packages": ["selenium"],
+            "requires_webdriver": True,
+            "webdriver_options": [
+                {"driver": "geckodriver", "browser": "firefox"},
+                {"driver": "chromedriver", "browser": "chrome"},
+            ],
+        },
         "matplotlib": {"packages": []},
         "plotly": {"packages": ["kaleido"]},
     },
     "svg": {
-        "bokeh": {"packages": ["selenium"], "requires_webdriver": True},
+        "bokeh": {
+            "packages": ["selenium"],
+            "requires_webdriver": True,
+            "webdriver_options": [
+                {"driver": "geckodriver", "browser": "firefox"},
+                {"driver": "chromedriver", "browser": "chrome"},
+            ],
+        },
         "matplotlib": {"packages": []},
         "plotly": {"packages": ["kaleido"]},
     },
     "pdf": {
-        "bokeh": {"packages": ["selenium"], "requires_webdriver": True},
+        "bokeh": {
+            "packages": ["selenium"],
+            "requires_webdriver": True,
+            "webdriver_options": [
+                {"driver": "geckodriver", "browser": "firefox"},
+                {"driver": "chromedriver", "browser": "chrome"},
+            ],
+        },
         "matplotlib": {"packages": []},
         "plotly": {"packages": ["kaleido"]},
     },
@@ -163,21 +184,129 @@ _STATIC_EXPORT_DEPS: dict[str, dict[str, dict[str, t.Any]]] = {
         "plotly": {"packages": []},
     },
     "gif": {
-        "bokeh": {"packages": ["selenium", "pillow"], "requires_webdriver": True},
-        "matplotlib": {"packages": ["pillow"]},
-        "plotly": {"packages": ["kaleido", "pillow"]},
+        "bokeh": {
+            "packages": ["selenium", "pillow"],
+            "requires_webdriver": True,
+            "webdriver_options": [
+                {"driver": "geckodriver", "browser": "firefox"},
+                {"driver": "chromedriver", "browser": "chrome"},
+            ],
+        },
+        "matplotlib": {
+            "packages": ["pillow"],
+            "requires_binary": "ffmpeg",
+        },
+        "plotly": {
+            "packages": ["kaleido", "pillow"],
+        },
     },
     "mp4": {
-        "bokeh": {"packages": ["selenium"], "requires_webdriver": True, "requires_binary": "ffmpeg"},
-        "matplotlib": {"packages": [], "requires_binary": "ffmpeg"},
-        "plotly": {"packages": ["kaleido"], "requires_binary": "ffmpeg"},
+        "bokeh": {
+            "packages": ["selenium"],
+            "requires_webdriver": True,
+            "requires_binary": "ffmpeg",
+            "webdriver_options": [
+                {"driver": "geckodriver", "browser": "firefox"},
+                {"driver": "chromedriver", "browser": "chrome"},
+            ],
+        },
+        "matplotlib": {
+            "packages": [],
+            "requires_binary": "ffmpeg",
+        },
+        "plotly": {
+            "packages": ["kaleido"],
+            "requires_binary": "ffmpeg",
+        },
     },
     "webm": {
-        "bokeh": {"packages": ["selenium"], "requires_webdriver": True, "requires_binary": "ffmpeg"},
-        "matplotlib": {"packages": [], "requires_binary": "ffmpeg"},
-        "plotly": {"packages": ["kaleido"], "requires_binary": "ffmpeg"},
+        "bokeh": {
+            "packages": ["selenium"],
+            "requires_webdriver": True,
+            "requires_binary": "ffmpeg",
+            "webdriver_options": [
+                {"driver": "geckodriver", "browser": "firefox"},
+                {"driver": "chromedriver", "browser": "chrome"},
+            ],
+        },
+        "matplotlib": {
+            "packages": [],
+            "requires_binary": "ffmpeg",
+        },
+        "plotly": {
+            "packages": ["kaleido"],
+            "requires_binary": "ffmpeg",
+        },
     },
 }
+
+
+_BROWSER_BINARY_NAMES: dict[str, list[str]] = {
+    "chrome": [
+        "chrome",
+        "google-chrome",
+        "google-chrome-stable",
+        "chromium",
+        "chromium-browser",
+    ],
+    "firefox": [
+        "firefox",
+        "firefox-esr",
+        "mozilla-firefox",
+    ],
+}
+
+
+def _check_browser(browser_name: str) -> bool:
+    candidates = _BROWSER_BINARY_NAMES.get(browser_name, [browser_name])
+    for name in candidates:
+        if shutil.which(name) is not None:
+            return True
+    if sys.platform == "darwin":
+        app_paths = {
+            "chrome": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "firefox": "/Applications/Firefox.app/Contents/MacOS/firefox",
+        }
+        p = app_paths.get(browser_name)
+        if p and Path(p).exists():
+            return True
+    elif sys.platform == "win32":
+        program_files = [os.environ.get("ProgramFiles", ""), os.environ.get("ProgramFiles(x86)", "")]
+        win_paths = {
+            "chrome": ["Google\\Chrome\\Application\\chrome.exe"],
+            "firefox": ["Mozilla Firefox\\firefox.exe"],
+        }
+        for base in program_files:
+            if not base:
+                continue
+            for rel in win_paths.get(browser_name, []):
+                if Path(base, rel).exists():
+                    return True
+    return False
+
+
+def _check_webdriver_stack(webdriver_options: list[dict[str, str]]) -> tuple[bool, str | None]:
+    if not webdriver_options:
+        return True, None
+    for opt in webdriver_options:
+        driver = opt.get("driver", "")
+        browser = opt.get("browser", "")
+        driver_ok = _check_binary(driver)
+        browser_ok = _check_browser(browser) if browser else True
+        if driver_ok and browser_ok:
+            return True, f"{driver}+{browser}"
+    details = []
+    for opt in webdriver_options:
+        driver = opt.get("driver", "")
+        browser = opt.get("browser", "")
+        parts = []
+        if not _check_binary(driver):
+            parts.append(f"missing {driver}")
+        if browser and not _check_browser(browser):
+            parts.append(f"missing {browser}")
+        if parts:
+            details.append(f"({driver}+{browser}: {', '.join(parts)})")
+    return False, "; ".join(details) if details else None
 
 
 _HV_ROOT = Path(__file__).resolve().parents[3]
@@ -242,53 +371,139 @@ def _load_pixi_feature_groups() -> dict[str, list[str]]:
 _PIXI_FEATURE_GROUPS: dict[str, list[str]] = _load_pixi_feature_groups()
 
 
-def _load_pixi_environments() -> dict[str, list[str]]:
-    pixi = _load_toml(_HV_ROOT / "pixi.toml")
-    if pixi is None:
-        return {
-            "core": ["test-core"],
-            "unit": ["test-310", "test-311", "test-312", "test-313", "test-314"],
-            "ui": ["test-ui"],
-            "type": ["type"],
-        }
-    env_configs = pixi.get("environments", {})
-    result: dict[str, list[str]] = {"core": [], "unit": [], "ui": [], "type": [], "gpu": []}
-    for env_name in env_configs:
-        if env_name == "test-core":
-            result["core"].append(env_name)
-        elif env_name.startswith("test-3"):
-            result["unit"].append(env_name)
-        elif env_name == "test-ui":
-            result["ui"].append(env_name)
-        elif env_name == "test-gpu":
-            result["gpu"].append(env_name)
-        elif env_name == "type":
-            result["type"].append(env_name)
-    return {k: sorted(v) for k, v in result.items() if v}
+_CAPABILITY_GROUP_MAP: dict[str, dict[str, t.Any]] = {
+    "backends": {
+        "bokeh": {
+            "description": "Bokeh backend (default)",
+            "pyproject_extra": "bokeh",
+            "pixi_feature": "required",
+            "ci_groups": ["core", "unit", "ui", "gpu"],
+            "min_version": _BACKEND_MIN_VERSIONS.get("bokeh"),
+        },
+        "matplotlib": {
+            "description": "Matplotlib backend",
+            "pyproject_extra": "matplotlib",
+            "pixi_feature": "optional",
+            "ci_groups": ["unit"],
+            "min_version": _BACKEND_MIN_VERSIONS.get("matplotlib"),
+        },
+        "plotly": {
+            "description": "Plotly backend",
+            "pyproject_extra": "plotly",
+            "pixi_feature": "optional",
+            "ci_groups": ["unit"],
+            "min_version": _BACKEND_MIN_VERSIONS.get("plotly"),
+        },
+    },
+    "optional_extras": {
+        "datashader": {
+            "description": "Datashader GPU-accelerated aggregation",
+            "pyproject_extra": "datashader",
+            "pixi_feature": "optional",
+            "ci_groups": ["unit", "gpu"],
+            "min_version": _DATASHADER_MIN_VERSION,
+        },
+        "notebook": {
+            "description": "Jupyter notebook / lab integration",
+            "pyproject_extra": "notebook",
+            "pixi_feature": "optional",
+            "ci_groups": ["unit"],
+            "packages": [pkg for pkg, _ in _NOTEBOOK_PACKAGES],
+        },
+        "export": {
+            "description": "Static export (png/svg/pdf/gif/mp4)",
+            "pyproject_extra": "export",
+            "pixi_feature": "optional",
+            "ci_groups": ["unit"],
+            "packages": ["selenium", "pillow", "kaleido", "ffmpeg-python"],
+            "requires_binaries": ["ffmpeg"],
+            "requires_webdriver": True,
+        },
+        "recommended": {
+            "description": "Recommended extras (matplotlib + plotly)",
+            "pyproject_extra": "recommended",
+            "pixi_feature": "optional",
+            "ci_groups": ["unit"],
+            "packages": ["matplotlib", "plotly"],
+        },
+    },
+    "ci_groups": {
+        "core": {
+            "description": "Core tests with minimal dependencies (bokeh only)",
+            "pixi_environments": ["test-core"],
+            "github_job": "core_test_suite",
+            "required_backends": ["bokeh"],
+            "optional": False,
+            "features_needed": ["required", "test-core", "test-unit-task"],
+        },
+        "unit": {
+            "description": "Full unit tests with all backends and optional deps",
+            "pixi_environments": ["test-310", "test-311", "test-312", "test-313", "test-314"],
+            "github_job": "unit_test_suite",
+            "required_backends": ["bokeh", "matplotlib", "plotly"],
+            "optional": True,
+            "features_needed": ["required", "optional", "test-core", "test-example", "test-unit-task"],
+        },
+        "ui": {
+            "description": "Browser UI tests (requires playwright)",
+            "pixi_environments": ["test-ui"],
+            "github_job": "ui_test_suite",
+            "required_backends": ["bokeh"],
+            "optional": True,
+            "features_needed": ["required", "optional", "test-core", "test-ui"],
+        },
+        "type": {
+            "description": "Static type checking",
+            "pixi_environments": ["type"],
+            "github_job": "type_suite",
+            "required_backends": [],
+            "optional": False,
+            "features_needed": ["required", "optional", "test-core", "type", "type-task"],
+        },
+        "gpu": {
+            "description": "GPU accelerated tests (requires cudf/cupy)",
+            "pixi_environments": ["test-gpu"],
+            "github_job": "gpu_test_suite",
+            "required_backends": ["bokeh"],
+            "optional": True,
+            "features_needed": ["required", "test-core", "optional", "test-gpu"],
+        },
+    },
+}
 
 
 def _load_ci_groups() -> dict[str, dict[str, t.Any]]:
-    envs_map = _load_pixi_environments()
-    defaults: dict[str, dict[str, t.Any]] = {
-        "core": {"backends": ["bokeh"], "optional": False, "description": "Core tests with minimal dependencies (bokeh only)"},
-        "unit": {"backends": ["bokeh", "matplotlib", "plotly"], "optional": True, "description": "Full unit tests with all backends and optional deps"},
-        "ui": {"backends": ["bokeh"], "optional": True, "description": "Browser UI tests (requires playwright)"},
-        "type": {"backends": [], "optional": False, "description": "Static type checking"},
-        "gpu": {"backends": ["bokeh"], "optional": True, "description": "GPU accelerated tests (requires cudf/cupy)"},
-    }
     result: dict[str, dict[str, t.Any]] = {}
-    for suite, info in defaults.items():
-        if suite in envs_map:
-            result[suite] = {
-                "environments": envs_map[suite],
-                "backends": info["backends"],
-                "optional": info["optional"],
-                "description": info["description"],
-            }
+    ci_cfg = _CAPABILITY_GROUP_MAP.get("ci_groups", {})
+    for group, cfg in ci_cfg.items():
+        result[group] = {
+            "environments": list(cfg.get("pixi_environments", [])),
+            "backends": list(cfg.get("required_backends", [])),
+            "optional": cfg.get("optional", False),
+            "description": cfg.get("description", ""),
+            "github_job": cfg.get("github_job"),
+            "features_needed": list(cfg.get("features_needed", [])),
+        }
     return result
 
 
 _CI_GROUPS: dict[str, dict[str, t.Any]] = _load_ci_groups()
+
+
+def _load_pyproject_extras_from_map() -> dict[str, list[str]]:
+    """Fallback: derive expected pyproject extras structure from the canonical map."""
+    extras: dict[str, list[str]] = {}
+    backends = _CAPABILITY_GROUP_MAP.get("backends", {})
+    for name, cfg in backends.items():
+        extra_name = cfg.get("pyproject_extra", name)
+        pkg = _BACKEND_PACKAGE_MAP.get(name, name)
+        extras.setdefault(extra_name, []).append(pkg)
+    opt = _CAPABILITY_GROUP_MAP.get("optional_extras", {})
+    for name, cfg in opt.items():
+        extra_name = cfg.get("pyproject_extra", name)
+        for pkg in cfg.get("packages", []):
+            extras.setdefault(extra_name, []).append(pkg)
+    return extras
 
 
 def _version_tuple_to_str(version_tuple: tuple[int, ...]) -> str:
@@ -476,57 +691,77 @@ def _diagnose_static_export_for_backend(
     packages = deps_info.get("packages", [])
     requires_binary = deps_info.get("requires_binary")
     requires_webdriver = deps_info.get("requires_webdriver", False)
+    webdriver_options = deps_info.get("webdriver_options", [])
 
     errors: list[str] = []
     all_suggestions: list[str] = []
 
+    packages_status: dict[str, str] = {}
     for pkg in packages:
         pkg_status, _ = _check_version(pkg, None)
+        packages_status[pkg] = pkg_status.value
         if pkg_status != CapabilityStatus.AVAILABLE:
-            errors.append(f"{pkg} is not installed")
+            errors.append(f"Python package '{pkg}' is not installed")
             all_suggestions.append(f"Install {pkg}: pip install {pkg}")
 
-    if requires_binary and not _check_binary(requires_binary):
-        errors.append(f"Required binary '{requires_binary}' not found in PATH")
-        all_suggestions.append(
-            f"Install {requires_binary}: see https://holoviews.org/user_guide/Exporting_and_Archiving.html"
-        )
-
-    if requires_webdriver:
-        for driver in ["geckodriver", "chromedriver"]:
-            if _check_binary(driver):
-                break
-        else:
-            errors.append("No webdriver (geckodriver/chromedriver) found in PATH")
+    binaries_status: dict[str, str] = {}
+    if requires_binary:
+        binary_ok = _check_binary(requires_binary)
+        binaries_status[requires_binary] = "available" if binary_ok else "missing"
+        if not binary_ok:
+            errors.append(f"System binary '{requires_binary}' not found in PATH")
             all_suggestions.append(
-                "Install a webdriver: 'conda install -c conda-forge firefox geckodriver' or 'brew install chromedriver'"
+                f"Install {requires_binary}: see https://holoviews.org/user_guide/Exporting_and_Archiving.html"
             )
 
+    webdriver_ok = True
+    webdriver_detail: str | None = None
+    webdriver_status: dict[str, t.Any] = {"available": False, "active_stack": None, "details": None}
+    if requires_webdriver:
+        webdriver_ok, webdriver_detail = _check_webdriver_stack(webdriver_options)
+        webdriver_status["available"] = webdriver_ok
+        if webdriver_ok:
+            webdriver_status["active_stack"] = webdriver_detail
+        else:
+            webdriver_status["details"] = webdriver_detail
+            errors.append(
+                f"No working webdriver+browser stack: "
+                f"{webdriver_detail or 'need geckodriver+firefox or chromedriver+chrome'}"
+            )
+            all_suggestions.append(
+                "Install webdriver stack: 'conda install -c conda-forge firefox geckodriver' "
+                "or 'brew install chromedriver' + Chrome browser"
+            )
+
+    details = {
+        "backend": backend,
+        "backend_available": True,
+        "layers": {
+            "python_packages": packages_status,
+            "system_binaries": binaries_status,
+            "webdriver": webdriver_status,
+        },
+        "required_packages": packages,
+        "required_binary": requires_binary,
+        "required_webdriver": requires_webdriver,
+    }
+
     if errors:
+        details["missing_packages"] = [p for p, s in packages_status.items() if s != "available"]
+        details["missing_binary"] = requires_binary if (requires_binary and requires_binary not in binaries_status or binaries_status.get(requires_binary) != "available") else None
+        details["missing_webdriver_reason"] = webdriver_detail if not webdriver_ok else None
         return (
             CapabilityStatus.NOT_INSTALLED,
             "; ".join(errors),
             tuple(all_suggestions),
-            {
-                "backend": backend,
-                "backend_available": True,
-                "missing_packages": [p for p in packages if _check_version(p, None)[0] != CapabilityStatus.AVAILABLE],
-                "missing_binary": requires_binary if (requires_binary and not _check_binary(requires_binary)) else None,
-                "missing_webdriver": requires_webdriver,
-            },
+            details,
         )
 
     return (
         CapabilityStatus.AVAILABLE,
         None,
         (),
-        {
-            "backend": backend,
-            "backend_available": True,
-            "packages": packages,
-            "requires_binary": requires_binary,
-            "requires_webdriver": requires_webdriver,
-        },
+        details,
     )
 
 
@@ -696,6 +931,9 @@ def _diagnose_ci_groups() -> dict[str, CapabilityDiagnostic]:
                 "missing_backends": missing_backends,
                 "optional": group_info.get("optional", False),
                 "description": group_info.get("description", ""),
+                "github_job": group_info.get("github_job"),
+                "features_needed": group_info.get("features_needed", []),
+                "pixi_environments": group_info.get("environments", []),
             },
         )
 
@@ -928,17 +1166,51 @@ def diagnose_all() -> str:
             for bk_name, bk_detail in diag.details.get("per_backend", {}).items():
                 if not bk_detail.get("backend_available", True):
                     lines.append(f"      {bk_name}: backend not available")
-                elif bk_detail.get("missing_packages"):
-                    lines.append(
-                        f"      {bk_name}: missing {', '.join(bk_detail['missing_packages'])}"
-                    )
-                if bk_detail.get("missing_binary"):
-                    lines.append(f"      {bk_name}: missing binary '{bk_detail['missing_binary']}'")
-                if bk_detail.get("missing_webdriver"):
-                    lines.append(f"      {bk_name}: missing webdriver")
+                    continue
+                layers = bk_detail.get("layers", {})
+                pkgs_missing = [
+                    p for p, s in layers.get("python_packages", {}).items()
+                    if s != "available"
+                ]
+                bins_missing = [
+                    b for b, s in layers.get("system_binaries", {}).items()
+                    if s != "available"
+                ]
+                wd_info = layers.get("webdriver", {})
+                parts = []
+                if pkgs_missing:
+                    parts.append(f"packages: {', '.join(pkgs_missing)}")
+                if bins_missing:
+                    parts.append(f"binaries: {', '.join(bins_missing)}")
+                if wd_info and not wd_info.get("available"):
+                    wd_detail = wd_info.get("details") or "webdriver+browser"
+                    parts.append(f"webdriver: {wd_detail}")
+                if parts:
+                    lines.append(f"      {bk_name}: missing {'; '.join(parts)}")
         if not diag.available:
             for suggestion in diag.fix_suggestions[:3]:
                 lines.append(f"      → {suggestion}")
+    lines.append("")
+
+    lines.append("Capability ↔ Config Mapping (single source of truth):")
+    for backend, cfg in _CAPABILITY_GROUP_MAP.get("backends", {}).items():
+        lines.append(
+            f"  backend/{backend}: extra=[{cfg.get('pyproject_extra')}] "
+            f"pixi=[{cfg.get('pixi_feature')}] ci={cfg.get('ci_groups')}"
+        )
+    for extra, cfg in _CAPABILITY_GROUP_MAP.get("optional_extras", {}).items():
+        packages = ", ".join(cfg.get("packages", [])) or "-"
+        lines.append(
+            f"  extra/{extra}: packages=[{packages}] "
+            f"pixi=[{cfg.get('pixi_feature')}] ci={cfg.get('ci_groups')}"
+        )
+    for group, cfg in _CAPABILITY_GROUP_MAP.get("ci_groups", {}).items():
+        envs = ", ".join(cfg.get("pixi_environments", []))
+        backends = ", ".join(cfg.get("required_backends", [])) or "-"
+        lines.append(
+            f"  ci/{group}: envs=[{envs}] backends=[{backends}] "
+            f"optional={cfg.get('optional')} job={cfg.get('github_job')}"
+        )
     lines.append("")
 
     lines.append("Optional Extras (pyproject.toml):")
