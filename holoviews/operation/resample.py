@@ -577,6 +577,17 @@ class ResampleOperationGuard(OperationGuard):
     _guard_wrap_exceptions: bool = True
     _guard_write_metadata: bool = False
 
+    _guard_cache_params: list = [
+        "width",
+        "height",
+        "x_range",
+        "y_range",
+        "pixel_ratio",
+        "expand",
+        "x_sampling",
+        "y_sampling",
+    ]
+
     def _normalize_params(self, element: Any, key: Any = None) -> Any:
         """Default parameter normalization for resampling operations."""
         return element
@@ -597,12 +608,10 @@ class ResampleOperationGuard(OperationGuard):
         return False
 
     def _get_cache_key(self, element: Any, key: Any = None) -> Any:
-        """Extract cache key - prefers element._plot_id."""
+        """Extract cache key - prefers element._plot_id + dynamic params."""
         el = element[0] if isinstance(element, tuple) else element
-        plot_id = getattr(el, "_plot_id", None)
-        if plot_id is not None:
-            return plot_id
-        return id(el)
+        base_key = super()._get_cache_key(el, key)
+        return base_key
 
     def _check_cache(self, element: Any, key: Any = None) -> Optional[Any]:
         """Check precomputed cache with plot_id."""

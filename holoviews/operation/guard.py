@@ -58,6 +58,35 @@ class OperationGuard:
     _guard_wrap_exceptions: bool = True
     _guard_write_metadata: bool = False
 
+    _guard_cache_params: list = []
+
+    def _get_cache_params(self) -> dict:
+        """Get parameter values that should be included in cache key.
+
+        Override _guard_cache_params or this method to specify which
+        operation parameters affect the output and should invalidate
+        the cache when they change.
+
+        Supports both self.p (ParamOverrides, set during __call__)
+        and direct param attributes on self.
+
+        Returns:
+            Dictionary of parameter names to values
+        """
+        params = {}
+        for param_name in self._guard_cache_params:
+            value = None
+            found = False
+            if hasattr(self, "p") and hasattr(self.p, param_name):
+                value = getattr(self.p, param_name)
+                found = True
+            elif hasattr(self, "param") and param_name in self.param:
+                value = getattr(self, param_name)
+                found = True
+            if found:
+                params[param_name] = value
+        return params
+
     def _apply_guard(
         self,
         element: Any,
@@ -94,6 +123,7 @@ class OperationGuard:
                 output = self._empty_result(normalized, key)
                 result.output = output
                 result.execution_time = time.perf_counter() - t0
+                self._last_guard_result = result
                 return self._finalize_result(output, result)
 
             t1 = time.perf_counter()
@@ -104,6 +134,7 @@ class OperationGuard:
                 result.cached = True
                 result.output = cached
                 result.execution_time = time.perf_counter() - t0
+                self._last_guard_result = result
                 return self._finalize_result(cached, result)
 
             t2 = time.perf_counter()
@@ -116,6 +147,7 @@ class OperationGuard:
             self._update_cache(normalized, key, output)
 
             result.output = output
+            self._last_guard_result = result
             return self._finalize_result(output, result)
 
         except Exception as e:
@@ -123,6 +155,8 @@ class OperationGuard:
             result.error = e
             result.error_traceback = traceback.format_exc()
             result.execution_time = result.execution_time or (time.perf_counter() - t0 if 't0' in dir() else 0.0)
+
+            self._last_guard_result = result
 
             if self._guard_wrap_exceptions:
                 return self._handle_exception(element, key, e, result)
@@ -194,8 +228,14 @@ class OperationGuard:
         """
         plot_id = getattr(element, "_plot_id", None)
         if plot_id is not None:
-            return plot_id
-        return id(element)
+            base_key = plot_id
+        else:
+            base_key = id(element)
+
+        cache_params = self._get_cache_params()
+        if cache_params:
+            return (base_key, tuple(sorted(cache_params.items())))
+        return base_key
 
     def _check_cache(self, element: Any, key: Any = None) -> Optional[Any]:
         """Check if there's a cached result for this input.

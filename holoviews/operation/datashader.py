@@ -69,6 +69,7 @@ from .resample import (
     OperationExecutionContext,
     ResampleOperation2D,
 )
+from .guard import GuardedOperationMixin
 
 DATASHADER_VERSION = _no_import_version("datashader")
 DATASHADER_GE_0_14_0 = DATASHADER_VERSION >= (0, 14, 0)
@@ -1433,9 +1434,9 @@ class quadmesh_rasterize(trimesh_rasterize):
         if DATASHADER_VERSION <= (0, 7, 0):
             return super()._precompute(element.trimesh(), agg)
 
-    def _process(self, element, key=None):
+    def _process_core(self, element, key=None):
         if DATASHADER_VERSION <= (0, 7, 0):
-            return super()._process(element, key)
+            return trimesh_rasterize._process_core(self, element, key)
 
         if element.interface.datatype != "xarray":
             element = element.clone(datatype=["xarray"])
@@ -1470,7 +1471,7 @@ class quadmesh_rasterize(trimesh_rasterize):
         return Image(agg, **params)
 
 
-class shade(LinkableOperation):
+class shade(GuardedOperationMixin, LinkableOperation):
     """shade applies a normalization function followed by colormapping to
     an Image or NdOverlay of Images, returning an RGB Element.
     The data must be in the form of a 2D or 3D DataArray, but NdOverlays
@@ -1481,6 +1482,10 @@ class shade(LinkableOperation):
     key for each category. The colormap (cmap) for the 2D case may be
     supplied as an Iterable or a Callable.
 
+    All execution is routed through the unified guard which provides:
+    - Empty data short-circuit
+    - Exception wrapping with operation context
+    - Execution time recording
     """
 
     alpha = param.Integer(
@@ -1644,7 +1649,7 @@ class shade(LinkableOperation):
 
         return array
 
-    def _process(self, element, key=None):
+    def _process_core(self, element, key=None):
         element = element.map(self.to_xarray, Image)
         if isinstance(element, NdOverlay):
             bounds = element.last.bounds
@@ -1652,7 +1657,7 @@ class shade(LinkableOperation):
             ydensity = element.last.ydensity
             element = self.concatenate(element)
         elif isinstance(element, Overlay):
-            return element.map(partial(shade._process, self), [Element])
+            return element.map(partial(shade._process_core, self), [Element])
         else:
             xdensity = element.xdensity
             ydensity = element.ydensity
@@ -1767,7 +1772,7 @@ class geometry_rasterize(LineAggregationOperation):
             return ds.count()
         return super()._get_aggregator(element, agg, add_field)
 
-    def _process(self, element, key=None):
+    def _process_core(self, element, key=None):
         agg_fn = self._get_aggregator(element, self.p.aggregator)
         xdim, ydim = element.kdims
         info = self._get_sampling(element, xdim, ydim)
@@ -1895,7 +1900,7 @@ class rasterize(AggregationOperation):
         inst.__instance_kwargs = {k: v for k, v in params.items() if k in kwargs}
         return inst
 
-    def _process(self, element, key=None):
+    def _process_core(self, element, key=None):
         # Potentially needs traverse to find element types first?
         all_allowed_kws = set()
         all_supplied_kws = set()
@@ -1949,9 +1954,9 @@ class datashade(rasterize, shade):
 
     """
 
-    def _process(self, element, key=None):
-        agg = rasterize._process(self, element, key)
-        shaded = shade._process(self, agg, key)
+    def _process_core(self, element, key=None):
+        agg = rasterize._process_core(self, element, key)
+        shaded = shade._process_core(self, agg, key)
         return shaded
 
 
@@ -2013,12 +2018,16 @@ class stack(Operation):
         return rgb.clone(data, datatype=[rgb.interface.datatype, *rgb.datatype])
 
 
-class SpreadingOperation(LinkableOperation):
+class SpreadingOperation(GuardedOperationMixin, LinkableOperation):
     """Spreading expands each pixel in an Image based Element a certain
     number of pixels on all sides according to a given shape, merging
     pixels using a specified compositing operator. This can be useful
     to make sparse plots more visible.
 
+    All execution is routed through the unified guard which provides:
+    - Empty data short-circuit
+    - Exception wrapping with operation context
+    - Execution time recording
     """
 
     how = param.Selector(
@@ -2057,7 +2066,7 @@ class SpreadingOperation(LinkableOperation):
             rgbarray = rgbarray * 255
         return tf.Image(self.uint8_to_uint32(rgbarray.astype("uint8")))
 
-    def _process(self, element, key=None):
+    def _process_core(self, element, key=None):
         if isinstance(element, RGB):
             rgb = element.rgb
             data = self._preprocess_rgb(rgb)
