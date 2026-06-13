@@ -15,7 +15,6 @@ from panel.io.state import state
 from param.parameterized import bothmethod
 
 from ...core import HoloMap, Store
-from ..artifact_manager import ArtifactKind, CleanupPolicy, artifact_manager
 from ..plot import Plot
 from ..renderer import HTML_TAGS, MIME_TYPES, Renderer
 from .util import compute_plot_size
@@ -105,86 +104,58 @@ class BokehRenderer(Renderer):
         logger = logging.getLogger(bokeh.core.validation.check.__file__)
         logger.disabled = True
 
-        owner = type(self).__name__
-        with artifact_manager.default_owner(owner):
-            with artifact_manager.scope(f"bokeh-figdata-{id(plot)}") as scope:
-                artifact_manager.register(
-                    ArtifactKind.BOKEH_DOCUMENT,
-                    obj=doc,
-                    policy=CleanupPolicy.RENDER_CYCLE,
-                    refs={"plot_id": id(plot), "format": fmt},
-                )
-                artifact_manager.register(
-                    ArtifactKind.BOKEH_MODEL,
-                    obj=model,
-                    policy=CleanupPolicy.RENDER_CYCLE,
-                    refs={"doc_id": id(doc)},
-                )
+        data = None
+        if fmt == "gif":
+            from bokeh.io.export import get_screenshot_as_png
+            from bokeh.io.webdriver import webdriver_control
 
-                data = None
-                if fmt == "gif":
-                    from bokeh.io.export import get_screenshot_as_png
-                    from bokeh.io.webdriver import webdriver_control
+            if state.webdriver is None:
+                webdriver = webdriver_control.create()
+            else:
+                webdriver = state.webdriver
 
-                    if state.webdriver is None:
-                        webdriver = webdriver_control.create()
-                    else:
-                        webdriver = state.webdriver
+            nframes = len(plot)
+            frames = []
+            for i in range(nframes):
+                plot.update(i)
+                img = get_screenshot_as_png(plot.state, driver=webdriver)
+                frames.append(img)
+            if state.webdriver is not None:
+                webdriver.close()
 
-                    nframes = len(plot)
-                    frames = []
-                    for i in range(nframes):
-                        plot.update(i)
-                        img = get_screenshot_as_png(plot.state, driver=webdriver)
-                        frames.append(img)
-                    if state.webdriver is not None:
-                        webdriver.close()
+            bio = BytesIO()
+            duration = (1.0 / self.fps) * 1000
+            frames[0].save(
+                bio,
+                format="GIF",
+                append_images=frames[1:],
+                save_all=True,
+                duration=duration,
+                loop=0,
+            )
+            bio.seek(0)
+            data = bio.read()
+        elif fmt == "png":
+            from bokeh.io.export import get_screenshot_as_png
 
-                    _, bio = scope.create_bytesio(format="gif")
-                    duration = (1.0 / self.fps) * 1000
-                    frames[0].save(
-                        bio,
-                        format="GIF",
-                        append_images=frames[1:],
-                        save_all=True,
-                        duration=duration,
-                        loop=0,
-                    )
-                    bio.seek(0)
-                    data = bio.read()
-                elif fmt == "png":
-                    from bokeh.io.export import get_screenshot_as_png
+            img = get_screenshot_as_png(plot.state, driver=state.webdriver)
+            imgByteArr = BytesIO()
+            img.save(imgByteArr, format="PNG")
+            data = imgByteArr.getvalue()
+        else:
+            div = render_mimebundle(plot.state, doc, plot.comm)[0]["text/html"]
 
-                    img = get_screenshot_as_png(plot.state, driver=state.webdriver)
-                    _, imgByteArr = scope.create_bytesio(format="png")
-                    img.save(imgByteArr, format="PNG")
-                    imgByteArr.seek(0)
-                    data = imgByteArr.read()
-                else:
-                    div = render_mimebundle(plot.state, doc, plot.comm)[0]["text/html"]
+        if as_script and fmt in ["png", "gif"]:
+            b64 = base64.b64encode(data).decode("utf-8")
+            (mime_type, tag) = MIME_TYPES[fmt], HTML_TAGS[fmt]
+            src = HTML_TAGS["base64"].format(mime_type=mime_type, b64=b64)
+            div = tag.format(src=src, mime_type=mime_type, css="")
 
-                if as_script and fmt in ["png", "gif"]:
-                    b64 = base64.b64encode(data).decode("utf-8")
-                    (mime_type, tag) = MIME_TYPES[fmt], HTML_TAGS[fmt]
-                    src = HTML_TAGS["base64"].format(mime_type=mime_type, b64=b64)
-                    div = tag.format(src=src, mime_type=mime_type, css="")
-                    scope.register_data(
-                        div,
-                        format="html",
-                        policy=CleanupPolicy.SCOPE_EXIT,
-                        refs={"source_fmt": fmt},
-                    )
-
-                plot.document = doc
-                if as_script or data is None:
-                    return div
-                else:
-                    scope.register_data(
-                        data,
-                        format=fmt,
-                        policy=CleanupPolicy.SCOPE_EXIT,
-                    )
-                    return data
+        plot.document = doc
+        if as_script or data is None:
+            return div
+        else:
+            return data
 
     @classmethod
     def plot_options(cls, obj, percent_size):

@@ -1,4 +1,4 @@
-i"""Implements downsampling algorithms for large 1D datasets.
+"""Implements downsampling algorithms for large 1D datasets.
 
 The algorithms implemented in this module have been adapted from
 https://github.com/predict-idlab/plotly-resampler and are reproduced
@@ -39,7 +39,7 @@ import param
 from ..core import NdOverlay, Overlay
 from ..core.util import dtype_kind
 from ..element.chart import Area
-from .resample import ResampleOperation1D
+from .resample import GuardedResampleOperation1D, ResampleOperation1D
 
 
 def _argmax_area(prev_x, prev_y, avg_next_x, avg_next_y, x_bucket, y_bucket):
@@ -229,12 +229,18 @@ _ALGORITHMS = {
 }
 
 
-class downsample1d(ResampleOperation1D):
+class downsample1d(GuardedResampleOperation1D):
     """Implements downsampling of a regularly sampled 1D dataset.
 
     If available uses the `tsdownsample` library to perform massively
     accelerated downsampling.
 
+    All execution is routed through the unified guard which provides:
+    - Parameter normalization (x_range slicing, overlay recursion)
+    - Empty data short-circuit (len <= width returns early)
+    - Cache hit detection (via shared_data for overlays)
+    - Exception wrapping with operation context
+    - Execution time recording
     """
 
     algorithm = param.Selector(
@@ -274,39 +280,63 @@ class downsample1d(ResampleOperation1D):
         By default this is only enabled for the viewport algorithm.""",
     )
 
-    def _process(self, element, key=None, shared_data=None):
+    def _normalize_params(self, element, key=None, **kwargs):
+        """Normalize params: handle Overlay/NdOverlay recursion, apply x_range mask."""
+        shared_data = kwargs.get("shared_data")
+
         if isinstance(element, (Overlay, NdOverlay)):
-            # Shared data is so we only slice the given data once
-            kwargs = {"key": key, "shared_data": {}}
-            _process = partial(self._process, **kwargs)
+            return ("__overlay__", element, key, shared_data or {})
+
+        if self.p.x_range:
+            cache_key = (id(element.data), str(element.kdims[0]))
+            if shared_data is not None and cache_key in shared_data:
+                element = element.clone(shared_data[cache_key])
+            else:
+                mask = self._compute_mask(element)
+                element = element[mask]
+                if shared_data is not None:
+                    shared_data[cache_key] = element.data
+
+        return ("__element__", element)
+
+    def _check_empty(self, normalized, key=None):
+        """Check if already small enough (len <= width) - treat as empty and short-circuit."""
+        if isinstance(normalized, tuple) and normalized:
+            if normalized[0] == "__overlay__":
+                return False
+            if normalized[0] == "__element__":
+                return len(normalized[1]) <= self.p.width
+        return super()._check_empty(normalized, key)
+
+    def _empty_result(self, normalized, key=None):
+        """Return element as-is when already small enough."""
+        if isinstance(normalized, tuple) and normalized and normalized[0] == "__element__":
+            return normalized[1]
+        return super()._empty_result(normalized, key)
+
+    def _process_core(self, normalized, key=None, **kwargs):
+        """Core downsampling logic."""
+        if isinstance(normalized, tuple) and normalized and normalized[0] == "__overlay__":
+            _, element, orig_key, shared_data = normalized
+            process_kwargs = {"key": orig_key, "shared_data": shared_data}
+            _process = partial(self._process, **process_kwargs)
             if isinstance(element, Overlay):
                 elements = [v.map(_process) for v in element]
             else:
                 elements = {k: v.map(_process) for k, v in element.items()}
             return element.clone(elements)
 
-        if self.p.x_range:
-            key = (id(element.data), str(element.kdims[0]))
-            if shared_data is not None and key in shared_data:
-                element = element.clone(shared_data[key])
-            else:
-                mask = self._compute_mask(element)
-                element = element[mask]
-                if shared_data is not None:
-                    shared_data[key] = element.data
-
-        if len(element) <= self.p.width:
-            return element
+        _, element = normalized
         xs, ys = (element.dimension_values(i) for i in range(2))
         if ys.dtype == np.bool_:
             ys = ys.astype(np.int8)
         downsample = _ALGORITHMS[self.p.algorithm]
-        kwargs = {}
+        ds_kwargs = {}
         if "lttb" in self.p.algorithm and isinstance(element, Area):
             raise NotImplementedError("LTTB algorithm is not implemented for hv.Area")
         elif self.p.algorithm == "minmax-lttb":
-            kwargs["minmax_ratio"] = self.p.minmax_ratio
-        samples = downsample(xs, ys, self.p.width, parallel=self.p.parallel, **kwargs)
+            ds_kwargs["minmax_ratio"] = self.p.minmax_ratio
+        samples = downsample(xs, ys, self.p.width, parallel=self.p.parallel, **ds_kwargs)
         return element.iloc[samples]
 
     def _compute_mask(self, element):

@@ -22,6 +22,11 @@ from .element import (
     threshold,
     transform,
 )
+from .guard import (
+    ExecutionGuardResult,
+    GuardedOperationMixin,
+    OperationGuard,
+)
 
 for _obj in list(locals().values()):
     if isinstance(_obj, type) and issubclass(_obj, Operation) and _obj is not Operation:
@@ -30,7 +35,10 @@ for _obj in list(locals().values()):
 
 __all__ = [
     "Compositor",
+    "ExecutionGuardResult",
+    "GuardedOperationMixin",
     "Operation",
+    "OperationGuard",
     "apply_when",
     "categorical_aggregate2d",
     "chain",

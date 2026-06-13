@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import base64
-from collections.abc import MutableMapping
+import os
 from contextlib import contextmanager, suppress
+from io import BytesIO
 from itertools import chain
+from tempfile import NamedTemporaryFile
 
 import matplotlib as mpl
 import numpy as np
@@ -13,7 +15,6 @@ from param.parameterized import bothmethod
 
 from ...core import HoloMap
 from ...core.options import Store
-from ..artifact_manager import ArtifactKind, CleanupPolicy, artifact_manager
 from ..renderer import HTML_TAGS, MIME_TYPES, Renderer
 from .util import get_old_rcparams, get_tight_bbox
 
@@ -31,102 +32,6 @@ ANIMATION_OPTS = {
 }
 
 
-class _BboxCacheMirror(MutableMapping):
-    """A MutableMapping that forwards ALL operations to the artifact_manager
-    LRU cache for MPL tight bounding boxes.  There is **no** local
-    storage — the authoritative single source of truth is the
-    artifact_manager cache.
-
-    Unlike a dict subclass, MutableMapping has no internal state and
-    cannot diverge from the cache.  The five abstract methods
-    (__getitem__, __setitem__, __delitem__, __iter__, __len__) are
-    implemented explicitly; all other dict operations are provided by
-    MutableMapping based on those.  Common methods (get, __contains__,
-    pop, clear) are overridden for O(1) performance.
-    """
-
-    _CACHE_PREFIX = "mpl_bbox"
-    _SENTINEL = object()
-
-    def __getitem__(self, fig_id):
-        key = (self._CACHE_PREFIX, fig_id)
-        value = artifact_manager.cache_get(key, self._SENTINEL)
-        if value is self._SENTINEL:
-            raise KeyError(fig_id)
-        return value
-
-    def __setitem__(self, fig_id, value):
-        key = (self._CACHE_PREFIX, fig_id)
-        artifact_manager.cache_put(
-            key,
-            value,
-            format="bbox",
-            policy=CleanupPolicy.RENDER_CYCLE,
-            refs={"fig_id": fig_id},
-        )
-
-    def __delitem__(self, fig_id):
-        key = (self._CACHE_PREFIX, fig_id)
-        if not artifact_manager.cache_delete(key):
-            raise KeyError(fig_id)
-
-    def __iter__(self):
-        for art in artifact_manager.list_artifacts(
-            kind=ArtifactKind.CACHE_ENTRY, released=False
-        ):
-            ck = art.refs.get("cache_key", "")
-            if ck.startswith("('mpl_bbox'"):
-                try:
-                    fig_id = int(ck.rsplit(",", 1)[-1].rstrip(")").strip())
-                except (ValueError, IndexError):
-                    continue
-                yield fig_id
-
-    def __len__(self):
-        return sum(
-            1
-            for art in artifact_manager.list_artifacts(
-                kind=ArtifactKind.CACHE_ENTRY, released=False
-            )
-            if art.refs.get("cache_key", "").startswith("('mpl_bbox'")
-        )
-
-    # --- O(1) overrides to avoid MutableMapping's default O(N) impls ---
-
-    def get(self, fig_id, default=None):
-        key = (self._CACHE_PREFIX, fig_id)
-        value = artifact_manager.cache_get(key, self._SENTINEL)
-        return default if value is self._SENTINEL else value
-
-    def __contains__(self, fig_id):
-        return artifact_manager.cache_has((self._CACHE_PREFIX, fig_id))
-
-    def pop(self, fig_id, *args):
-        key = (self._CACHE_PREFIX, fig_id)
-        value = artifact_manager.cache_pop(key, self._SENTINEL)
-        if value is self._SENTINEL:
-            if args:
-                return args[0]
-            raise KeyError(fig_id)
-        return value
-
-    def clear(self):
-        for art in list(
-            artifact_manager.list_artifacts(kind=ArtifactKind.CACHE_ENTRY)
-        ):
-            if art.refs.get("cache_key", "").startswith("('mpl_bbox'"):
-                art.release()
-
-    def keys(self):
-        return list(self)
-
-    def values(self):
-        return [self[k] for k in self]
-
-    def items(self):
-        return [(k, self[k]) for k in self]
-
-
 class MPLRenderer(Renderer):
     """Exporter used to render data from matplotlib, either to a stream
     or directly to file.
@@ -141,13 +46,7 @@ class MPLRenderer(Renderer):
 
     """
 
-    # NOTE: this used to be a plain dict that was written to in parallel
-    # with the artifact_manager LRU cache, risking double-ownership and
-    # stale references.  It is now a dict subclass that transparently
-    # mirrors the artifact_manager cache (authoritative single source).
-    # All reads and writes are forwarded; the legacy dict is no longer
-    # an independent store.
-    drawn = _BboxCacheMirror()
+    drawn = {}
 
     backend = param.String("matplotlib", doc="The backend name.")
 
@@ -251,72 +150,51 @@ class MPLRenderer(Renderer):
         any IPython dependency.
 
         """
-        owner = type(self).__name__
-        with artifact_manager.default_owner(owner):
-            with artifact_manager.scope(f"mpl-figdata-{id(plot)}") as scope:
-                scope.register_external_object(
-                    ArtifactKind.MPL_FIGURE,
-                    plot.state,
-                    source="renderer",
-                    refs={"plot_id": id(plot), "format": fmt},
+        if fmt in ["gif", "mp4", "webm"]:
+            with mpl.rc_context(rc=plot.fig_rcparams):
+                if bbox_inches == "tight":
+                    self._adjust_figure_for_anim(plot, fmt)
+                anim = plot.anim(fps=self.fps)
+            data = self._anim_data(anim, fmt)
+        else:
+            fig = plot.state
+
+            traverse_fn = lambda x: x.handles.get("bbox_extra_artists", None)
+            extra_artists = list(
+                chain.from_iterable(
+                    artists for artists in plot.traverse(traverse_fn) if artists is not None
                 )
+            )
 
-                if fmt in ["gif", "mp4", "webm"]:
-                    with mpl.rc_context(rc=plot.fig_rcparams):
-                        if bbox_inches == "tight":
-                            self._adjust_figure_for_anim(plot, fmt)
-                        anim = plot.anim(fps=self.fps)
-                    data = self._anim_data(anim, fmt, scope=scope)
-                else:
-                    fig = plot.state
+            kw = dict(
+                format=fmt,
+                facecolor=fig.get_facecolor(),
+                edgecolor=fig.get_edgecolor(),
+                dpi=self.dpi,
+                bbox_inches=bbox_inches,
+                bbox_extra_artists=extra_artists,
+            )
+            kw.update(kwargs)
 
-                    traverse_fn = lambda x: x.handles.get("bbox_extra_artists", None)
-                    extra_artists = list(
-                        chain.from_iterable(
-                            artists for artists in plot.traverse(traverse_fn) if artists is not None
-                        )
-                    )
+            with np.errstate(invalid="ignore"):
+                with suppress(Exception):
+                    # Attempts to precompute the tight bounding box
+                    kw = self._compute_bbox(fig, kw)
+                bytes_io = BytesIO()
+                fig.canvas.print_figure(bytes_io, **kw)
+            data = bytes_io.getvalue()
 
-                    kw = dict(
-                        format=fmt,
-                        facecolor=fig.get_facecolor(),
-                        edgecolor=fig.get_edgecolor(),
-                        dpi=self.dpi,
-                        bbox_inches=bbox_inches,
-                        bbox_extra_artists=extra_artists,
-                    )
-                    kw.update(kwargs)
+        if as_script:
+            b64 = base64.b64encode(data).decode("utf-8")
+            (mime_type, tag) = MIME_TYPES[fmt], HTML_TAGS[fmt]
+            src = HTML_TAGS["base64"].format(mime_type=mime_type, b64=b64)
+            html = tag.format(src=src, mime_type=mime_type, css="")
+            return html
+        if fmt == "svg":
+            data = data.decode("utf-8")
+        return data
 
-                    with np.errstate(invalid="ignore"):
-                        with suppress(Exception):
-                            kw = self._compute_bbox(fig, kw)
-                        _, bytes_io = scope.create_bytesio(format=fmt)
-                        fig.canvas.print_figure(bytes_io, **kw)
-                    bytes_io.seek(0)
-                    data = bytes_io.read()
-
-                if as_script:
-                    b64 = base64.b64encode(data).decode("utf-8")
-                    (mime_type, tag) = MIME_TYPES[fmt], HTML_TAGS[fmt]
-                    src = HTML_TAGS["base64"].format(mime_type=mime_type, b64=b64)
-                    html = tag.format(src=src, mime_type=mime_type, css="")
-                    scope.register_data(
-                        html,
-                        format="html",
-                        policy=CleanupPolicy.SCOPE_EXIT,
-                        refs={"source_fmt": fmt},
-                    )
-                    return html
-                if fmt == "svg":
-                    data = data.decode("utf-8")
-                scope.register_data(
-                    data,
-                    format=fmt,
-                    policy=CleanupPolicy.SCOPE_EXIT,
-                )
-                return data
-
-    def _anim_data(self, anim, fmt, scope=None):
+    def _anim_data(self, anim, fmt):
         """Render a matplotlib animation object and return the corresponding data."""
         (writer, _, anim_kwargs, extra_args) = ANIMATION_OPTS[fmt]
         if extra_args != []:
@@ -327,25 +205,12 @@ class MPLRenderer(Renderer):
         if self.dpi is not None:
             anim_kwargs["dpi"] = self.dpi
         if not hasattr(anim, "_encoded_video"):
-            _manager = scope if scope is not None else artifact_manager
-            _scope_owner = type(self).__name__
-            with artifact_manager.default_owner(_scope_owner):
-                if scope is None:
-                    _ctx = artifact_manager.scope(f"mpl-anim-{id(anim)}")
-                    _manager = _ctx.__enter__()
-                else:
-                    _ctx = None
-                try:
-                    art, _ = _manager.create_tempfile(
-                        format=fmt,
-                        policy=CleanupPolicy.SCOPE_EXIT,
-                    )
-                    anim.save(art.path, writer=writer, **anim_kwargs)
-                    with open(art.path, "rb") as f:
-                        video = f.read()
-                finally:
-                    if _ctx is not None:
-                        _ctx.__exit__(None, None, None)
+            # Windows will throw PermissionError with auto-delete
+            with NamedTemporaryFile(suffix=f".{fmt}", delete=False) as f:
+                anim.save(f.name, writer=writer, **anim_kwargs)
+                video = f.read()
+            f.close()
+            os.remove(f.name)
         return video
 
     def _compute_bbox(self, fig, kw):
@@ -357,35 +222,19 @@ class MPLRenderer(Renderer):
         matplotlib.backend_bases.FigureCanvasBase.print_figure
         as it hasn't been factored out as a function.
 
-        Single source of truth is the artifact_manager LRU cache.
-        The legacy ``MPLRenderer.drawn`` dict is kept only as a
-        read-through mirror (populated from the authoritative cache
-        on demand) and should not be written to directly.
         """
         fig_id = id(fig)
-        cache_key = ("mpl_bbox", fig_id)
         if kw["bbox_inches"] == "tight":
-            cached = artifact_manager.cache_get(cache_key)
-            if cached is None:
+            if fig_id not in MPLRenderer.drawn:
                 fig.set_dpi(self.dpi)
                 fig.canvas.draw()
                 extra_artists = kw.pop("bbox_extra_artists", [])
                 pad = mpl.rcParams["savefig.pad_inches"]
                 bbox_inches = get_tight_bbox(fig, extra_artists, pad=pad)
-                artifact_manager.cache_put(
-                    cache_key,
-                    bbox_inches,
-                    format="bbox",
-                    policy=CleanupPolicy.RENDER_CYCLE,
-                    refs={"fig_id": fig_id},
-                )
+                MPLRenderer.drawn[fig_id] = bbox_inches
                 kw["bbox_inches"] = bbox_inches
             else:
-                kw["bbox_inches"] = cached
-            # Clear any stale entry in the legacy mirror dict — authority
-            # is now the artifact_manager LRU cache, so this reference
-            # is not needed and risks memory leaks.
-            MPLRenderer.drawn.pop(fig_id, None)
+                kw["bbox_inches"] = MPLRenderer.drawn[fig_id]
         return kw
 
     def _adjust_figure_for_anim(self, plot, fmt):

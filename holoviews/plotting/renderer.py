@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import base64
 import os
-import tempfile
 from contextlib import contextmanager
 from functools import partial
 from io import BytesIO, StringIO
@@ -98,97 +97,6 @@ static_template = """
   </body>
 </html>
 """
-
-
-from collections.abc import MutableMapping
-
-
-class _PlotRegistryMirror(MutableMapping):
-    """A MutableMapping that forwards ALL operations to the artifact_manager
-    plot registry.  There is **no** local state — the authoritative store
-    is the artifact_manager.  This eliminates the dual-tracking risk
-    between ``Renderer._plots`` and the artifact_manager.
-
-    Unlike a dict subclass, MutableMapping has no internal storage, so
-    there is no second copy of data that could diverge.  Only the five
-    abstract methods are explicitly implemented; all other dict-style
-    methods (get, keys, values, items, pop, clear, update,
-    __contains__, etc.) are provided by MutableMapping based on those.
-    """
-
-    def __getitem__(self, plot_id):
-        plot = artifact_manager.get_plot(str(plot_id))
-        if plot is None:
-            raise KeyError(plot_id)
-        # Legacy convention: _plots returns (plot, pane) tuples; pane is
-        # unused in this path so we return None.
-        return plot, None
-
-    def __setitem__(self, plot_id, value):
-        # Legacy convention: value may be a plot object or (plot, pane) tuple
-        if isinstance(value, tuple) and len(value) >= 1:
-            plot_obj = value[0]
-        else:
-            plot_obj = value
-        artifact_manager.register_plot(str(plot_id), plot_obj)
-
-    def __delitem__(self, plot_id):
-        if not artifact_manager.unregister_plot(str(plot_id)):
-            raise KeyError(plot_id)
-
-    def __iter__(self):
-        for art in artifact_manager.list_artifacts(
-            kind=ArtifactKind.PLOT_REGISTRY, released=False
-        ):
-            yield art.refs.get("plot_id")
-
-    def __len__(self):
-        return len(
-            artifact_manager.list_artifacts(
-                kind=ArtifactKind.PLOT_REGISTRY, released=False
-            )
-        )
-
-    # Explicit override for common operations to avoid O(N) overhead
-    def get(self, plot_id, default=None):
-        plot = artifact_manager.get_plot(str(plot_id))
-        if plot is None:
-            return default
-        return plot, None
-
-    def __contains__(self, plot_id):
-        return artifact_manager.get_plot(str(plot_id)) is not None
-
-    def pop(self, plot_id, *args):
-        plot = artifact_manager.get_plot(str(plot_id))
-        if plot is None:
-            if args:
-                return args[0]
-            raise KeyError(plot_id)
-        artifact_manager.unregister_plot(str(plot_id))
-        return plot, None
-
-    def clear(self):
-        for art in list(
-            artifact_manager.list_artifacts(kind=ArtifactKind.PLOT_REGISTRY)
-        ):
-            art.release()
-
-    def keys(self):
-        return list(self)
-
-    def values(self):
-        return [(art.obj, None) for art in artifact_manager.list_artifacts(
-            kind=ArtifactKind.PLOT_REGISTRY, released=False
-        )]
-
-    def items(self):
-        return [
-            (art.refs.get("plot_id"), (art.obj, None))
-            for art in artifact_manager.list_artifacts(
-                kind=ArtifactKind.PLOT_REGISTRY, released=False
-            )
-        ]
 
 
 class Renderer(Exporter):
@@ -326,11 +234,8 @@ class Renderer(Exporter):
     # Whether in a notebook context, set when running Renderer.load_nb
     notebook_context = False
 
-    # Plot registry — authoritative source is artifact_manager.
-    # This dict subclass transparently mirrors all operations
-    # (get/set/del/iter/len) so there is no double-tracking or
-    # stale-reference risk.
-    _plots: Dict[str, Plot] = _PlotRegistryMirror()  # type: ignore[assignment]
+    # Plot registry (backwards-compatible access via artifact_manager)
+    _plots: Dict[str, Plot] = {}
 
     # Whether to render plots with Panel
     _render_with_panel = False
@@ -349,40 +254,12 @@ class Renderer(Exporter):
         if plot is None:
             return None, info
         elif self.mode == "server":
-            doc = self.server_doc(plot, doc=kwargs.get("doc"))
-            with artifact_manager.default_owner(type(self).__name__):
-                artifact_manager.register(
-                    ArtifactKind.BOKEH_DOCUMENT,
-                    obj=doc,
-                    owner=type(self).__name__,
-                    format=fmt,
-                    policy=CleanupPolicy.RENDER_CYCLE,
-                    refs={"plot_id": id(plot)},
-                )
-            return doc, info
+            return self.server_doc(plot, doc=kwargs.get("doc")), info
         elif isinstance(plot, Viewable):
-            html = self.static_html(plot)
-            return html, info
+            return self.static_html(plot), info
         else:
-            with artifact_manager.default_owner(type(self).__name__):
-                with artifact_manager.scope(
-                    f"render-{type(self).__name__}-{id(plot)}"
-                ) as scope:
-                    data = self._figure_data(plot, fmt, **kwargs)
-                    data = self._apply_post_render_hooks(data, obj, fmt)
-                    # Final data returned to the caller is USER_OUTPUT:
-                    # release_all() will NOT release it by default, and
-                    # the caller holds a reference to it anyway.  The
-                    # scope can exit safely as only temporary artifacts
-                    # are released there.
-                    artifact = scope.register_output_data(
-                        data,
-                        format=fmt,
-                        mime_type=MIME_TYPES.get(fmt),
-                        refs={"plot_id": id(plot), "obj_id": id(obj)},
-                    )
-                    self._last_artifact = artifact
-                    artifact_manager.mark_render_cycle(scope.scope_id)
+            data = self._figure_data(plot, fmt, **kwargs)
+            data = self._apply_post_render_hooks(data, obj, fmt)
             return data, info
 
     @bothmethod
@@ -531,33 +408,24 @@ class Renderer(Exporter):
                 resources = CDN
             elif resources == "inline":
                 resources = INLINE
-            html = file_html(doc, resources)
+            return file_html(doc, resources)
         elif fmt in ["html", "json"]:
-            html = figdata
+            return figdata
+        elif fmt == "svg":
+            figdata = figdata.encode("utf-8")
+        elif fmt == "pdf" and "height" not in css:
+            _, h = self.get_size(plot)
+            css["height"] = f"{int(h * self.dpi * 1.15)}px"
+
+        if isinstance(css, dict):
+            css = "; ".join(f"{k}: {v}" for k, v in css.items())
         else:
-            if fmt == "svg":
-                figdata = figdata.encode("utf-8")
-            if fmt == "pdf" and "height" not in css:
-                _, h = self.get_size(plot)
-                css["height"] = f"{int(h * self.dpi * 1.15)}px"
+            raise ValueError("CSS must be supplied as Python dictionary")
 
-            if isinstance(css, dict):
-                css = "; ".join(f"{k}: {v}" for k, v in css.items())
-            else:
-                raise ValueError("CSS must be supplied as Python dictionary")
-
-            b64 = base64.b64encode(figdata).decode("utf-8")
-            (mime_type, tag) = MIME_TYPES[fmt], HTML_TAGS[fmt]
-            src = HTML_TAGS["base64"].format(mime_type=mime_type, b64=b64)
-            html = tag.format(src=src, mime_type=mime_type, css=css)
-
-        with artifact_manager.default_owner(type(self).__name__):
-            artifact_manager.register_output_data(
-                html,
-                format="html",
-                mime_type=MIME_TYPES["html"],
-                refs={"plot_id": id(plot), "source_fmt": fmt},
-            )
+        b64 = base64.b64encode(figdata).decode("utf-8")
+        (mime_type, tag) = MIME_TYPES[fmt], HTML_TAGS[fmt]
+        src = HTML_TAGS["base64"].format(mime_type=mime_type, b64=b64)
+        html = tag.format(src=src, mime_type=mime_type, css=css)
         return html
 
     def components(self, obj, fmt=None, comm=True, **kwargs):
@@ -571,20 +439,9 @@ class Renderer(Exporter):
         else:
             plot, fmt = self._validate(obj, fmt)
 
-        owner = type(self).__name__
         if not isinstance(plot, Viewable):
             html = self._figure_data(plot, fmt, as_script=True, **kwargs)
-            mime_data = {"text/html": html}
-            mime_metadata = {MIME_TYPES["jlab-hv-exec"]: {}}
-            with artifact_manager.default_owner(owner):
-                # Notebook MIME bundle is USER_OUTPUT: must survive
-                # release_all().  Backend artifacts created within
-                # _figure_data are scoped and cleaned separately.
-                artifact_manager.register_output_mime(
-                    mime_data,
-                    refs={"plot_id": id(plot), "as_script": True},
-                )
-            return mime_data, mime_metadata
+            return {"text/html": html}, {MIME_TYPES["jlab-hv-exec"]: {}}
 
         registry = list(Stream.registry.items())
         objects = plot.object.traverse(lambda x: x)
@@ -599,42 +456,15 @@ class Renderer(Exporter):
         if config.comms == "colab":
             load_notebook(config.inline)
         embed = not (dynamic or streams or self.widget_mode == "live") or config.embed
-        with artifact_manager.default_owner(owner):
-            if embed or config.comms == "default":
-                result = self._render_panel(plot, embed, comm)
-            else:
-                result = self._render_ipywidget(plot)
-            mime_data, mime_metadata = result
-            artifact_manager.register_output_mime(
-                mime_data,
-                refs={
-                    "plot_id": id(plot),
-                    "embed": embed,
-                    "dynamic": dynamic,
-                    "has_streams": streams,
-                },
-            )
-        return result
+        if embed or config.comms == "default":
+            return self._render_panel(plot, embed, comm)
+        return self._render_ipywidget(plot)
 
     def _render_panel(self, plot, embed=False, comm=True):
-        owner = type(self).__name__
         comm = self.comm_manager.get_server_comm() if comm else None
         doc = Document()
         with config.set(embed=embed):
             model = plot.layout._render_model(doc, comm)
-        with artifact_manager.default_owner(owner):
-            artifact_manager.register_external_object(
-                ArtifactKind.BOKEH_DOCUMENT,
-                doc,
-                source="renderer",
-                refs={"embed": embed},
-            )
-            artifact_manager.register_external_object(
-                ArtifactKind.BOKEH_MODEL,
-                model,
-                source="renderer",
-                refs={"doc_id": id(doc)},
-            )
         if embed:
             return render_model(model, comm)
         ref = model.ref["id"]
@@ -651,14 +481,6 @@ class Renderer(Exporter):
     def _render_ipywidget(self, plot):
         # Handle rendering object as ipywidget
         widget = ipywidget(plot, combine_events=True)
-        with artifact_manager.default_owner(type(self).__name__):
-            artifact_manager.register_external_object(
-                ArtifactKind.PANEL_VIEWABLE,
-                widget,
-                source="renderer",
-                format="ipywidget",
-                refs={"plot_id": id(plot)},
-            )
         if hasattr(widget, "_repr_mimebundle_"):
             return widget._repr_mimebundle_(), {}
         plaintext = repr(widget)
@@ -685,20 +507,10 @@ class Renderer(Exporter):
         with fields to interpolate 'js', 'css' and the main 'html'.
 
         """
-        owner = type(self).__name__
-        with artifact_manager.default_owner(owner):
-            with artifact_manager.scope(f"statichtml-{id(obj)}") as scope:
-                _, html_bytes = scope.create_stringio(format="html")
-                self.save(obj, html_bytes, fmt)
-                html_bytes.seek(0)
-                html_str = html_bytes.read()
-                # Final HTML string returned to caller is USER_OUTPUT
-                # so release_all() won't drop the caller's reference.
-                scope.register_output_data(
-                    html_str,
-                    format="html",
-                )
-        return html_str
+        html_bytes = StringIO()
+        self.save(obj, html_bytes, fmt)
+        html_bytes.seek(0)
+        return html_bytes.read()
 
     @bothmethod
     def get_widget(self_or_cls, plot, widget_type, **kwargs):
@@ -860,9 +672,6 @@ class Renderer(Exporter):
         with StoreOptions.options(obj, options, **kwargs):
             plot, fmt = self_or_cls._validate(obj, fmt)
 
-        owner = type(self_or_cls).__name__ if isinstance(self_or_cls, type) else type(self_or_cls).__name__
-        saved_path: Optional[str] = None
-
         if isinstance(plot, Viewable):
             from bokeh.resources import CDN, INLINE, Resources
 
@@ -877,64 +686,24 @@ class Renderer(Exporter):
                     title = os.path.basename(basename)
                 if fmt in MIME_TYPES:
                     basename = f"{basename}.{fmt}"
-                saved_path = basename
             plot.layout.save(basename, embed=True, resources=resources, title=title)
-        else:
-            rendered = self_or_cls(plot, fmt)
-            if rendered is None:
-                return
-            (_data, info) = rendered
-            encoded = self_or_cls.encode(rendered)
-            prefix = self_or_cls._save_prefix(info["file-ext"])
-            if prefix:
-                encoded = prefix + encoded
-            if isinstance(basename, (BytesIO, StringIO)):
-                basename.write(encoded)
-                basename.seek(0)
-            else:
-                filename = f"{basename}.{info['file-ext']}"
-                saved_path = filename
-                with open(filename, "wb") as f:
-                    f.write(encoded)
-
-        with artifact_manager.default_owner(owner):
-            if saved_path is not None:
-                # Files written by save() are USER_OUTPUT — they must
-                # survive release_all() unless the user explicitly opts
-                # in via include_user_output=True.
-                artifact_manager.register_output_file(
-                    saved_path,
-                    format=fmt,
-                    refs={
-                        "plot_id": id(plot),
-                        "obj_id": id(obj),
-                        "backend": type(self_or_cls).__name__ if isinstance(self_or_cls, type) else type(self_or_cls).__name__,
-                    },
-                )
-            elif isinstance(basename, (BytesIO, StringIO)):
-                artifact_manager.register(
-                    ArtifactKind.DATA_OUTPUT,
-                    format=fmt,
-                    policy=CleanupPolicy.MANUAL,
-                    refs={"plot_id": id(plot), "stream": True},
-                )
-
-    @classmethod
-    def _delete_plot(cls, plot_id):
-        """Deletes registered plots and calls Plot.cleanup.
-
-        Single-source-of-truth is the artifact_manager plot registry,
-        to which ``cls._plots`` is a transparent dict-subclass mirror.
-        Cleanup is called only once even though both stores are
-        logically the same.
-        """
-        plot = artifact_manager.get_plot(str(plot_id))
-        if plot is None:
             return
-        plot.cleanup()
-        # Unregister is sufficient — _plots mirrors artifact_manager
-        # so it will appear removed there too, without needing pop().
-        artifact_manager.unregister_plot(str(plot_id))
+
+        rendered = self_or_cls(plot, fmt)
+        if rendered is None:
+            return
+        (_data, info) = rendered
+        encoded = self_or_cls.encode(rendered)
+        prefix = self_or_cls._save_prefix(info["file-ext"])
+        if prefix:
+            encoded = prefix + encoded
+        if isinstance(basename, (BytesIO, StringIO)):
+            basename.write(encoded)
+            basename.seek(0)
+        else:
+            filename = f"{basename}.{info['file-ext']}"
+            with open(filename, "wb") as f:
+                f.write(encoded)
 
     @bothmethod
     def _save_prefix(self_or_cls, ext):
@@ -990,3 +759,12 @@ class Renderer(Exporter):
             cls.notebook_context = True
             cls.comm_manager = JupyterCommManagerBinary
             state._comm_manager = JupyterCommManagerBinary
+
+    @classmethod
+    def _delete_plot(cls, plot_id):
+        """Deletes registered plots and calls Plot.cleanup"""
+        plot = cls._plots.get(plot_id)
+        if plot is None:
+            return
+        plot.cleanup()
+        del cls._plots[plot_id]

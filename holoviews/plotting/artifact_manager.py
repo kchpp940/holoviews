@@ -1,37 +1,18 @@
 """Unified render artifact manager for HoloViews.
 
-Centralizes the management of renderer output artifacts.  Artifacts are
-organized into four mutually exclusive **ownership categories** that
-define distinct release semantics:
-
-1. ``TEMPORARY`` — Scratch artifacts created during a single render
-   pass (e.g. temporary files, BytesIO/StringIO buffers).  These are
-   **always** eligible for cleanup when their owning scope exits, and
-   are aggressively released by ``release_all()``.
-
-2. ``USER_OUTPUT`` — Files and MIME bundles that are intended to be
-   returned to the user (e.g. ``save()`` output, notebook display
-   payloads).  These are **never** released by ``release_all()``
-   unless explicitly forced with ``force=True``.
-
-3. ``EXTERNAL_OBJECT`` — Backend objects whose lifetime is managed by
-   an external framework (Bokeh Document, Matplotlib Figure, Panel
-   Viewable, Plotly Figure, etc.).  These have backend-specific
-   release handlers that properly tear down callbacks, sessions, and
-   widget references.
-
-4. ``CACHE`` — Intermediate computation results cached for reuse
-   across render cycles (e.g. tight bounding boxes, compiled plot
-   objects).  Managed via LRU eviction.
+Centralizes the management of renderer output artifacts including:
+- Temporary files and directories
+- In-memory buffers (BytesIO, StringIO)
+- Rendered data (HTML, PNG/SVG bytes, MIME bundles)
+- Backend-specific objects (Bokeh Document, Matplotlib Figure, Plotly Figure)
+- Caching of intermediate computation results
+- Debug metadata and resource reference tracking
 
 This module provides:
-1. ``ArtifactCategory``: Top-level ownership classification
-2. ``ArtifactKind``: Specific kind within a category
-3. ``CleanupPolicy``: When to auto-release
-4. ``RenderArtifact``: Dataclass representing one artifact
-5. ``ArtifactScope``: Context-manager grouping artifacts
-6. ``RenderArtifactManager``: Central registry, factory and cleaner
-7. Module-level singleton ``artifact_manager`` for global use
+1. ``RenderArtifact``: A dataclass representing a single artifact
+2. ``ArtifactScope``: A context-manager for scoped artifact lifetime
+3. ``RenderArtifactManager``: The central registry and factory
+4. Module-level singleton ``artifact_manager`` for global use
 """
 
 from __future__ import annotations
@@ -56,7 +37,7 @@ from typing import (
     Any,
     Callable,
     Dict,
-    FrozenSet,
+    Iterable,
     List,
     Optional,
     Set,
@@ -68,95 +49,45 @@ if TYPE_CHECKING:
     from types import TracebackType
 
 
-# Sentinel for internal use — distinguished from None which is a valid cache value
-_SENTINEL = object()
-
-
 # ---------------------------------------------------------------------------
-# Top-level ownership categories
-# ---------------------------------------------------------------------------
-
-
-class ArtifactCategory(str, Enum):
-    """Top-level ownership classification defining release semantics."""
-
-    TEMPORARY = "temporary"
-    USER_OUTPUT = "user_output"
-    EXTERNAL_OBJECT = "external_object"
-    CACHE = "cache"
-
-
-# ---------------------------------------------------------------------------
-# Artifact type enumeration with category mapping
+# Artifact type enumeration
 # ---------------------------------------------------------------------------
 
 
 class ArtifactKind(str, Enum):
-    """Specific kind of a render artifact, within a category."""
+    """Classification of a render artifact."""
 
-    # --- TEMPORARY ---
-    FILE_TEMP = "file_temp"
-    DIR_TEMP = "dir_temp"
-    BUFFER_BYTES = "buffer_bytes"
-    BUFFER_STRING = "buffer_string"
-
-    # --- USER_OUTPUT ---
-    FILE_OUTPUT = "file_output"       # save() to user-controlled path
-    DATA_OUTPUT = "data_output"       # final data returned to caller
-    MIME_OUTPUT = "mime_output"       # notebook MIME bundle payload
-
-    # --- EXTERNAL_OBJECT ---
-    BOKEH_DOCUMENT = "bokeh_document"
-    BOKEH_MODEL = "bokeh_model"
-    MPL_FIGURE = "mpl_figure"
-    PLOTLY_FIGURE = "plotly_figure"
-    PANEL_VIEWABLE = "panel_viewable"
-
-    # --- CACHE ---
-    CACHE_ENTRY = "cache_entry"
-    PLOT_REGISTRY = "plot_registry"   # plot object in Renderer._plots
-    PLOTLY_JSON = "plotly_json"
-
-    # --- Legacy / transitional kinds retained for BC ---
+    # In-memory data
     DATA_BYTES = "data_bytes"
     DATA_STR = "data_str"
     DATA_MIME = "data_mime"
 
-    # --- Fallback ---
+    # In-memory buffers
+    BUFFER_BYTES = "buffer_bytes"
+    BUFFER_STRING = "buffer_string"
+
+    # Filesystem artifacts
+    FILE_TEMP = "file_temp"
+    DIR_TEMP = "dir_temp"
+
+    # Backend plot objects
+    BOKEH_DOCUMENT = "bokeh_document"
+    BOKEH_MODEL = "bokeh_model"
+    MPL_FIGURE = "mpl_figure"
+    PLOTLY_FIGURE = "plotly_figure"
+    PLOTLY_JSON = "plotly_json"
+
+    # Panel / Viewable objects
+    PANEL_VIEWABLE = "panel_viewable"
+
+    # Computation cache entries
+    CACHE_ENTRY = "cache_entry"
+
+    # Plot registry entries
+    PLOT_REGISTRY = "plot_registry"
+
+    # Miscellaneous / user-defined
     OTHER = "other"
-
-    # --- Category membership sets ---
-    _TEMPORARY_KINDS: FrozenSet["ArtifactKind"] = frozenset({
-        FILE_TEMP, DIR_TEMP, BUFFER_BYTES, BUFFER_STRING,
-    })
-    _USER_OUTPUT_KINDS: FrozenSet["ArtifactKind"] = frozenset({
-        FILE_OUTPUT, DATA_OUTPUT, MIME_OUTPUT,
-    })
-    _EXTERNAL_KINDS: FrozenSet["ArtifactKind"] = frozenset({
-        BOKEH_DOCUMENT, BOKEH_MODEL, MPL_FIGURE,
-        PLOTLY_FIGURE, PANEL_VIEWABLE,
-    })
-    _CACHE_KINDS: FrozenSet["ArtifactKind"] = frozenset({
-        CACHE_ENTRY, PLOT_REGISTRY, PLOTLY_JSON,
-    })
-    _TRANSITIONAL_KINDS: FrozenSet["ArtifactKind"] = frozenset({
-        DATA_BYTES, DATA_STR, DATA_MIME,
-    })
-
-    @property
-    def category(self) -> ArtifactCategory:
-        """Return the ownership category of this kind."""
-        if self in self._TEMPORARY_KINDS:
-            return ArtifactCategory.TEMPORARY
-        if self in self._USER_OUTPUT_KINDS:
-            return ArtifactCategory.USER_OUTPUT
-        if self in self._EXTERNAL_KINDS:
-            return ArtifactCategory.EXTERNAL_OBJECT
-        if self in self._CACHE_KINDS:
-            return ArtifactCategory.CACHE
-        if self in self._TRANSITIONAL_KINDS:
-            return ArtifactCategory.TEMPORARY  # transitional -> temp
-        return ArtifactCategory.TEMPORARY
 
 
 # ---------------------------------------------------------------------------
@@ -245,11 +176,6 @@ class RenderArtifact:
     # ------------------------------------------------------------------
 
     @property
-    def category(self) -> ArtifactCategory:
-        """The ownership category of this artifact, derived from its kind."""
-        return self.kind.category
-
-    @property
     def released(self) -> bool:
         return self._released
 
@@ -282,16 +208,6 @@ class RenderArtifact:
     # ------------------------------------------------------------------
 
     def _do_release(self) -> None:
-        # ---- USER_OUTPUT: register-only, never destroy ----
-        # These artifacts belong to the caller.  Releasing them only
-        # drops our tracking reference; we NEVER unlink user files,
-        # mutate user data, or clear content.  This applies even when
-        # include_user_output=True is passed to release_all().
-        if self.category == ArtifactCategory.USER_OUTPUT:
-            self.obj = None
-            # path intentionally NOT removed for FILE_OUTPUT
-            return
-
         if self._cleanup_fn is not None:
             try:
                 self._cleanup_fn(self)
@@ -318,13 +234,13 @@ class RenderArtifact:
                     pass
             return
 
-        if self.kind in _backend_handlers():
+        if self.kind == ArtifactKind.MPL_FIGURE:
             try:
-                _backend_handlers()[self.kind](self)
+                import matplotlib.pyplot as plt
+
+                plt.close(self.obj)
             except Exception:  # noqa: BLE001
-                _log_warning(f"Backend handler failed for {self.kind}, art {self.id}")
-            finally:
-                self.obj = None
+                pass
             return
 
         # Default: drop reference
@@ -342,308 +258,6 @@ def _log_warning(msg: str) -> None:
         param.main.param.warning(f"[RenderArtifactManager] {msg}")
     except Exception:  # noqa: BLE001
         print(f"[RenderArtifactManager] WARNING: {msg}", file=sys.stderr)
-
-
-# ---------------------------------------------------------------------------
-# Backend-specific release handlers
-# ---------------------------------------------------------------------------
-
-
-def _release_bokeh_document(art: RenderArtifact) -> None:
-    """Release a Bokeh Document: remove roots, clear session callbacks,
-    destroy models.
-
-    This properly tears down the Bokeh object graph so it can be GC'd.
-    ONLY proceeds if the artifact's ``source`` is NOT ``"user"`` — we
-    never mutate documents that belong to user code.
-    """
-    if art.obj is None:
-        return
-    source = art.refs.get("source", "renderer")
-    if source == "user":
-        art.obj = None
-        return
-    doc = art.obj
-    try:
-        try:
-            from bokeh.document import Document
-            is_bokeh_doc = isinstance(doc, Document)
-        except Exception:  # noqa: BLE001
-            is_bokeh_doc = False
-
-        if is_bokeh_doc:
-            for root in list(doc.roots):
-                try:
-                    doc.remove_root(root)
-                except Exception:  # noqa: BLE001
-                    pass
-            for cb in list(getattr(doc, "session_callbacks", [])):
-                try:
-                    doc.remove_session_callback(cb)
-                except Exception:  # noqa: BLE001
-                    pass
-            session = getattr(doc, "_session", None)
-            if session is not None:
-                for cb in list(getattr(session, "_callbacks", {})):
-                    try:
-                        session.remove_timeout(cb)
-                    except Exception:  # noqa: BLE001
-                        pass
-            for sub in list(getattr(doc, "_subscribed_events", [])):
-                try:
-                    doc.unsubscribe(sub)
-                except Exception:  # noqa: BLE001
-                    pass
-            try:
-                doc.clear()
-            except Exception:  # noqa: BLE001
-                pass
-        else:
-            # Not a real Bokeh Document — try duck-typed cleanup so
-            # that fake objects / test doubles still get their clear()
-            # method called, respecting source protection.
-            for root in list(getattr(doc, "roots", [])):
-                try:
-                    doc.remove_root(root)
-                except Exception:  # noqa: BLE001
-                    pass
-            try:
-                doc.clear()
-            except Exception:  # noqa: BLE001
-                pass
-    except Exception:  # noqa: BLE001
-        pass
-    finally:
-        art.obj = None
-
-
-def _release_bokeh_model(art: RenderArtifact) -> None:
-    """Release a Bokeh Model: clear callbacks and references so it can be GC'd.
-
-    Respects the ``source`` ref: user-owned models are left untouched.
-    """
-    if art.obj is None:
-        return
-    source = art.refs.get("source", "renderer")
-    if source == "user":
-        art.obj = None
-        return
-    model = art.obj
-    try:
-        # Remove all references from the model
-        if hasattr(model, "_document"):
-            model._document = None
-        if hasattr(model, "_callbacks"):
-            try:
-                model._callbacks.clear()
-            except Exception:  # noqa: BLE001
-                pass
-        if hasattr(model, "js_property_callbacks"):
-            try:
-                model.js_property_callbacks.clear()
-            except Exception:  # noqa: BLE001
-                pass
-        if hasattr(model, "js_event_callbacks"):
-            try:
-                model.js_event_callbacks.clear()
-            except Exception:  # noqa: BLE001
-                pass
-        # Drop references to sub-models
-        if hasattr(model, "properties_with_refs"):
-            for prop in model.properties_with_refs():
-                try:
-                    setattr(model, prop, None)
-                except Exception:  # noqa: BLE001
-                    pass
-    except Exception:  # noqa: BLE001
-        pass
-    finally:
-        art.obj = None
-
-
-def _release_mpl_figure(art: RenderArtifact) -> None:
-    """Release a Matplotlib Figure via plt.close() and clear its contents.
-
-    Also clear axes and references so the figure can be garbage collected,
-    preventing Matplotlib's global figure registry no longer keeps it
-    alive.  Respects ``source == "user"`` — never close figures that
-    user code may still be using.
-    """
-    if art.obj is None:
-        return
-    source = art.refs.get("source", "renderer")
-    if source == "user":
-        art.obj = None
-        return
-    fig = art.obj
-    try:
-        import matplotlib.pyplot as plt
-
-        try:
-            for ax in list(fig.axes):
-                try:
-                    ax.cla()
-                    ax.clear()
-                except Exception:  # noqa: BLE001
-                    pass
-            try:
-                fig.clf()
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                fig._axstack.clear()
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                fig._cachedRenderer = None
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                plt.close(fig)
-            except Exception:  # noqa: BLE001
-                pass
-            # Also attempt to close by number if it was registered
-            try:
-                if hasattr(fig, "number") and fig.number is not None:
-                    try:
-                        plt.close(fig.number)
-                    except Exception:  # noqa: BLE001
-                        pass
-            except Exception:  # noqa: BLE001
-                pass
-        except Exception:  # noqa: BLE001
-            pass
-    finally:
-        art.obj = None
-
-
-def _release_plotly_figure(art: RenderArtifact) -> None:
-    """Release a Plotly Figure: clear data and references so it can be GC'd.
-
-    Respects ``source == "user"`` — user-owned figures are left intact.
-    """
-    if art.obj is None:
-        return
-    source = art.refs.get("source", "renderer")
-    if source == "user":
-        art.obj = None
-        return
-    fig = art.obj
-    try:
-        # Plotly figures can keep references to data arrays; clear them
-        if hasattr(fig, "data"):
-            try:
-                fig.data = []
-            except Exception:  # noqa: BLE001
-                pass
-        if hasattr(fig, "_data_objs"):
-            try:
-                fig._data_objs = []
-            except Exception:  # noqa: BLE001
-                pass
-        if hasattr(fig, "_plotlyjs_version"):
-            try:
-                del fig._plotlyjs_version
-            except Exception:  # noqa: BLE001
-                pass
-        # Clear the frame data
-        if hasattr(fig, "frames"):
-            try:
-                fig.frames = []
-            except Exception:  # noqa: BLE001
-                pass
-    except Exception:  # noqa: BLE001
-        pass
-    finally:
-        art.obj = None
-
-
-def _release_panel_viewable(art: RenderArtifact) -> None:
-    """Release a Panel Viewable / widget: clear model references,
-    callbacks and comms.
-
-    Panel objects can hold references to plots, documents, and comms
-    that prevent garbage collection.  Respects ``source == "user"``.
-    """
-    if art.obj is None:
-        return
-    source = art.refs.get("source", "renderer")
-    if source == "user":
-        art.obj = None
-        return
-    viewable = art.obj
-    try:
-        # Stop any running servers or watchers
-        if hasattr(viewable, "_cleanup"):
-            try:
-                viewable._cleanup()
-            except Exception:  # noqa: BLE001
-                pass
-        if hasattr(viewable, "cleanup"):
-            try:
-                viewable.cleanup()
-            except Exception:  # noqa: BLE001
-                pass
-        # Clear param watchers
-        if hasattr(viewable, "_watchers"):
-            try:
-                for pname in list(viewable._watchers.keys()):
-                    for w in list(viewable._watchers[pname]):
-                        try:
-                            viewable.unwatch(w)
-                        except Exception:  # noqa: BLE001
-                            pass
-            except Exception:  # noqa: BLE001
-                pass
-        # Drop internal references
-        if hasattr(viewable, "_models"):
-            try:
-                viewable._models = {}
-            except Exception:  # noqa: BLE001
-                pass
-        if hasattr(viewable, "_comms"):
-            try:
-                for comm in list(viewable._comms.values()):
-                    try:
-                        if hasattr(comm, "close"):
-                            comm.close()
-                    except Exception:  # noqa: BLE001
-                        pass
-            except Exception:  # noqa: BLE001
-                pass
-        if hasattr(viewable, "_layout"):
-            try:
-                viewable._layout = None
-            except Exception:  # noqa: BLE001
-                pass
-    except Exception:  # noqa: BLE001
-        pass
-    finally:
-        art.obj = None
-
-
-# Map ArtifactKind -> backend release handler, populated lazily
-# to avoid definition-order issues with RenderArtifact._do_release
-_BACKEND_HANDLERS: Optional[Dict[ArtifactKind, Callable[[RenderArtifact], None]]] = None
-
-
-def _backend_handlers() -> Dict[ArtifactKind, Callable[[RenderArtifact], None]]:
-    """Lazily-initialized backend handler registry.
-
-    This allows ``RenderArtifact._do_release`` to reference the
-    handlers even though the handler functions are defined later in
-    the module.
-    """
-    global _BACKEND_HANDLERS
-    if _BACKEND_HANDLERS is None:
-        _BACKEND_HANDLERS = {
-            ArtifactKind.BOKEH_DOCUMENT: _release_bokeh_document,
-            ArtifactKind.BOKEH_MODEL: _release_bokeh_model,
-            ArtifactKind.MPL_FIGURE: _release_mpl_figure,
-            ArtifactKind.PLOTLY_FIGURE: _release_plotly_figure,
-            ArtifactKind.PANEL_VIEWABLE: _release_panel_viewable,
-        }
-    return _BACKEND_HANDLERS
 
 
 # ---------------------------------------------------------------------------
@@ -679,31 +293,6 @@ class ArtifactScope:
         kwargs.setdefault("owner", self.owner)
         return self._manager.register(*args, **kwargs)
 
-    def register_data(self, *args: Any, **kwargs: Any) -> RenderArtifact:
-        kwargs.setdefault("scope_id", self.scope_id)
-        kwargs.setdefault("owner", self.owner)
-        return self._manager.register_data(*args, **kwargs)
-
-    def register_output_data(self, *args: Any, **kwargs: Any) -> RenderArtifact:
-        kwargs.setdefault("scope_id", self.scope_id)
-        kwargs.setdefault("owner", self.owner)
-        return self._manager.register_output_data(*args, **kwargs)
-
-    def register_output_file(self, *args: Any, **kwargs: Any) -> RenderArtifact:
-        kwargs.setdefault("scope_id", self.scope_id)
-        kwargs.setdefault("owner", self.owner)
-        return self._manager.register_output_file(*args, **kwargs)
-
-    def register_output_mime(self, *args: Any, **kwargs: Any) -> RenderArtifact:
-        kwargs.setdefault("scope_id", self.scope_id)
-        kwargs.setdefault("owner", self.owner)
-        return self._manager.register_output_mime(*args, **kwargs)
-
-    def register_external_object(self, *args: Any, **kwargs: Any) -> RenderArtifact:
-        kwargs.setdefault("scope_id", self.scope_id)
-        kwargs.setdefault("owner", self.owner)
-        return self._manager.register_external_object(*args, **kwargs)
-
     def create_tempfile(self, *args: Any, **kwargs: Any) -> Tuple[RenderArtifact, IO]:
         kwargs.setdefault("scope_id", self.scope_id)
         kwargs.setdefault("owner", self.owner)
@@ -732,34 +321,11 @@ class ArtifactScope:
     def cache_get(self, *args: Any, **kwargs: Any) -> Any:
         return self._manager.cache_get(*args, **kwargs)
 
-    def cache_has(self, *args: Any, **kwargs: Any) -> bool:
-        return self._manager.cache_has(*args, **kwargs)
+    def list_artifacts(self) -> List[RenderArtifact]:
+        return self._manager.list_artifacts(scope_id=self.scope_id)
 
-    def cache_pop(self, *args: Any, **kwargs: Any) -> Any:
-        return self._manager.cache_pop(*args, **kwargs)
-
-    def cache_delete(self, *args: Any, **kwargs: Any) -> bool:
-        return self._manager.cache_delete(*args, **kwargs)
-
-    def cache_clear(self) -> int:
-        return self._manager.cache_clear()
-
-    def list_artifacts(self, **kwargs: Any) -> List[RenderArtifact]:
-        kwargs.setdefault("scope_id", self.scope_id)
-        return self._manager.list_artifacts(**kwargs)
-
-    def release(
-        self,
-        policy: Optional[CleanupPolicy] = None,
-        include_user_output: bool = False,
-        categories: Optional[Iterable[Union[str, ArtifactCategory]]] = None,
-    ) -> int:
-        return self._manager.release_scope(
-            self.scope_id,
-            policy=policy,
-            include_user_output=include_user_output,
-            categories=categories,
-        )
+    def release(self, policy: Optional[CleanupPolicy] = None) -> int:
+        return self._manager.release_scope(self.scope_id, policy=policy)
 
     # ------------------------------------------------------------------
     # Context manager protocol
@@ -1104,161 +670,6 @@ class RenderArtifactManager:
         )
 
     # ------------------------------------------------------------------
-    # USER_OUTPUT: artifacts that belong to the caller
-    # ------------------------------------------------------------------
-
-    def register_output_data(
-        self,
-        data: Union[bytes, str, Dict[str, Any]],
-        *,
-        scope_id: Optional[str] = None,
-        owner: Optional[str] = None,
-        format: Optional[str] = None,  # noqa: A002
-        mime_type: Optional[str] = None,
-        refs: Optional[Dict[str, Any]] = None,
-    ) -> RenderArtifact:
-        """Register a final data payload that is returned to the user.
-
-        Unlike ``register_data``, the returned artifact has category
-        ``USER_OUTPUT`` and will **not** be released by a bare
-        ``release_all()`` or ``release_scope()`` call — only by
-        explicitly passing ``include_user_output=True``.
-
-        Use this for:
-        - Final PNG/SVG/HTML bytes returned from ``renderer(obj)``
-        - Notebook MIME bundles from ``components()`` or display hooks
-        - Any payload whose ownership is transferred to the caller
-        """
-        if isinstance(data, (bytes, bytearray, memoryview)):
-            kind = ArtifactKind.DATA_OUTPUT
-        elif isinstance(data, str):
-            kind = ArtifactKind.DATA_OUTPUT
-        elif isinstance(data, dict):
-            kind = ArtifactKind.MIME_OUTPUT
-        else:
-            raise TypeError(f"Unsupported data type for register_output_data: {type(data).__name__}")
-        extra_refs = dict(refs) if refs else {}
-        if mime_type:
-            extra_refs["mime_type"] = mime_type
-        return self.register(
-            kind,
-            obj=data,
-            scope_id=scope_id,
-            owner=owner,
-            refs=extra_refs,
-            policy=CleanupPolicy.MANUAL,
-            format=format,
-        )
-
-    def register_output_file(
-        self,
-        path: str,
-        *,
-        scope_id: Optional[str] = None,
-        owner: Optional[str] = None,
-        format: Optional[str] = None,  # noqa: A002
-        refs: Optional[Dict[str, Any]] = None,
-    ) -> RenderArtifact:
-        """Register a user-visible output file (e.g. from ``save()``).
-
-        The resulting artifact has category ``USER_OUTPUT`` with
-        policy ``MANUAL`` so ``release_all()`` will **not** delete
-        the file.  The file is still tracked for debugging purposes,
-        and callers may explicitly release it with
-        ``artifact.release()`` or ``release_all(include_user_output=True)``.
-        """
-        extra_refs = dict(refs) if refs else {}
-        extra_refs["output_path"] = path
-        return self.register(
-            ArtifactKind.FILE_OUTPUT,
-            obj=None,
-            scope_id=scope_id,
-            owner=owner,
-            path=path,
-            refs=extra_refs,
-            policy=CleanupPolicy.MANUAL,
-            format=format,
-        )
-
-    def register_output_mime(
-        self,
-        bundle: Dict[str, Any],
-        *,
-        scope_id: Optional[str] = None,
-        owner: Optional[str] = None,
-        refs: Optional[Dict[str, Any]] = None,
-    ) -> RenderArtifact:
-        """Convenience wrapper for registering a notebook MIME bundle
-        as a USER_OUTPUT artifact."""
-        return self.register_output_data(
-            bundle,
-            scope_id=scope_id,
-            owner=owner,
-            format="mimebundle",
-            refs=refs,
-        )
-
-    # ------------------------------------------------------------------
-    # EXTERNAL_OBJECT: backend objects we hold a temporary reference to
-    # ------------------------------------------------------------------
-
-    def register_external_object(
-        self,
-        kind: Union[str, ArtifactKind],
-        obj: Any,
-        *,
-        source: str = "renderer",
-        scope_id: Optional[str] = None,
-        owner: Optional[str] = None,
-        format: Optional[str] = None,  # noqa: A002
-        refs: Optional[Dict[str, Any]] = None,
-        policy: Union[str, CleanupPolicy] = CleanupPolicy.RENDER_CYCLE,
-    ) -> RenderArtifact:
-        """Register a backend object (Bokeh/MPL/Plotly/Panel) that we
-        hold a temporary reference to.
-
-        Parameters
-        ----------
-        kind : ArtifactKind
-            Must be in the EXTERNAL_OBJECT category.
-        obj : Any
-            The backend object to register.
-        source : str, default "renderer"
-            Who owns / created the object:
-            - ``"renderer"`` (default): created by the renderer, we own
-              the lifecycle and may tear it down on release.
-            - ``"manager"``: created by the artifact manager itself.
-            - ``"user"``: belongs to user code — release will **only**
-              drop the tracking reference, never modify the object.
-        refs : dict, optional
-            Additional metadata; ``source`` is automatically added.
-
-        Raises
-        ------
-        TypeError
-            If ``kind`` is not in the EXTERNAL_OBJECT category.
-        """
-        kind = ArtifactKind(kind) if isinstance(kind, str) else kind
-        if kind.category != ArtifactCategory.EXTERNAL_OBJECT:
-            raise TypeError(
-                f"register_external_object requires an EXTERNAL_OBJECT kind, "
-                f"got {kind.value} (category {kind.category.value})"
-            )
-        if source not in {"renderer", "manager", "user"}:
-            raise ValueError(f"source must be 'renderer', 'manager', or 'user', got {source!r}")
-        extra_refs = dict(refs) if refs else {}
-        extra_refs["source"] = source
-        return self.register(
-            kind,
-            obj=obj,
-            scope_id=scope_id,
-            owner=owner,
-            refs=extra_refs,
-            policy=policy,
-            format=format,
-        )
-
-    # ------------------------------------------------------------------
     # Plot registry (replaces Renderer._plots)
     # ------------------------------------------------------------------
 
@@ -1288,13 +699,7 @@ class RenderArtifactManager:
                 art.kind == ArtifactKind.PLOT_REGISTRY
                 and art.refs.get("plot_id") == plot_id
             ):
-                art.release()
-                del self._artifacts[art.id]
-                try:
-                    self._by_scope[art.scope_id].discard(art.id)
-                except KeyError:
-                    pass
-                return True
+                return art.release()
         return False
 
     # ------------------------------------------------------------------
@@ -1369,36 +774,6 @@ class RenderArtifactManager:
     def cache_has(self, key: Any) -> bool:
         return key in self._cache and not self._artifacts[self._cache[key]].released
 
-    def cache_pop(self, key: Any, default: Any = None) -> Any:
-        """Remove and return the value for ``key`` from the LRU cache.
-
-        If the key is not present, ``default`` is returned and no
-        exception is raised.  The corresponding artifact is released
-        and removed from tracking.
-        """
-        if key not in self._cache:
-            return default
-        art_id = self._cache.pop(key)
-        art = self._artifacts.pop(art_id, None)
-        value = default
-        if art is not None:
-            if not art.released:
-                value = art.obj
-                art.release()
-            try:
-                self._by_scope[art.scope_id].discard(art_id)
-            except KeyError:
-                pass
-        return value
-
-    def cache_delete(self, key: Any) -> bool:
-        """Delete the cache entry for ``key``.
-
-        Returns ``True`` if an entry existed and was removed,
-        ``False`` if no entry existed.
-        """
-        return self.cache_pop(key, _SENTINEL) is not _SENTINEL
-
     def cache_clear(self) -> int:
         """Clear all LRU cache entries.  Returns number of entries removed."""
         count = 0
@@ -1425,20 +800,10 @@ class RenderArtifactManager:
         kind: Optional[Union[str, ArtifactKind]] = None,
         owner: Optional[str] = None,
         released: Optional[bool] = None,
-        policy: Optional[Union[str, CleanupPolicy]] = None,
-        format: Optional[str] = None,  # noqa: A002
-        categories: Optional[Iterable[Union[str, ArtifactCategory]]] = None,
     ) -> List[RenderArtifact]:
         """Return a list of artifacts matching the given filters."""
         if kind is not None:
             kind = ArtifactKind(kind) if isinstance(kind, str) else kind
-        if policy is not None:
-            policy = CleanupPolicy(policy) if isinstance(policy, str) else policy
-        allowed_categories: Optional[Set[ArtifactCategory]] = None
-        if categories is not None:
-            allowed_categories = {
-                ArtifactCategory(c) if isinstance(c, str) else c for c in categories
-            }
         results: List[RenderArtifact] = []
         for art in self._artifacts.values():
             if scope_id is not None and art.scope_id != scope_id:
@@ -1448,12 +813,6 @@ class RenderArtifactManager:
             if owner is not None and art.owner != owner:
                 continue
             if released is not None and art.released != released:
-                continue
-            if policy is not None and art.policy != policy:
-                continue
-            if format is not None and art.format != format:
-                continue
-            if allowed_categories is not None and art.category not in allowed_categories:
                 continue
             results.append(art)
         return results
@@ -1478,40 +837,14 @@ class RenderArtifactManager:
         scope_id: str,
         *,
         policy: Optional[Union[str, CleanupPolicy]] = None,
-        include_user_output: bool = False,
-        categories: Optional[Iterable[Union[str, ArtifactCategory]]] = None,
     ) -> int:
         """Release artifacts in ``scope_id``.
 
-        Parameters
-        ----------
-        scope_id : str
-            The scope whose artifacts should be released.
-        policy : CleanupPolicy, optional
-            If given, only artifacts matching the policy are released.
-        include_user_output : bool, default False
-            If ``False`` (the default), artifacts with category
-            ``USER_OUTPUT`` are **never** released by this call, even
-            if they match ``policy``.  Pass ``True`` to opt in to
-            releasing user output as well.
-        categories : iterable of ArtifactCategory, optional
-            If given, only artifacts in these categories are released.
-            When both ``categories`` and ``include_user_output`` are
-            specified, both must allow a category for it to be
-            released.
-
-        Returns
-        -------
-        int
-            Number of artifacts actually released in this call.
+        If ``policy`` is given, only artifacts matching the policy are
+        released; otherwise all artifacts in the scope are released.
         """
         if policy is not None:
             policy = CleanupPolicy(policy) if isinstance(policy, str) else policy
-        allowed_categories: Optional[Set[ArtifactCategory]] = None
-        if categories is not None:
-            allowed_categories = {
-                ArtifactCategory(c) if isinstance(c, str) else c for c in categories
-            }
         ids = self._by_scope.get(scope_id, set()).copy()
         count = 0
         for aid in ids:
@@ -1519,10 +852,6 @@ class RenderArtifactManager:
             if art is None:
                 continue
             if policy is not None and art.policy != policy:
-                continue
-            if not include_user_output and art.category == ArtifactCategory.USER_OUTPUT:
-                continue
-            if allowed_categories is not None and art.category not in allowed_categories:
                 continue
             if art.release():
                 count += 1
@@ -1532,44 +861,13 @@ class RenderArtifactManager:
         self,
         *,
         policy: Optional[Union[str, CleanupPolicy]] = None,
-        include_user_output: bool = False,
-        categories: Optional[Iterable[Union[str, ArtifactCategory]]] = None,
     ) -> int:
-        """Release all tracked artifacts, respecting ownership boundaries.
-
-        Parameters
-        ----------
-        policy : CleanupPolicy, optional
-            Only release artifacts matching this policy.
-        include_user_output : bool, default False
-            ``USER_OUTPUT`` artifacts (files written by ``save()``,
-            notebook MIME bundles returned to the user) are **never**
-            released unless this flag is explicitly set to ``True``.
-            This prevents accidental deletion of user files.
-        categories : iterable of ArtifactCategory, optional
-            If given, only release artifacts whose top-level ownership
-            category is in this set.  ``USER_OUTPUT`` additionally
-            requires ``include_user_output=True``.
-
-        Returns
-        -------
-        int
-            Number of artifacts actually released.
-        """
+        """Release all artifacts (optionally filtered by policy)."""
         if policy is not None:
             policy = CleanupPolicy(policy) if isinstance(policy, str) else policy
-        allowed_categories: Optional[Set[ArtifactCategory]] = None
-        if categories is not None:
-            allowed_categories = {
-                ArtifactCategory(c) if isinstance(c, str) else c for c in categories
-            }
         count = 0
         for art in list(self._artifacts.values()):
             if policy is not None and art.policy != policy:
-                continue
-            if art.category == ArtifactCategory.USER_OUTPUT and not include_user_output:
-                continue
-            if allowed_categories is not None and art.category not in allowed_categories:
                 continue
             if art.release():
                 count += 1
@@ -1721,7 +1019,6 @@ artifact_manager = RenderArtifactManager()
 
 
 __all__ = [
-    "ArtifactCategory",
     "ArtifactKind",
     "ArtifactScope",
     "CleanupPolicy",
