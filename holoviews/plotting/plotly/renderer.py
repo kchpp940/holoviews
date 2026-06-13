@@ -102,9 +102,21 @@ class PlotlyRenderer(Renderer):
 
     def _figure_data(self, plot, fmt, as_script=False, **kwargs):
         if fmt == "gif":
-            import plotly.io as pio
-            from PIL import Image
-            from plotly.io.orca import ensure_server, shutdown_server, status
+            try:
+                import plotly.io as pio
+                from PIL import Image
+                from plotly.io.orca import ensure_server, shutdown_server, status
+            except Exception as e:
+                from ...core.util.capabilities import (
+                    CapabilityError,
+                    get_backend_static_export_capability,
+                )
+                diag = get_backend_static_export_capability("plotly", fmt)
+                raise CapabilityError(diag.with_error(
+                    diag.status,
+                    f"Failed to import plotly export dependencies for {fmt}: {e}",
+                    diag.fix_suggestions,
+                )) from e
 
             running = status.state == "running"
             if not running:
@@ -136,7 +148,19 @@ class PlotlyRenderer(Renderer):
             bio.seek(0)
             data = bio.read()
         elif fmt in ("png", "svg"):
-            import plotly.io as pio
+            try:
+                import plotly.io as pio
+            except Exception as e:
+                from ...core.util.capabilities import (
+                    CapabilityError,
+                    get_backend_static_export_capability,
+                )
+                diag = get_backend_static_export_capability("plotly", fmt)
+                raise CapabilityError(diag.with_error(
+                    diag.status,
+                    f"Failed to import plotly export dependencies for {fmt}: {e}",
+                    diag.fix_suggestions,
+                )) from e
 
             # Wrapping plot.state in go.Figure here performs validation
             # and applies any default theme.

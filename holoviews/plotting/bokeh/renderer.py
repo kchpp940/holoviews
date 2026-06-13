@@ -106,8 +106,20 @@ class BokehRenderer(Renderer):
 
         data = None
         if fmt == "gif":
-            from bokeh.io.export import get_screenshot_as_png
-            from bokeh.io.webdriver import webdriver_control
+            try:
+                from bokeh.io.export import get_screenshot_as_png
+                from bokeh.io.webdriver import webdriver_control
+            except Exception as e:
+                from ...core.util.capabilities import (
+                    CapabilityError,
+                    get_backend_static_export_capability,
+                )
+                diag = get_backend_static_export_capability("bokeh", fmt)
+                raise CapabilityError(diag.with_error(
+                    diag.status,
+                    f"Failed to import bokeh export dependencies for {fmt}: {e}",
+                    diag.fix_suggestions,
+                )) from e
 
             if state.webdriver is None:
                 webdriver = webdriver_control.create()
@@ -136,7 +148,19 @@ class BokehRenderer(Renderer):
             bio.seek(0)
             data = bio.read()
         elif fmt == "png":
-            from bokeh.io.export import get_screenshot_as_png
+            try:
+                from bokeh.io.export import get_screenshot_as_png
+            except Exception as e:
+                from ...core.util.capabilities import (
+                    CapabilityError,
+                    get_backend_static_export_capability,
+                )
+                diag = get_backend_static_export_capability("bokeh", fmt)
+                raise CapabilityError(diag.with_error(
+                    diag.status,
+                    f"Failed to import bokeh export dependencies for {fmt}: {e}",
+                    diag.fix_suggestions,
+                )) from e
 
             img = get_screenshot_as_png(plot.state, driver=state.webdriver)
             imgByteArr = BytesIO()

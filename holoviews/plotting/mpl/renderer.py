@@ -155,7 +155,19 @@ class MPLRenderer(Renderer):
                 if bbox_inches == "tight":
                     self._adjust_figure_for_anim(plot, fmt)
                 anim = plot.anim(fps=self.fps)
-            data = self._anim_data(anim, fmt)
+            try:
+                data = self._anim_data(anim, fmt)
+            except Exception as e:
+                from ...core.util.capabilities import (
+                    CapabilityError,
+                    get_backend_static_export_capability,
+                )
+                diag = get_backend_static_export_capability("matplotlib", fmt)
+                raise CapabilityError(diag.with_error(
+                    diag.status,
+                    f"Failed to render {fmt} animation: {e}",
+                    diag.fix_suggestions,
+                )) from e
         else:
             fig = plot.state
 

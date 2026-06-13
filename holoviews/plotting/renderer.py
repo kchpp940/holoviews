@@ -248,6 +248,9 @@ class Renderer(Exporter):
         elif isinstance(plot, Viewable):
             return self.static_html(plot), info
         else:
+            from ..core.util.capabilities import require_static_export
+
+            require_static_export(self.backend, fmt)
             data = self._figure_data(plot, fmt, **kwargs)
             data = self._apply_post_render_hooks(data, obj, fmt)
             return data, info
@@ -661,6 +664,10 @@ class Renderer(Exporter):
 
         with StoreOptions.options(obj, options, **kwargs):
             plot, fmt = self_or_cls._validate(obj, fmt)
+
+        from ..core.util.capabilities import require_static_export
+
+        require_static_export(self_or_cls.backend, fmt)
 
         if isinstance(plot, Viewable):
             from bokeh.resources import CDN, INLINE, Resources

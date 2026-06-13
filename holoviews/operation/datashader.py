@@ -11,20 +11,36 @@ from ..core.util.capabilities import (
     import_datashader,
 )
 
-_ds_diag = import_datashader()
-if not _ds_diag.available:
-    raise CapabilityError(_ds_diag)
+try:
+    import datashader as ds
+    import datashader.reductions as rd
+    import datashader.transfer_functions as tf
+    from datashader.colors import color_lookup
+except Exception:
+    ds = None
+    rd = None
+    tf = None
+    color_lookup = None
 
-import datashader as ds
-import datashader.reductions as rd
-import datashader.transfer_functions as tf
 import narwhals.stable.v2 as nw
 import numpy as np
 import pandas as pd
 import param
 import xarray as xr
-from datashader.colors import color_lookup
 from param.parameterized import bothmethod
+
+
+def _require_datashader():
+    _ds_diag = import_datashader()
+    if not _ds_diag.available:
+        raise CapabilityError(_ds_diag)
+    return _ds_diag
+
+
+class _DatashaderOperationMixin:
+    def _apply(self, element, key=None):
+        _require_datashader()
+        return super()._apply(element, key)  # type: ignore[misc]
 
 from ..core import (
     CompositeOverlay,
@@ -115,15 +131,15 @@ class AggState(enum.Enum):
         return state in (AggState.AGG_BY, AggState.AGG_SEL_BY)
 
 
-class AggregationOperation(ResampleOperation2D):
+class AggregationOperation(_DatashaderOperationMixin, ResampleOperation2D):
     """AggregationOperation extends the ResampleOperation2D defining an
     aggregator parameter used to define a datashader Reduction.
 
     """
 
     aggregator = param.ClassSelector(
-        class_=(rd.Reduction, rd.summary, str),
-        default=rd.count(),
+        class_=(str,),
+        default=None,
         doc="""
         Datashader reduction function used for aggregating the data.
         The aggregator may also define a column to aggregate; if
@@ -132,7 +148,7 @@ class AggregationOperation(ResampleOperation2D):
     )
 
     selector = param.ClassSelector(
-        class_=(rd.min, rd.max, rd.first, rd.last),
+        class_=(type(None),),
         default=None,
         doc="""
         Selector is a datashader reduction function used for selecting data.
@@ -148,20 +164,7 @@ class AggregationOperation(ResampleOperation2D):
         templates in the names of the input element key dimensions.""",
     )
 
-    _agg_methods = {
-        "any": rd.any,
-        "count": rd.count,
-        "first": rd.first,
-        "last": rd.last,
-        "mode": rd.mode,
-        "mean": rd.mean,
-        "sum": rd.sum,
-        "var": rd.var,
-        "std": rd.std,
-        "min": rd.min,
-        "max": rd.max,
-        "count_cat": rd.count_cat,
-    }
+    _agg_methods = None
 
     @staticmethod
     def _overlay_wide_mapping(element, elements):
@@ -232,6 +235,32 @@ class AggregationOperation(ResampleOperation2D):
 
     @classmethod
     def _get_aggregator(cls, element, agg, add_field=True):
+        _require_datashader()
+
+        if cls._agg_methods is None:
+            cls._agg_methods = {
+                "any": rd.any,
+                "count": rd.count,
+                "first": rd.first,
+                "last": rd.last,
+                "mode": rd.mode,
+                "mean": rd.mean,
+                "sum": rd.sum,
+                "var": rd.var,
+                "std": rd.std,
+                "min": rd.min,
+                "max": rd.max,
+                "count_cat": rd.count_cat,
+            }
+
+        if agg is None:
+            if cls.__name__ == "curve_aggregate":
+                agg = rd.count(self_intersect=False)
+            elif cls.__name__ in ("regrid", "contours_rasterize", "trimesh_rasterize", "geometry_rasterize"):
+                agg = rd.mean()
+            else:
+                agg = rd.count()
+
         if DATASHADER_GE_0_15_1:
             agg_types = (rd.count, rd.any, rd.where)
         else:
@@ -585,6 +614,7 @@ class aggregate(LineAggregationOperation):
         return x, y, Dataset(df, kdims=kdims, vdims=vdims), glyph
 
     def _process(self, element, key=None):
+        _require_datashader()
         agg_fn, sel_fn, agg_state = self._get_agg_state(element)
         category_name = self._get_category_column_name(agg_fn)
 
@@ -674,8 +704,8 @@ class curve_aggregate(aggregate):
     """
 
     aggregator = param.ClassSelector(
-        class_=(rd.Reduction, rd.summary, str),
-        default=rd.count(self_intersect=False),
+        class_=(str,),
+        default=None,
         doc="""
         Datashader reduction function used for aggregating the data.
         The aggregator may also define a column to aggregate; if
@@ -1021,7 +1051,7 @@ class regrid(AggregationOperation):
 
     """
 
-    aggregator = param.ClassSelector(default=rd.mean(), class_=(rd.Reduction, rd.summary, str))
+    aggregator = param.ClassSelector(default=None, class_=(str,))
 
     expand = param.Boolean(
         default=False,
@@ -1167,7 +1197,7 @@ class contours_rasterize(aggregate):
 
     """
 
-    aggregator = param.ClassSelector(default=rd.mean(), class_=(rd.Reduction, rd.summary, str))
+    aggregator = param.ClassSelector(default=None, class_=(str,))
 
     @classmethod
     def _get_aggregator(cls, element, agg, add_field=True):
@@ -1184,7 +1214,7 @@ class trimesh_rasterize(aggregate):
 
     """
 
-    aggregator = param.ClassSelector(default=rd.mean(), class_=(rd.Reduction, rd.summary, str))
+    aggregator = param.ClassSelector(default=None, class_=(str,))
 
     interpolation = param.Selector(
         default="bilinear",
@@ -1354,7 +1384,7 @@ class quadmesh_rasterize(trimesh_rasterize):
         return Image(agg, **params)
 
 
-class shade(LinkableOperation):
+class shade(_DatashaderOperationMixin, LinkableOperation):
     """shade applies a normalization function followed by colormapping to
     an Image or NdOverlay of Images, returning an RGB Element.
     The data must be in the form of a 2D or 3D DataArray, but NdOverlays
@@ -1529,6 +1559,7 @@ class shade(LinkableOperation):
         return array
 
     def _process(self, element, key=None):
+        _require_datashader()
         element = element.map(self.to_xarray, Image)
         if isinstance(element, NdOverlay):
             bounds = element.last.bounds
@@ -1639,7 +1670,7 @@ class shade(LinkableOperation):
 class geometry_rasterize(LineAggregationOperation):
     """Rasterizes geometries by converting them to spatialpandas."""
 
-    aggregator = param.ClassSelector(default=rd.mean(), class_=(rd.Reduction, rd.summary, str))
+    aggregator = param.ClassSelector(default=None, class_=(str,))
 
     @classmethod
     def _get_aggregator(cls, element, agg, add_field=True):
@@ -1728,7 +1759,7 @@ class rasterize(AggregationOperation):
 
     """
 
-    aggregator = param.ClassSelector(class_=(rd.Reduction, rd.summary, str), default="default")
+    aggregator = param.ClassSelector(class_=(str,), default="default")
 
     interpolation = param.Selector(
         default="default",
@@ -1839,7 +1870,7 @@ class datashade(rasterize, shade):
         return shaded
 
 
-class stack(Operation):
+class stack(_DatashaderOperationMixin, Operation):
     """The stack operation allows compositing multiple RGB Elements using
     the defined compositing operator.
 
@@ -1864,6 +1895,7 @@ class stack(Operation):
         return img.view(dtype=np.uint32).reshape((N, M))
 
     def _process(self, overlay, key=None):
+        _require_datashader()
         if not isinstance(overlay, CompositeOverlay):
             return overlay
         elif len(overlay) == 1:
@@ -1897,7 +1929,7 @@ class stack(Operation):
         return rgb.clone(data, datatype=[rgb.interface.datatype, *rgb.datatype])
 
 
-class SpreadingOperation(LinkableOperation):
+class SpreadingOperation(_DatashaderOperationMixin, LinkableOperation):
     """Spreading expands each pixel in an Image based Element a certain
     number of pixels on all sides according to a given shape, merging
     pixels using a specified compositing operator. This can be useful
@@ -1942,6 +1974,7 @@ class SpreadingOperation(LinkableOperation):
         return tf.Image(self.uint8_to_uint32(rgbarray.astype("uint8")))
 
     def _process(self, element, key=None):
+        _require_datashader()
         if isinstance(element, RGB):
             rgb = element.rgb
             data = self._preprocess_rgb(rgb)
@@ -2078,7 +2111,7 @@ def identity(x):
     return x
 
 
-class inspect_mask(Operation):
+class inspect_mask(_DatashaderOperationMixin, Operation):
     """Operation used to display the inspection mask, for use with other
     inspection operations. Can be used directly but is more commonly
     constructed using the mask property of the corresponding inspector
@@ -2111,6 +2144,7 @@ class inspect_mask(Operation):
         return (x_delta * xpixels, y_delta * ypixels)
 
     def _process(self, raster, key=None):
+        _require_datashader()
         if isinstance(raster, RGB):
             raster = raster[..., raster.vdims[-1]]
         x_range, y_range = raster.range(0), raster.range(1)
@@ -2131,7 +2165,7 @@ class inspect_mask(Operation):
         return Polygons(data, kdims=kdims)
 
 
-class inspect(Operation):
+class inspect(_DatashaderOperationMixin, Operation):
     """Generalized inspect operation that detects the appropriate indicator
     type.
 
@@ -2212,6 +2246,7 @@ class inspect(Operation):
         return inst
 
     def _process(self, raster, key=None):
+        _require_datashader()
         input_type = self._get_input_type(raster.pipeline.operations)
         inspect_operation = self._dispatch[input_type]
         if self._op is None:

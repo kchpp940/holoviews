@@ -35,7 +35,10 @@ from .capabilities import (  # noqa: F401
     diagnose_all,
     get_all_capabilities,
     get_backend_capability,
+    get_backend_static_export_capability,
+    get_ci_group_capabilities,
     get_datashader_capability,
+    get_extra_capabilities,
     get_notebook_capabilities,
     get_static_export_capabilities,
     import_backend,
@@ -43,9 +46,12 @@ from .capabilities import (  # noqa: F401
     is_backend_available,
     is_datashader_available,
     is_notebook_environment,
+    is_static_export_available,
     list_available_backends,
+    list_available_static_exports,
     require_backend,
     require_datashader,
+    require_static_export,
 )
 from .dependencies import (  # noqa: F401
     NUMPY_GE_2_0_0,

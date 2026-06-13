@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import enum
+import json
+import os
+import shutil
 import sys
 import typing as t
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from functools import cache
+from pathlib import Path
 
-from .dependencies import _LazyModule, _is_installed, _no_import_version, _re_no
+from .dependencies import _is_installed, _no_import_version
 
 if t.TYPE_CHECKING:
     from types import ModuleType
@@ -27,6 +31,8 @@ class CapabilityType(enum.Enum):
     NOTEBOOK = "notebook"
     STATIC_EXPORT = "static_export"
     DATA_LIBRARY = "data_library"
+    EXTRA = "extra"
+    CI_GROUP = "ci_group"
     MISC = "misc"
 
 
@@ -73,7 +79,12 @@ class CapabilityDiagnostic:
             parts.append("Fix: " + "; ".join(self.fix_suggestions))
         return " | ".join(parts)
 
-    def with_error(self, status: CapabilityStatus, error_message: str, fix_suggestions: tuple[str, ...] | None = None) -> CapabilityDiagnostic:
+    def with_error(
+        self,
+        status: CapabilityStatus,
+        error_message: str,
+        fix_suggestions: tuple[str, ...] | None = None,
+    ) -> CapabilityDiagnostic:
         return CapabilityDiagnostic(
             name=self.name,
             type=self.type,
@@ -122,14 +133,85 @@ _NOTEBOOK_PACKAGES = [
     ("notebook", "notebook"),
 ]
 
-_STATIC_EXPORT_FORMATS = {
-    "png": {"bokeh": None, "matplotlib": None, "plotly": None},
-    "svg": {"bokeh": None, "matplotlib": None, "plotly": None},
-    "pdf": {"bokeh": None, "matplotlib": None, "plotly": None},
-    "html": {"bokeh": None, "matplotlib": None, "plotly": None},
-    "gif": {"bokeh": None, "matplotlib": None, "plotly": None},
-    "mp4": {"bokeh": None, "matplotlib": None, "plotly": None},
-    "webm": {"bokeh": None, "matplotlib": None, "plotly": None},
+_STATIC_EXPORT_DEPS: dict[str, dict[str, dict[str, t.Any]]] = {
+    "png": {
+        "bokeh": {"packages": ["selenium"], "requires_webdriver": True},
+        "matplotlib": {"packages": []},
+        "plotly": {"packages": ["kaleido"]},
+    },
+    "svg": {
+        "bokeh": {"packages": ["selenium"], "requires_webdriver": True},
+        "matplotlib": {"packages": []},
+        "plotly": {"packages": ["kaleido"]},
+    },
+    "pdf": {
+        "bokeh": {"packages": ["selenium"], "requires_webdriver": True},
+        "matplotlib": {"packages": []},
+        "plotly": {"packages": ["kaleido"]},
+    },
+    "html": {
+        "bokeh": {"packages": []},
+        "matplotlib": {"packages": []},
+        "plotly": {"packages": []},
+    },
+    "gif": {
+        "bokeh": {"packages": ["selenium", "pillow"], "requires_webdriver": True},
+        "matplotlib": {"packages": ["pillow"]},
+        "plotly": {"packages": ["kaleido", "pillow"]},
+    },
+    "mp4": {
+        "bokeh": {"packages": ["selenium"], "requires_webdriver": True, "requires_binary": "ffmpeg"},
+        "matplotlib": {"packages": [], "requires_binary": "ffmpeg"},
+        "plotly": {"packages": ["kaleido"], "requires_binary": "ffmpeg"},
+    },
+    "webm": {
+        "bokeh": {"packages": ["selenium"], "requires_webdriver": True, "requires_binary": "ffmpeg"},
+        "matplotlib": {"packages": [], "requires_binary": "ffmpeg"},
+        "plotly": {"packages": ["kaleido"], "requires_binary": "ffmpeg"},
+    },
+}
+
+_PYPROJECT_EXTRAS: dict[str, list[str]] = {
+    "recommended": ["matplotlib", "plotly"],
+}
+
+_PIXI_FEATURE_GROUPS: dict[str, list[str]] = {
+    "required": ["bokeh", "panel", "param", "numpy", "pandas"],
+    "optional": [
+        "datashader", "matplotlib", "plotly", "xarray", "dask",
+        "cftime", "networkx", "polars", "scipy", "shapely", "pillow",
+        "selenium", "ffmpeg",
+    ],
+    "test-core": ["pytest"],
+    "test-ui": ["playwright"],
+    "test-gpu": ["cudf", "cupy"],
+}
+
+_CI_GROUPS: dict[str, dict[str, t.Any]] = {
+    "core": {
+        "environments": ["test-core"],
+        "backends": ["bokeh"],
+        "optional": False,
+        "description": "Core tests with minimal dependencies (bokeh only)",
+    },
+    "unit": {
+        "environments": ["test-310", "test-311", "test-312", "test-313", "test-314"],
+        "backends": ["bokeh", "matplotlib", "plotly"],
+        "optional": True,
+        "description": "Full unit tests with all backends and optional deps",
+    },
+    "ui": {
+        "environments": ["test-ui"],
+        "backends": ["bokeh"],
+        "optional": True,
+        "description": "Browser UI tests (requires playwright)",
+    },
+    "type": {
+        "environments": ["type"],
+        "backends": [],
+        "optional": False,
+        "description": "Static type checking",
+    },
 }
 
 
@@ -150,6 +232,10 @@ def _check_version(
         return CapabilityStatus.VERSION_TOO_OLD, version_str
 
     return CapabilityStatus.AVAILABLE, version_str
+
+
+def _check_binary(binary_name: str) -> bool:
+    return shutil.which(binary_name) is not None
 
 
 def _build_fix_suggestions(
@@ -298,42 +384,243 @@ def _diagnose_notebook() -> dict[str, CapabilityDiagnostic]:
     return results
 
 
+def _diagnose_static_export_for_backend(
+    fmt: str, backend: str
+) -> tuple[CapabilityStatus, str | None, tuple[str, ...], dict[str, t.Any]]:
+    backend_diag = get_backend_capability(backend)
+    if not backend_diag.available:
+        return (
+            CapabilityStatus.NOT_INSTALLED,
+            f"Backend {backend} is not available: {backend_diag.error_message}",
+            backend_diag.fix_suggestions,
+            {"backend": backend, "backend_available": False},
+        )
+
+    deps_info = _STATIC_EXPORT_DEPS.get(fmt, {}).get(backend, {})
+    packages = deps_info.get("packages", [])
+    requires_binary = deps_info.get("requires_binary")
+    requires_webdriver = deps_info.get("requires_webdriver", False)
+
+    errors: list[str] = []
+    all_suggestions: list[str] = []
+
+    for pkg in packages:
+        pkg_status, _ = _check_version(pkg, None)
+        if pkg_status != CapabilityStatus.AVAILABLE:
+            errors.append(f"{pkg} is not installed")
+            all_suggestions.append(f"Install {pkg}: pip install {pkg}")
+
+    if requires_binary and not _check_binary(requires_binary):
+        errors.append(f"Required binary '{requires_binary}' not found in PATH")
+        all_suggestions.append(
+            f"Install {requires_binary}: see https://holoviews.org/user_guide/Exporting_and_Archiving.html"
+        )
+
+    if requires_webdriver:
+        for driver in ["geckodriver", "chromedriver"]:
+            if _check_binary(driver):
+                break
+        else:
+            errors.append("No webdriver (geckodriver/chromedriver) found in PATH")
+            all_suggestions.append(
+                "Install a webdriver: 'conda install -c conda-forge firefox geckodriver' or 'brew install chromedriver'"
+            )
+
+    if errors:
+        return (
+            CapabilityStatus.NOT_INSTALLED,
+            "; ".join(errors),
+            tuple(all_suggestions),
+            {
+                "backend": backend,
+                "backend_available": True,
+                "missing_packages": [p for p in packages if _check_version(p, None)[0] != CapabilityStatus.AVAILABLE],
+                "missing_binary": requires_binary if (requires_binary and not _check_binary(requires_binary)) else None,
+                "missing_webdriver": requires_webdriver,
+            },
+        )
+
+    return (
+        CapabilityStatus.AVAILABLE,
+        None,
+        (),
+        {
+            "backend": backend,
+            "backend_available": True,
+            "packages": packages,
+            "requires_binary": requires_binary,
+            "requires_webdriver": requires_webdriver,
+        },
+    )
+
+
 def _diagnose_static_export(backend: str | None = None) -> dict[str, CapabilityDiagnostic]:
     results: dict[str, CapabilityDiagnostic] = {}
     backends_to_check = [backend] if backend else list(_BACKEND_PACKAGE_MAP.keys())
 
-    for fmt in _STATIC_EXPORT_FORMATS:
-        fmt_backends = _STATIC_EXPORT_FORMATS[fmt]
-        available_backends = []
-        unavailable_backends = []
+    for fmt in _STATIC_EXPORT_DEPS:
+        fmt_details: dict[str, t.Any] = {}
+        available_backends: list[str] = []
+        unavailable_backends: list[str] = []
+        all_errors: list[str] = []
+        all_suggestions: set[str] = set()
 
         for bk in backends_to_check:
-            if bk not in fmt_backends:
+            if bk not in _STATIC_EXPORT_DEPS.get(fmt, {}):
                 continue
 
-            backend_diag = get_backend_capability(bk)
-            if backend_diag.available:
+            status, err_msg, suggestions, details = _diagnose_static_export_for_backend(fmt, bk)
+            fmt_details[bk] = details
+
+            if status == CapabilityStatus.AVAILABLE:
                 available_backends.append(bk)
             else:
                 unavailable_backends.append(bk)
+                if err_msg:
+                    all_errors.append(f"[{bk}] {err_msg}")
+                for s in suggestions:
+                    all_suggestions.add(s)
 
-        status = CapabilityStatus.AVAILABLE if available_backends else CapabilityStatus.NOT_INSTALLED
-        error_message = None if available_backends else f"No backend supports {fmt} export."
+        overall_status = (
+            CapabilityStatus.AVAILABLE if available_backends else CapabilityStatus.NOT_INSTALLED
+        )
+        error_message = "; ".join(all_errors) if all_errors else None
 
         results[fmt] = CapabilityDiagnostic(
             name=f"static_export_{fmt}",
             type=CapabilityType.STATIC_EXPORT,
-            status=status,
+            status=overall_status,
             package_name=None,
             error_message=error_message,
             details={
                 "format": fmt,
                 "available_backends": available_backends,
                 "unavailable_backends": unavailable_backends,
+                "per_backend": fmt_details,
             },
-            fix_suggestions=(
-                f"Install one of these backends: {', '.join(unavailable_backends)}",
-            ) if unavailable_backends else (),
+            fix_suggestions=tuple(all_suggestions),
+        )
+
+    return results
+
+
+def _diagnose_extras() -> dict[str, CapabilityDiagnostic]:
+    results: dict[str, CapabilityDiagnostic] = {}
+
+    for extra_name, packages in _PYPROJECT_EXTRAS.items():
+        missing: list[str] = []
+        installed: list[str] = []
+        versions: dict[str, str] = {}
+
+        for pkg in packages:
+            status, version = _check_version(pkg, None)
+            if status == CapabilityStatus.AVAILABLE:
+                installed.append(pkg)
+                if version:
+                    versions[pkg] = version
+            else:
+                missing.append(pkg)
+
+        status = CapabilityStatus.AVAILABLE if not missing else CapabilityStatus.NOT_INSTALLED
+        error_message = (
+            f"Missing packages: {', '.join(missing)}" if missing else None
+        )
+        fix_suggestions = (
+            (f"Install all recommended extras: pip install holoviews[{extra_name}]",)
+            if missing
+            else ()
+        )
+
+        results[extra_name] = CapabilityDiagnostic(
+            name=f"extra_{extra_name}",
+            type=CapabilityType.EXTRA,
+            status=status,
+            package_name=None,
+            error_message=error_message,
+            fix_suggestions=fix_suggestions,
+            details={
+                "packages": packages,
+                "installed": installed,
+                "missing": missing,
+                "versions": versions,
+            },
+        )
+
+    for feature_name, packages in _PIXI_FEATURE_GROUPS.items():
+        missing: list[str] = []
+        installed: list[str] = []
+
+        for pkg in packages:
+            status, _ = _check_version(pkg, None)
+            if status == CapabilityStatus.AVAILABLE:
+                installed.append(pkg)
+            else:
+                missing.append(pkg)
+
+        status = CapabilityStatus.AVAILABLE if not missing else CapabilityStatus.NOT_INSTALLED
+        error_message = (
+            f"Missing packages in pixi feature '{feature_name}': {', '.join(missing)}"
+            if missing
+            else None
+        )
+
+        results[f"pixi_{feature_name}"] = CapabilityDiagnostic(
+            name=f"pixi_feature_{feature_name}",
+            type=CapabilityType.EXTRA,
+            status=status,
+            package_name=None,
+            error_message=error_message,
+            fix_suggestions=(),
+            details={
+                "source": "pixi.toml",
+                "packages": packages,
+                "installed": installed,
+                "missing": missing,
+            },
+        )
+
+    return results
+
+
+def _diagnose_ci_groups() -> dict[str, CapabilityDiagnostic]:
+    results: dict[str, CapabilityDiagnostic] = {}
+
+    for group_name, group_info in _CI_GROUPS.items():
+        backends = group_info.get("backends", [])
+        available_backends = [b for b in backends if is_backend_available(b)]
+        missing_backends = [b for b in backends if not is_backend_available(b)]
+
+        if missing_backends and not group_info.get("optional", False):
+            status = CapabilityStatus.NOT_INSTALLED
+            error_message = f"Required backends missing: {', '.join(missing_backends)}"
+        elif missing_backends:
+            status = CapabilityStatus.AVAILABLE
+            error_message = None
+        else:
+            status = CapabilityStatus.AVAILABLE
+            error_message = None
+
+        fix_suggestions: tuple[str, ...] = ()
+        if missing_backends:
+            fix_suggestions = tuple(
+                f"Install backend {b}: pip install {b}" for b in missing_backends
+            )
+
+        results[group_name] = CapabilityDiagnostic(
+            name=f"ci_group_{group_name}",
+            type=CapabilityType.CI_GROUP,
+            status=status,
+            package_name=None,
+            error_message=error_message,
+            fix_suggestions=fix_suggestions,
+            details={
+                "environments": group_info.get("environments", []),
+                "required_backends": backends,
+                "available_backends": available_backends,
+                "missing_backends": missing_backends,
+                "optional": group_info.get("optional", False),
+                "description": group_info.get("description", ""),
+            },
         )
 
     return results
@@ -369,12 +656,63 @@ def get_static_export_capabilities(backend: str | None = None) -> dict[str, Capa
     return _diagnose_static_export(backend)
 
 
+@cache
+def get_extra_capabilities() -> dict[str, CapabilityDiagnostic]:
+    return _diagnose_extras()
+
+
+@cache
+def get_ci_group_capabilities() -> dict[str, CapabilityDiagnostic]:
+    return _diagnose_ci_groups()
+
+
+def get_backend_static_export_capability(backend: str, fmt: str) -> CapabilityDiagnostic:
+    if backend not in _BACKEND_PACKAGE_MAP:
+        return get_backend_capability(backend)
+    if fmt not in _STATIC_EXPORT_DEPS:
+        backend_diag = get_backend_capability(backend)
+        return CapabilityDiagnostic(
+            name=f"static_export_{fmt}_{backend}",
+            type=CapabilityType.STATIC_EXPORT,
+            status=backend_diag.status,
+            version=backend_diag.version,
+            package_name=backend_diag.package_name,
+            import_name=backend_diag.import_name,
+            error_message=backend_diag.error_message,
+            fix_suggestions=backend_diag.fix_suggestions,
+            details={"format": fmt, "backend": backend, "tracked": False},
+        )
+    if backend not in _STATIC_EXPORT_DEPS.get(fmt, {}):
+        return CapabilityDiagnostic(
+            name=f"static_export_{fmt}_{backend}",
+            type=CapabilityType.STATIC_EXPORT,
+            status=CapabilityStatus.DISABLED,
+            error_message=f"Backend {backend} does not support {fmt} export",
+            fix_suggestions=(
+                f"Try one of these backends: {', '.join(_STATIC_EXPORT_DEPS.get(fmt, {}).keys())}",
+            ),
+        )
+
+    status, err_msg, suggestions, details = _diagnose_static_export_for_backend(fmt, backend)
+    return CapabilityDiagnostic(
+        name=f"static_export_{fmt}_{backend}",
+        type=CapabilityType.STATIC_EXPORT,
+        status=status,
+        package_name=None,
+        error_message=err_msg,
+        fix_suggestions=suggestions,
+        details=details,
+    )
+
+
 def get_all_capabilities() -> dict[str, CapabilityDiagnostic | dict[str, CapabilityDiagnostic]]:
     return {
         "backends": {bk: get_backend_capability(bk) for bk in _BACKEND_PACKAGE_MAP},
         "datashader": get_datashader_capability(),
         "notebook": get_notebook_capabilities(),
         "static_export": get_static_export_capabilities(),
+        "extras": get_extra_capabilities(),
+        "ci_groups": get_ci_group_capabilities(),
     }
 
 
@@ -387,6 +725,13 @@ def require_backend(backend: str) -> CapabilityDiagnostic:
 
 def require_datashader() -> CapabilityDiagnostic:
     diag = get_datashader_capability()
+    if not diag.available:
+        raise CapabilityError(diag)
+    return diag
+
+
+def require_static_export(backend: str, fmt: str) -> CapabilityDiagnostic:
+    diag = get_backend_static_export_capability(backend, fmt)
     if not diag.available:
         raise CapabilityError(diag)
     return diag
@@ -442,6 +787,11 @@ def is_datashader_available() -> bool:
     return get_datashader_capability().available
 
 
+def is_static_export_available(fmt: str, backend: str | None = None) -> bool:
+    caps = get_static_export_capabilities(backend)
+    return fmt in caps and caps[fmt].available
+
+
 def is_notebook_environment() -> bool:
     try:
         ip = get_ipython()  # type: ignore[name-defined]
@@ -452,6 +802,11 @@ def is_notebook_environment() -> bool:
 
 def list_available_backends() -> list[str]:
     return [bk for bk in _BACKEND_PACKAGE_MAP if is_backend_available(bk)]
+
+
+def list_available_static_exports(backend: str | None = None) -> list[str]:
+    caps = get_static_export_capabilities(backend)
+    return [fmt for fmt, diag in caps.items() if diag.available]
 
 
 def diagnose_all() -> str:
@@ -493,9 +848,44 @@ def diagnose_all() -> str:
         backends = diag.details.get("available_backends", [])
         backend_str = f" [{', '.join(backends)}]" if backends else ""
         lines.append(f"  {status_icon} {name}{backend_str}")
+        if not diag.available and diag.error_message:
+            for bk_name, bk_detail in diag.details.get("per_backend", {}).items():
+                if not bk_detail.get("backend_available", True):
+                    lines.append(f"      {bk_name}: backend not available")
+                elif bk_detail.get("missing_packages"):
+                    lines.append(
+                        f"      {bk_name}: missing {', '.join(bk_detail['missing_packages'])}"
+                    )
+                if bk_detail.get("missing_binary"):
+                    lines.append(f"      {bk_name}: missing binary '{bk_detail['missing_binary']}'")
+                if bk_detail.get("missing_webdriver"):
+                    lines.append(f"      {bk_name}: missing webdriver")
+        if not diag.available:
+            for suggestion in diag.fix_suggestions[:3]:
+                lines.append(f"      → {suggestion}")
+    lines.append("")
+
+    lines.append("Optional Extras (pyproject.toml):")
+    for name, diag in all_caps["extras"].items():  # type: ignore[union-attr]
+        if not name.startswith("extra_"):
+            continue
+        status_icon = "✓" if diag.available else "✗"
+        missing = diag.details.get("missing", [])
+        missing_str = f" (missing: {', '.join(missing)})" if missing else ""
+        lines.append(f"  {status_icon} {name}{missing_str}")
+    lines.append("")
+
+    lines.append("CI Groups:")
+    for name, diag in all_caps["ci_groups"].items():  # type: ignore[union-attr]
+        status_icon = "✓" if diag.available else "✗"
+        desc = diag.details.get("description", "")
+        missing = diag.details.get("missing_backends", [])
+        missing_str = f" (missing backends: {', '.join(missing)})" if missing else ""
+        lines.append(f"  {status_icon} {name}: {desc}{missing_str}")
     lines.append("")
 
     lines.append(f"Current environment: {'notebook' if is_notebook_environment() else 'script/console'}")
+    lines.append(f"Python version: {sys.version.split()[0]}")
 
     return "\n".join(lines)
 
@@ -508,7 +898,10 @@ __all__ = [
     "diagnose_all",
     "get_all_capabilities",
     "get_backend_capability",
+    "get_backend_static_export_capability",
+    "get_ci_group_capabilities",
     "get_datashader_capability",
+    "get_extra_capabilities",
     "get_notebook_capabilities",
     "get_static_export_capabilities",
     "import_backend",
@@ -516,7 +909,10 @@ __all__ = [
     "is_backend_available",
     "is_datashader_available",
     "is_notebook_environment",
+    "is_static_export_available",
     "list_available_backends",
+    "list_available_static_exports",
     "require_backend",
     "require_datashader",
+    "require_static_export",
 ]
