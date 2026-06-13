@@ -286,19 +286,17 @@ class ElementPlot(PlotlyPlot, GenericElementPlot):
         if element.hover_fields is None:
             return None, None
 
-        payload = self._get_payload(element)
-
-        hover_specs = payload.hover_specs
-        hover_data = payload.hover_data
+        hover_fields = element._get_hover_fields()
+        hover_data = element._get_hover_data()
         sanitized_names = list(hover_data.keys())
         n_points = len(next(iter(hover_data.values()))) if hover_data else 0
 
         customdata = np.column_stack([hover_data[k] for k in sanitized_names]) if sanitized_names else None
 
         hovertemplate_parts = []
-        for i, spec in enumerate(hover_specs):
-            label = spec.label or spec.name
-            formatter = spec.formatter
+        for i, field in enumerate(hover_fields):
+            label = element._get_hover_field_label(field)
+            formatter = element._get_hover_formatter(field)
             if formatter is not None and callable(formatter):
                 hovertemplate_parts.append(f"<b>{label}</b>: %{{customdata[{i}]}}")
             elif formatter is not None:

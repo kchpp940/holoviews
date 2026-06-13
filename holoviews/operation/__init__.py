@@ -2,7 +2,6 @@ from ..core import Overlay  # noqa: F401
 from ..core.operation import Operation
 from ..core.options import Compositor
 from ..element.util import categorical_aggregate2d
-from .context import get_execution_context_meta
 from .element import (
     apply_when,
     chain,
@@ -42,7 +41,6 @@ __all__ = [
     "dendrogram",
     "factory",
     "function",
-    "get_execution_context_meta",
     "gradient",
     "gridmatrix",
     "histogram",

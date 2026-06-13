@@ -670,19 +670,24 @@ output.__init__.__signature__ = Store.output_settings._generate_signature()  # t
 
 def renderer(name: _BackendT):
     """Helper utility to access the active renderer for a given extension."""
-    try:
-        if name not in Store.renderers:
-            prev_backend = Store.current_backend
-            if Store.current_backend not in Store.renderers:
-                prev_backend = None
-            extension(name)
-            if prev_backend:
-                Store.set_current_backend(prev_backend)
-        return Store.renderers[name]
-    except ImportError as e:
-        msg = "Could not find a {name!r} renderer, available renderers are: {available}."
-        available = ", ".join(repr(k) for k in Store.renderers)
-        raise ImportError(msg.format(name=name, available=available)) from e
+    from ..core.util import get_backend_capability
+
+    if name not in Store.renderers:
+        diag = get_backend_capability(name)
+        if not diag.available:
+            msg = f"Could not find a {name!r} renderer. {diag.error_message or ''}"
+            if diag.fix_suggestions:
+                msg += "\nSuggestions:"
+                for s in diag.fix_suggestions:
+                    msg += f"\n  - {s}"
+            raise ImportError(msg)
+        prev_backend = Store.current_backend
+        if Store.current_backend not in Store.renderers:
+            prev_backend = None
+        extension(name)
+        if prev_backend:
+            Store.set_current_backend(prev_backend)
+    return Store.renderers[name]
 
 
 class extension(_pyviz_extension):
@@ -716,6 +721,8 @@ class extension(_pyviz_extension):
         return super().__new__(cls, *backends, **kwargs)
 
     def __call__(self, *backends, **params):
+        from ..core.util import get_backend_capability
+
         # Get requested backends
         config = params.pop("config", {})
         util.config.param.update(**config)
@@ -731,24 +738,17 @@ class extension(_pyviz_extension):
             raise TypeError(msg)
 
         selected_backend = None
+        diagnostics = []
         for backend, imp in imports:
-            try:
-                __import__(backend)
-            except ImportError:
-                self.param.warning(
-                    f"{backend} could not be imported, ensure {backend} is installed."
-                )
+            diag = get_backend_capability(backend)
+            diagnostics.append(diag)
             try:
                 __import__(f"holoviews.plotting.{imp}")
                 if selected_backend is None:
                     selected_backend = backend
-            except util.VersionError as e:
-                self.param.warning(
-                    f"HoloViews {backend} extension could not be loaded. "
-                    f"The installed {backend} version {e.version} is less than "
-                    f"the required version {e.min_version}."
-                )
             except Exception as e:
+                diag.status = diag.status.IMPORT_ERROR if diag.available else diag.status
+                diag.error_message = str(e)
                 self.param.warning(
                     f"Holoviews {backend} extension could not be imported, "
                     f"it raised the following exception: {type(e).__name__}('{e}')"
@@ -766,7 +766,15 @@ class extension(_pyviz_extension):
                     )
 
         if selected_backend is None:
-            raise ImportError("None of the backends could be imported")
+            failed = [d for d in diagnostics if not d.available]
+            msg_parts = ["None of the backends could be imported."]
+            for diag in failed:
+                msg_parts.append(f"\n  {diag.name}: {diag.status.value}")
+                if diag.error_message:
+                    msg_parts.append(f"    {diag.error_message}")
+                for s in diag.fix_suggestions:
+                    msg_parts.append(f"    → {s}")
+            raise ImportError("".join(msg_parts))
         Store.set_current_backend(selected_backend)
 
         import panel as pn

@@ -31,6 +31,14 @@ def pytest_addoption(parser):
 def pytest_configure(config):
     for marker in CUSTOM_MARKS:
         config.addinivalue_line("markers", f"{marker}: {marker} test marker")
+    config.addinivalue_line(
+        "markers",
+        "requires_datashader: Skip test if datashader is not available",
+    )
+    config.addinivalue_line(
+        "markers",
+        "requires_backend(backend): Skip test if the specified backend is not available",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
@@ -95,6 +103,28 @@ def mpl_backend():
 @pytest.fixture
 def plotly_backend():
     yield from _plotting_backend("plotly")
+
+
+@pytest.fixture
+def datashader_available():
+    from holoviews.core.util import is_datashader_available
+
+    if not is_datashader_available():
+        pytest.skip("datashader not available")
+    yield True
+
+
+def pytest_runtest_setup(item):
+    from holoviews.core.util import is_backend_available, is_datashader_available
+
+    if "requires_datashader" in item.keywords and not is_datashader_available():
+        pytest.skip("datashader not available")
+
+    requires_backend_marker = item.get_closest_marker("requires_backend")
+    if requires_backend_marker:
+        backend = requires_backend_marker.args[0]
+        if not is_backend_available(backend):
+            pytest.skip(f"backend {backend!r} not available")
 
 
 @pytest.fixture

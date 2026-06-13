@@ -256,13 +256,8 @@ class ElementPlot(GenericElementPlot, MPLPlot):
         if element.hover_fields is None:
             return None
 
-        payload = self._get_payload(element)
-
-        if not payload.hover_data:
-            return None
-
-        hover_specs = payload.hover_specs
-        hover_data = payload.hover_data
+        hover_fields = element._get_hover_fields()
+        hover_data = element._get_hover_data()
         sanitized_names = list(hover_data.keys())
         n_points = len(next(iter(hover_data.values()))) if hover_data else 0
 
@@ -272,9 +267,8 @@ class ElementPlot(GenericElementPlot, MPLPlot):
         try:
             xdim = element.get_dimension(0)
             ydim = element.get_dimension(1)
-            from ...core import util
-            xname = util.dimension_sanitizer(xdim.name) if xdim else None
-            yname = util.dimension_sanitizer(ydim.name) if ydim else None
+            xname = element._resolve_hover_field_name(xdim) if xdim else None
+            yname = element._resolve_hover_field_name(ydim) if ydim else None
         except Exception:
             xname = None
             yname = None
@@ -288,18 +282,10 @@ class ElementPlot(GenericElementPlot, MPLPlot):
                 distances = (xvalues - x) ** 2 + (yvalues - y) ** 2
                 idx = int(np.argmin(distances))
                 if 0 <= idx < n_points:
-                    for spec, sname in zip(hover_specs, sanitized_names):
-                        label = spec.label or spec.name
+                    for field, sname in zip(hover_fields, sanitized_names):
+                        label = element._get_hover_field_label(field)
                         value = hover_data[sname][idx]
-                        if spec.formatter is None:
-                            formatted = str(value)
-                        elif callable(spec.formatter):
-                            formatted = spec.formatter(value)
-                        else:
-                            try:
-                                formatted = spec.formatter.format(value) if "{" in spec.formatter else spec.formatter % value
-                            except (TypeError, ValueError):
-                                formatted = str(value)
+                        formatted = element._format_hover_value(field, value)
                         parts.append(f"{label}={formatted}")
             if not parts:
                 parts = [f"x={x:.6g}", f"y={y:.6g}"]

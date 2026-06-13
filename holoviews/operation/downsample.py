@@ -1,4 +1,4 @@
-"""Implements downsampling algorithms for large 1D datasets.
+i"""Implements downsampling algorithms for large 1D datasets.
 
 The algorithms implemented in this module have been adapted from
 https://github.com/predict-idlab/plotly-resampler and are reproduced

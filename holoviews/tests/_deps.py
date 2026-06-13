@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from holoviews.core.util import is_datashader_available, is_backend_available
 from holoviews.core.util.dependencies import _is_installed
 
 

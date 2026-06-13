@@ -27,6 +27,24 @@ import numpy as np
 import param
 
 from ...util.warnings import warn
+from .capabilities import (  # noqa: F401
+    CapabilityDiagnostic,
+    CapabilityError,
+    CapabilityStatus,
+    CapabilityType,
+    diagnose_all,
+    get_all_capabilities,
+    get_backend_capability,
+    get_datashader_capability,
+    get_notebook_capabilities,
+    get_static_export_capabilities,
+    is_backend_available,
+    is_datashader_available,
+    is_notebook_environment,
+    list_available_backends,
+    require_backend,
+    require_datashader,
+)
 from .dependencies import (  # noqa: F401
     NUMPY_GE_2_0_0,
     NUMPY_VERSION,
