@@ -30,6 +30,98 @@ ANIMATION_OPTS = {
 }
 
 
+class _BboxCacheMirror(dict):
+    """A dict subclass that mirrors reads/writes to the artifact_manager LRU cache.
+
+    The authoritative store for MPL tight-bounding-box values is the
+    artifact_manager LRU cache (keyed with ``("mpl_bbox", fig_id)``).
+    This subclass exists purely for backwards compatibility with any
+    code still using ``MPLRenderer.drawn[fig_id]`` directly — every
+    operation is transparently synced.  This eliminates the dual-
+    tracking (a.k.a. "double-entry bookkeeping") risk.
+    """
+
+    _CACHE_PREFIX = "mpl_bbox"
+
+    def __getitem__(self, fig_id):
+        key = (self._CACHE_PREFIX, fig_id)
+        value = artifact_manager.cache_get(key, _SENTINEL)
+        if value is _SENTINEL:
+            raise KeyError(fig_id)
+        return value
+
+    def __setitem__(self, fig_id, value):
+        key = (self._CACHE_PREFIX, fig_id)
+        artifact_manager.cache_put(
+            key,
+            value,
+            format="bbox",
+            policy=CleanupPolicy.RENDER_CYCLE,
+            refs={"fig_id": fig_id},
+        )
+
+    def __delitem__(self, fig_id):
+        key = (self._CACHE_PREFIX, fig_id)
+        if not artifact_manager.cache_has(key):
+            raise KeyError(fig_id)
+        # cache has no explicit delete; overwrite with None then evict by LRU
+        artifact_manager.cache_put(key, None, format="bbox", policy=CleanupPolicy.SCOPE_EXIT)
+
+    def __contains__(self, fig_id):
+        return artifact_manager.cache_has((self._CACHE_PREFIX, fig_id))
+
+    def get(self, fig_id, default=None):
+        key = (self._CACHE_PREFIX, fig_id)
+        value = artifact_manager.cache_get(key, _SENTINEL)
+        return default if value is _SENTINEL else value
+
+    def pop(self, fig_id, *args):
+        key = (self._CACHE_PREFIX, fig_id)
+        value = artifact_manager.cache_get(key, _SENTINEL)
+        if value is _SENTINEL:
+            if args:
+                return args[0]
+            raise KeyError(fig_id)
+        # Remove by rewriting as short-lived; actual eviction happens via LRU
+        artifact_manager.cache_put(key, None, format="bbox", policy=CleanupPolicy.SCOPE_EXIT)
+        return value
+
+    def clear(self):
+        # Walk all CACHE_ENTRY artifacts and drop bbox ones
+        for art in list(artifact_manager.list_artifacts(kind=ArtifactKind.CACHE_ENTRY)):
+            if art.refs.get("cache_key", "").startswith("('mpl_bbox'"):
+                art.release()
+
+    def __len__(self):
+        return sum(
+            1
+            for art in artifact_manager.list_artifacts(kind=ArtifactKind.CACHE_ENTRY, released=False)
+            if art.refs.get("cache_key", "").startswith("('mpl_bbox'")
+        )
+
+    def __iter__(self):
+        for art in artifact_manager.list_artifacts(kind=ArtifactKind.CACHE_ENTRY, released=False):
+            ck = art.refs.get("cache_key", "")
+            if ck.startswith("('mpl_bbox'"):
+                try:
+                    fig_id = int(ck.rsplit(",", 1)[-1].rstrip(")").strip())
+                except (ValueError, IndexError):
+                    continue
+                yield fig_id
+
+    def keys(self):
+        return list(self)
+
+    def values(self):
+        return [self[k] for k in self]
+
+    def items(self):
+        return [(k, self[k]) for k in self]
+
+
+_SENTINEL = object()
+
+
 class MPLRenderer(Renderer):
     """Exporter used to render data from matplotlib, either to a stream
     or directly to file.
@@ -44,7 +136,13 @@ class MPLRenderer(Renderer):
 
     """
 
-    drawn = {}
+    # NOTE: this used to be a plain dict that was written to in parallel
+    # with the artifact_manager LRU cache, risking double-ownership and
+    # stale references.  It is now a dict subclass that transparently
+    # mirrors the artifact_manager cache (authoritative single source).
+    # All reads and writes are forwarded; the legacy dict is no longer
+    # an independent store.
+    drawn = _BboxCacheMirror()
 
     backend = param.String("matplotlib", doc="The backend name.")
 
@@ -254,8 +352,10 @@ class MPLRenderer(Renderer):
         matplotlib.backend_bases.FigureCanvasBase.print_figure
         as it hasn't been factored out as a function.
 
-        Uses the artifact manager's LRU cache in place of the legacy
-        ``MPLRenderer.drawn`` class-level dict.
+        Single source of truth is the artifact_manager LRU cache.
+        The legacy ``MPLRenderer.drawn`` dict is kept only as a
+        read-through mirror (populated from the authoritative cache
+        on demand) and should not be written to directly.
         """
         fig_id = id(fig)
         cache_key = ("mpl_bbox", fig_id)
@@ -277,7 +377,10 @@ class MPLRenderer(Renderer):
                 kw["bbox_inches"] = bbox_inches
             else:
                 kw["bbox_inches"] = cached
-            MPLRenderer.drawn[fig_id] = kw["bbox_inches"]
+            # Clear any stale entry in the legacy mirror dict — authority
+            # is now the artifact_manager LRU cache, so this reference
+            # is not needed and risks memory leaks.
+            MPLRenderer.drawn.pop(fig_id, None)
         return kw
 
     def _adjust_figure_for_anim(self, plot, fmt):

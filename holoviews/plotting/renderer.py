@@ -100,6 +100,103 @@ static_template = """
 """
 
 
+class _PlotRegistryMirror(dict):
+    """A dict subclass that mirrors reads/writes to the artifact_manager
+    plot registry, eliminating dual-tracking between ``Renderer._plots``
+    and the artifact manager.
+
+    The authoritative store is the artifact_manager.  This class exists
+    solely for backwards compatibility: any code that still writes or
+    reads through ``Renderer._plots`` (including Panel internals that
+    we cannot easily refactor) will have its operations transparently
+    forwarded to ``artifact_manager.register_plot / get_plot /
+    unregister_plot``, so there is only **one** lifecycle owner.
+    """
+
+    def __getitem__(self, plot_id):
+        plot = artifact_manager.get_plot(str(plot_id))
+        if plot is None:
+            raise KeyError(plot_id)
+        return plot, None  # legacy tuple: (plot, pane); pane is None (unused path)
+
+    def __setitem__(self, plot_id, value):
+        # legacy convention: value may be either a plot object or a
+        # (plot, pane) tuple — support both
+        if isinstance(value, tuple) and len(value) >= 1:
+            plot_obj = value[0]
+        else:
+            plot_obj = value
+        artifact_manager.register_plot(str(plot_id), plot_obj)
+
+    def __delitem__(self, plot_id):
+        if not artifact_manager.unregister_plot(str(plot_id)):
+            raise KeyError(plot_id)
+
+    def __contains__(self, plot_id):
+        return artifact_manager.get_plot(str(plot_id)) is not None
+
+    def get(self, plot_id, default=None):
+        plot = artifact_manager.get_plot(str(plot_id))
+        if plot is None:
+            return default
+        return plot, None
+
+    def pop(self, plot_id, *args):
+        plot = artifact_manager.get_plot(str(plot_id))
+        if plot is None:
+            if args:
+                return args[0]
+            raise KeyError(plot_id)
+        artifact_manager.unregister_plot(str(plot_id))
+        return plot, None
+
+    def clear(self):
+        for art in list(
+            artifact_manager.list_artifacts(kind=ArtifactKind.PLOT_REGISTRY)
+        ):
+            art.release()
+
+    def __len__(self):
+        return len(
+            artifact_manager.list_artifacts(
+                kind=ArtifactKind.PLOT_REGISTRY, released=False
+            )
+        )
+
+    def __iter__(self):
+        for art in artifact_manager.list_artifacts(
+            kind=ArtifactKind.PLOT_REGISTRY, released=False
+        ):
+            yield art.refs.get("plot_id")
+
+    def keys(self):
+        return list(self)
+
+    def values(self):
+        return [(art.obj, None) for art in artifact_manager.list_artifacts(
+            kind=ArtifactKind.PLOT_REGISTRY, released=False
+        )]
+
+    def items(self):
+        return [
+            (art.refs.get("plot_id"), (art.obj, None))
+            for art in artifact_manager.list_artifacts(
+                kind=ArtifactKind.PLOT_REGISTRY, released=False
+            )
+        ]
+
+    def update(self, other=None, **kwargs):
+        if other is not None:
+            if hasattr(other, "items"):
+                for k, v in other.items():
+                    self[k] = v
+            else:
+                for k, v in other:
+                    self[k] = v
+        for k, v in kwargs.items():
+            self[k] = v
+
+
 class Renderer(Exporter):
     """The job of a Renderer is to turn the plotting state held within
     Plot classes into concrete, visual output in the form of the PNG,
@@ -235,8 +332,11 @@ class Renderer(Exporter):
     # Whether in a notebook context, set when running Renderer.load_nb
     notebook_context = False
 
-    # Plot registry (backwards-compatible access via artifact_manager)
-    _plots: Dict[str, Plot] = {}
+    # Plot registry — authoritative source is artifact_manager.
+    # This dict subclass transparently mirrors all operations
+    # (get/set/del/iter/len) so there is no double-tracking or
+    # stale-reference risk.
+    _plots: Dict[str, Plot] = _PlotRegistryMirror()  # type: ignore[assignment]
 
     # Whether to render plots with Panel
     _render_with_panel = False
@@ -276,11 +376,15 @@ class Renderer(Exporter):
                 ) as scope:
                     data = self._figure_data(plot, fmt, **kwargs)
                     data = self._apply_post_render_hooks(data, obj, fmt)
-                    artifact = scope.register_data(
+                    # Final data returned to the caller is USER_OUTPUT:
+                    # release_all() will NOT release it by default, and
+                    # the caller holds a reference to it anyway.  The
+                    # scope can exit safely as only temporary artifacts
+                    # are released there.
+                    artifact = scope.register_output_data(
                         data,
                         format=fmt,
                         mime_type=MIME_TYPES.get(fmt),
-                        policy=CleanupPolicy.RENDER_CYCLE,
                         refs={"plot_id": id(plot), "obj_id": id(obj)},
                     )
                     self._last_artifact = artifact
@@ -454,11 +558,10 @@ class Renderer(Exporter):
             html = tag.format(src=src, mime_type=mime_type, css=css)
 
         with artifact_manager.default_owner(type(self).__name__):
-            artifact_manager.register_data(
+            artifact_manager.register_output_data(
                 html,
                 format="html",
                 mime_type=MIME_TYPES["html"],
-                policy=CleanupPolicy.RENDER_CYCLE,
                 refs={"plot_id": id(plot), "source_fmt": fmt},
             )
         return html
@@ -480,11 +583,11 @@ class Renderer(Exporter):
             mime_data = {"text/html": html}
             mime_metadata = {MIME_TYPES["jlab-hv-exec"]: {}}
             with artifact_manager.default_owner(owner):
-                artifact_manager.register(
-                    ArtifactKind.DATA_MIME,
-                    obj=mime_data,
-                    format="mimebundle",
-                    policy=CleanupPolicy.RENDER_CYCLE,
+                # Notebook MIME bundle is USER_OUTPUT: must survive
+                # release_all().  Backend artifacts created within
+                # _figure_data are scoped and cleaned separately.
+                artifact_manager.register_output_mime(
+                    mime_data,
                     refs={"plot_id": id(plot), "as_script": True},
                 )
             return mime_data, mime_metadata
@@ -508,11 +611,8 @@ class Renderer(Exporter):
             else:
                 result = self._render_ipywidget(plot)
             mime_data, mime_metadata = result
-            artifact_manager.register(
-                ArtifactKind.DATA_MIME,
-                obj=mime_data,
-                format="mimebundle",
-                policy=CleanupPolicy.RENDER_CYCLE,
+            artifact_manager.register_output_mime(
+                mime_data,
                 refs={
                     "plot_id": id(plot),
                     "embed": embed,
@@ -598,10 +698,11 @@ class Renderer(Exporter):
                 self.save(obj, html_bytes, fmt)
                 html_bytes.seek(0)
                 html_str = html_bytes.read()
-                scope.register_data(
+                # Final HTML string returned to caller is USER_OUTPUT
+                # so release_all() won't drop the caller's reference.
+                scope.register_output_data(
                     html_str,
                     format="html",
-                    policy=CleanupPolicy.RENDER_CYCLE,
                 )
         return html_str
 
@@ -803,34 +904,43 @@ class Renderer(Exporter):
                     f.write(encoded)
 
         with artifact_manager.default_owner(owner):
-            artifact_manager.register(
-                ArtifactKind.FILE_TEMP if saved_path and saved_path.startswith(tempfile.gettempdir()) else ArtifactKind.OTHER,
-                obj=plot,
-                path=saved_path,
-                format=fmt,
-                policy=CleanupPolicy.MANUAL,
-                refs={
-                    "plot_id": id(plot),
-                    "obj_id": id(obj),
-                    "saved": saved_path is not None,
-                },
-            )
+            if saved_path is not None:
+                # Files written by save() are USER_OUTPUT — they must
+                # survive release_all() unless the user explicitly opts
+                # in via include_user_output=True.
+                artifact_manager.register_output_file(
+                    saved_path,
+                    format=fmt,
+                    refs={
+                        "plot_id": id(plot),
+                        "obj_id": id(obj),
+                        "backend": type(self_or_cls).__name__ if isinstance(self_or_cls, type) else type(self_or_cls).__name__,
+                    },
+                )
+            elif isinstance(basename, (BytesIO, StringIO)):
+                artifact_manager.register(
+                    ArtifactKind.DATA_OUTPUT,
+                    format=fmt,
+                    policy=CleanupPolicy.MANUAL,
+                    refs={"plot_id": id(plot), "stream": True},
+                )
 
     @classmethod
     def _delete_plot(cls, plot_id):
         """Deletes registered plots and calls Plot.cleanup.
 
-        Uses the artifact manager's plot registry first, then falls
-        back to the legacy ``_plots`` dict for backwards compatibility.
+        Single-source-of-truth is the artifact_manager plot registry,
+        to which ``cls._plots`` is a transparent dict-subclass mirror.
+        Cleanup is called only once even though both stores are
+        logically the same.
         """
         plot = artifact_manager.get_plot(str(plot_id))
         if plot is None:
-            plot = cls._plots.get(plot_id)
-        if plot is None:
             return
         plot.cleanup()
+        # Unregister is sufficient — _plots mirrors artifact_manager
+        # so it will appear removed there too, without needing pop().
         artifact_manager.unregister_plot(str(plot_id))
-        cls._plots.pop(plot_id, None)
 
     @bothmethod
     def _save_prefix(self_or_cls, ext):

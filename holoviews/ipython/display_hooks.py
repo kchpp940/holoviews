@@ -416,11 +416,10 @@ def image_display(element, max_frames, fmt):
 
     data, info = renderer(plot, fmt=fmt)
     with artifact_manager.default_owner(f"image_display:{fmt}"):
-        artifact_manager.register_data(
+        artifact_manager.register_output_data(
             data,
             format=fmt,
             mime_type=info["mime_type"],
-            policy=CleanupPolicy.RENDER_CYCLE,
             refs={
                 "obj_id": id(element),
                 "obj_type": type(element).__name__,
@@ -451,11 +450,12 @@ def plot_display(plot):
     result = plot.renderer.components(plot)
     with artifact_manager.default_owner("plot_display"):
         mime_data, _ = result
-        artifact_manager.register(
-            ArtifactKind.DATA_MIME,
-            obj=mime_data,
-            format="mimebundle",
-            policy=CleanupPolicy.RENDER_CYCLE,
+        # MIME bundle returned to notebook display: USER_OUTPUT —
+        # must survive generic cleanup.  Backend-specific plot/doc
+        # references are still tracked with RENDER_CYCLE via
+        # renderer.components() internals.
+        artifact_manager.register_output_mime(
+            mime_data,
             refs={"plot_id": id(plot)},
         )
     return result
