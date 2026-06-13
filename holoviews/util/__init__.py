@@ -670,17 +670,12 @@ output.__init__.__signature__ = Store.output_settings._generate_signature()  # t
 
 def renderer(name: _BackendT):
     """Helper utility to access the active renderer for a given extension."""
-    from ..core.util import get_backend_capability
+    from ..core.util import CapabilityError, import_backend
 
     if name not in Store.renderers:
-        diag = get_backend_capability(name)
+        diag = import_backend(name)
         if not diag.available:
-            msg = f"Could not find a {name!r} renderer. {diag.error_message or ''}"
-            if diag.fix_suggestions:
-                msg += "\nSuggestions:"
-                for s in diag.fix_suggestions:
-                    msg += f"\n  - {s}"
-            raise ImportError(msg)
+            raise CapabilityError(diag)
         prev_backend = Store.current_backend
         if Store.current_backend not in Store.renderers:
             prev_backend = None
@@ -721,9 +716,8 @@ class extension(_pyviz_extension):
         return super().__new__(cls, *backends, **kwargs)
 
     def __call__(self, *backends, **params):
-        from ..core.util import get_backend_capability
+        from ..core.util import import_backend
 
-        # Get requested backends
         config = params.pop("config", {})
         util.config.param.update(**config)
         imports = [(b, self._backends[b]) for b in backends if b in self._backends]
@@ -739,24 +733,22 @@ class extension(_pyviz_extension):
 
         selected_backend = None
         diagnostics = []
-        for backend, imp in imports:
-            diag = get_backend_capability(backend)
+        for backend, _imp in imports:
+            diag = import_backend(backend)
             diagnostics.append(diag)
-            try:
-                __import__(f"holoviews.plotting.{imp}")
+            if diag.available:
                 if selected_backend is None:
                     selected_backend = backend
-            except Exception as e:
-                diag.status = diag.status.IMPORT_ERROR if diag.available else diag.status
-                diag.error_message = str(e)
+            else:
                 self.param.warning(
-                    f"Holoviews {backend} extension could not be imported, "
-                    f"it raised the following exception: {type(e).__name__}('{e}')"
+                    f"HoloViews {backend} extension could not be loaded: "
+                    f"{diag.error_message or diag.status.value}"
                 )
-            finally:
-                Store.output_settings.allowed["backend"] = list_backends()
-                Store.output_settings.allowed["fig"] = list_formats("fig", backend)
-                Store.output_settings.allowed["holomap"] = list_formats("holomap", backend)
+                for suggestion in diag.fix_suggestions:
+                    self.param.warning(f"  → {suggestion}")
+            Store.output_settings.allowed["backend"] = list_backends()
+            Store.output_settings.allowed["fig"] = list_formats("fig", backend)
+            Store.output_settings.allowed["holomap"] = list_formats("holomap", backend)
             for hook in self._backend_hooks[backend]:
                 try:
                     hook()
@@ -766,15 +758,24 @@ class extension(_pyviz_extension):
                     )
 
         if selected_backend is None:
+            from ..core.util import CapabilityError, CapabilityStatus, CapabilityType
+
             failed = [d for d in diagnostics if not d.available]
-            msg_parts = ["None of the backends could be imported."]
+            msg_parts = ["None of the requested backends could be loaded.\n"]
             for diag in failed:
-                msg_parts.append(f"\n  {diag.name}: {diag.status.value}")
+                msg_parts.append(f"  {diag.name}: {diag.status.value}")
                 if diag.error_message:
                     msg_parts.append(f"    {diag.error_message}")
                 for s in diag.fix_suggestions:
                     msg_parts.append(f"    → {s}")
-            raise ImportError("".join(msg_parts))
+            combined = CapabilityDiagnostic(
+                name="all_backends",
+                type=diagnostics[0].type if diagnostics else CapabilityType.BACKEND,
+                status=CapabilityStatus.IMPORT_ERROR,
+                error_message="".join(msg_parts),
+                fix_suggestions=[],
+            )
+            raise CapabilityError(combined)
         Store.set_current_backend(selected_backend)
 
         import panel as pn

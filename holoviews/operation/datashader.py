@@ -6,6 +6,15 @@ from collections.abc import Callable, Iterable
 from functools import partial
 from typing import TYPE_CHECKING
 
+from ..core.util.capabilities import (
+    CapabilityError,
+    import_datashader,
+)
+
+_ds_diag = import_datashader()
+if not _ds_diag.available:
+    raise CapabilityError(_ds_diag)
+
 import datashader as ds
 import datashader.reductions as rd
 import datashader.transfer_functions as tf

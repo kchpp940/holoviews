@@ -38,6 +38,8 @@ from .capabilities import (  # noqa: F401
     get_datashader_capability,
     get_notebook_capabilities,
     get_static_export_capabilities,
+    import_backend,
+    import_datashader,
     is_backend_available,
     is_datashader_available,
     is_notebook_environment,

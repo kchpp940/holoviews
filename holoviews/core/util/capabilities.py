@@ -3,7 +3,7 @@ from __future__ import annotations
 import enum
 import sys
 import typing as t
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cache
 
 from .dependencies import _LazyModule, _is_installed, _no_import_version, _re_no
@@ -30,7 +30,7 @@ class CapabilityType(enum.Enum):
     MISC = "misc"
 
 
-@dataclass
+@dataclass(frozen=True)
 class CapabilityDiagnostic:
     name: str
     type: CapabilityType
@@ -40,8 +40,8 @@ class CapabilityDiagnostic:
     package_name: str | None = None
     import_name: str | None = None
     error_message: str | None = None
-    fix_suggestions: list[str] = field(default_factory=list)
-    details: dict[str, t.Any] = field(default_factory=dict)
+    fix_suggestions: tuple[str, ...] = ()
+    details: dict[str, t.Any] = field(default_factory=dict, hash=False)
 
     @property
     def available(self) -> bool:
@@ -64,6 +64,28 @@ class CapabilityDiagnostic:
             for suggestion in self.fix_suggestions:
                 lines.append(f"    - {suggestion}")
         return "\n".join(lines)
+
+    def format_skip_reason(self) -> str:
+        parts = [f"{self.name} {self.status.value}"]
+        if self.error_message:
+            parts.append(self.error_message)
+        if self.fix_suggestions:
+            parts.append("Fix: " + "; ".join(self.fix_suggestions))
+        return " | ".join(parts)
+
+    def with_error(self, status: CapabilityStatus, error_message: str, fix_suggestions: tuple[str, ...] | None = None) -> CapabilityDiagnostic:
+        return CapabilityDiagnostic(
+            name=self.name,
+            type=self.type,
+            status=status,
+            version=self.version,
+            min_version=self.min_version,
+            package_name=self.package_name,
+            import_name=self.import_name,
+            error_message=error_message,
+            fix_suggestions=fix_suggestions if fix_suggestions is not None else self.fix_suggestions,
+            details=self.details,
+        )
 
 
 class CapabilityError(Exception):
@@ -130,6 +152,42 @@ def _check_version(
     return CapabilityStatus.AVAILABLE, version_str
 
 
+def _build_fix_suggestions(
+    package_name: str, backend_name: str | None, min_version_str: str | None
+) -> tuple[str, ...]:
+    suggestions: list[str] = []
+    suggestions.append(f"Install {package_name}: pip install {package_name}")
+    if backend_name:
+        suggestions.append(
+            f"Install with HoloViews extras: pip install holoviews[{backend_name}]"
+        )
+    if min_version_str:
+        suggestions.append(
+            f"Upgrade {package_name}: pip install --upgrade {package_name}>={min_version_str}"
+        )
+    return tuple(suggestions)
+
+
+def _try_import_package(import_name: str, package_name: str) -> CapabilityDiagnostic | None:
+    try:
+        __import__(import_name)
+        return None
+    except Exception as e:
+        return CapabilityDiagnostic(
+            name="",
+            type=CapabilityType.MISC,
+            status=CapabilityStatus.IMPORT_ERROR,
+            error_message=f"Failed to import {import_name}: {type(e).__name__}: {e}",
+            package_name=package_name,
+            import_name=import_name,
+            fix_suggestions=(
+                f"Check that {package_name} is properly installed.",
+                "Try reinstalling: pip install --force-reinstall " + package_name,
+                "Check for conflicting versions of dependencies.",
+            ),
+        )
+
+
 def _diagnose_backend(backend_name: str) -> CapabilityDiagnostic:
     package_name = _BACKEND_PACKAGE_MAP.get(backend_name, backend_name)
     import_name = _BACKEND_IMPORT_MAP.get(backend_name, backend_name)
@@ -138,34 +196,24 @@ def _diagnose_backend(backend_name: str) -> CapabilityDiagnostic:
 
     status, version = _check_version(package_name, min_version)
 
-    fix_suggestions: list[str] = []
+    fix_suggestions: tuple[str, ...] = ()
     error_message: str | None = None
 
     if status == CapabilityStatus.NOT_INSTALLED:
-        fix_suggestions = [
-            f"Install {package_name}: pip install {package_name}",
-            f"Install with HoloViews extras: pip install holoviews[{backend_name}]",
-        ]
+        fix_suggestions = _build_fix_suggestions(package_name, backend_name, None)
         error_message = f"{package_name} is not installed."
     elif status == CapabilityStatus.VERSION_TOO_OLD:
-        fix_suggestions = [
-            f"Upgrade {package_name}: pip install --upgrade {package_name}>={min_version_str}",
-        ]
+        fix_suggestions = _build_fix_suggestions(package_name, backend_name, min_version_str)
         error_message = (
             f"{package_name} version {version} is too old. "
             f"Required: {min_version_str} or higher."
         )
     elif status == CapabilityStatus.AVAILABLE:
-        try:
-            __import__(import_name)
-        except Exception as e:
+        import_error = _try_import_package(import_name, package_name)
+        if import_error is not None:
             status = CapabilityStatus.IMPORT_ERROR
-            error_message = f"Failed to import {import_name}: {type(e).__name__}: {e}"
-            fix_suggestions = [
-                f"Check that {package_name} is properly installed.",
-                "Try reinstalling: pip install --force-reinstall " + package_name,
-                "Check for conflicting versions of dependencies.",
-            ]
+            error_message = import_error.error_message
+            fix_suggestions = import_error.fix_suggestions
 
     return CapabilityDiagnostic(
         name=backend_name,
@@ -185,23 +233,24 @@ def _diagnose_datashader() -> CapabilityDiagnostic:
     min_version_str = _version_tuple_to_str(_DATASHADER_MIN_VERSION)
     status, version = _check_version("datashader", _DATASHADER_MIN_VERSION)
 
-    fix_suggestions: list[str] = []
+    fix_suggestions: tuple[str, ...] = ()
     error_message: str | None = None
 
     if status == CapabilityStatus.NOT_INSTALLED:
-        fix_suggestions = [
-            "Install datashader: pip install datashader",
-            "Install with HoloViews extras: pip install holoviews[datashader]",
-        ]
+        fix_suggestions = _build_fix_suggestions("datashader", None, None)
         error_message = "datashader is not installed."
     elif status == CapabilityStatus.VERSION_TOO_OLD:
-        fix_suggestions = [
-            f"Upgrade datashader: pip install --upgrade datashader>={min_version_str}",
-        ]
+        fix_suggestions = _build_fix_suggestions("datashader", None, min_version_str)
         error_message = (
             f"datashader version {version} is too old. "
             f"Required: {min_version_str} or higher."
         )
+    elif status == CapabilityStatus.AVAILABLE:
+        import_error = _try_import_package("datashader", "datashader")
+        if import_error is not None:
+            status = CapabilityStatus.IMPORT_ERROR
+            error_message = import_error.error_message
+            fix_suggestions = import_error.fix_suggestions
 
     details = {
         "supports_aggregate": status == CapabilityStatus.AVAILABLE,
@@ -228,13 +277,11 @@ def _diagnose_notebook() -> dict[str, CapabilityDiagnostic]:
     for name, package_name in _NOTEBOOK_PACKAGES:
         status, version = _check_version(package_name, None)
 
-        fix_suggestions: list[str] = []
+        fix_suggestions: tuple[str, ...] = ()
         error_message: str | None = None
 
         if status == CapabilityStatus.NOT_INSTALLED:
-            fix_suggestions = [
-                f"Install {package_name}: pip install {package_name}",
-            ]
+            fix_suggestions = (f"Install {package_name}: pip install {package_name}",)
             error_message = f"{package_name} is not installed."
 
         results[name] = CapabilityDiagnostic(
@@ -284,9 +331,9 @@ def _diagnose_static_export(backend: str | None = None) -> dict[str, CapabilityD
                 "available_backends": available_backends,
                 "unavailable_backends": unavailable_backends,
             },
-            fix_suggestions=[
-                f"Install one of these backends: {', '.join(unavailable_backends)}"
-            ] if unavailable_backends else [],
+            fix_suggestions=(
+                f"Install one of these backends: {', '.join(unavailable_backends)}",
+            ) if unavailable_backends else (),
         )
 
     return results
@@ -300,9 +347,9 @@ def get_backend_capability(backend: str) -> CapabilityDiagnostic:
             type=CapabilityType.BACKEND,
             status=CapabilityStatus.UNKNOWN,
             error_message=f"Unknown backend: {backend}",
-            fix_suggestions=[
+            fix_suggestions=(
                 f"Available backends: {', '.join(_BACKEND_PACKAGE_MAP.keys())}",
-            ],
+            ),
         )
     return _diagnose_backend(backend)
 
@@ -331,16 +378,60 @@ def get_all_capabilities() -> dict[str, CapabilityDiagnostic | dict[str, Capabil
     }
 
 
-def require_backend(backend: str) -> None:
+def require_backend(backend: str) -> CapabilityDiagnostic:
     diag = get_backend_capability(backend)
     if not diag.available:
         raise CapabilityError(diag)
+    return diag
 
 
-def require_datashader() -> None:
+def require_datashader() -> CapabilityDiagnostic:
     diag = get_datashader_capability()
     if not diag.available:
         raise CapabilityError(diag)
+    return diag
+
+
+def import_backend(backend: str) -> CapabilityDiagnostic:
+    diag = get_backend_capability(backend)
+
+    if not diag.available:
+        return diag
+
+    import_name = _BACKEND_IMPORT_MAP.get(backend, f"holoviews.plotting.{backend}")
+    try:
+        __import__(import_name)
+    except Exception as e:
+        return diag.with_error(
+            CapabilityStatus.IMPORT_ERROR,
+            f"Failed to import {import_name}: {type(e).__name__}: {e}",
+            (
+                f"Check that {diag.package_name} is properly installed.",
+                "Try reinstalling: pip install --force-reinstall " + (diag.package_name or backend),
+                "Check for conflicting versions of dependencies.",
+            ),
+        )
+
+    return diag
+
+
+def import_datashader() -> CapabilityDiagnostic:
+    diag = get_datashader_capability()
+    if not diag.available:
+        return diag
+    try:
+        import datashader
+    except Exception as e:
+        return diag.with_error(
+            CapabilityStatus.IMPORT_ERROR,
+            f"Failed to import datashader: {type(e).__name__}: {e}",
+            (
+                "Check that datashader is properly installed.",
+                "Try reinstalling: pip install --force-reinstall datashader",
+                "Check for conflicting dependency versions (e.g. numba, numpy).",
+            ),
+        )
+    return diag
 
 
 def is_backend_available(backend: str) -> bool:
@@ -420,6 +511,8 @@ __all__ = [
     "get_datashader_capability",
     "get_notebook_capabilities",
     "get_static_export_capabilities",
+    "import_backend",
+    "import_datashader",
     "is_backend_available",
     "is_datashader_available",
     "is_notebook_environment",

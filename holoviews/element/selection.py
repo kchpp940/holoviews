@@ -73,18 +73,10 @@ def spatial_select_gridded(xvals, yvals, geometry):
         try:
             from ..operation.datashader import rasterize
         except ImportError:
-            from ..core.util import get_datashader_capability
+            from ..core.util import CapabilityError, import_datashader
 
-            diag = get_datashader_capability()
-            msg = (
-                "Lasso selection on gridded data requires datashader. "
-                f"{diag.error_message or ''}"
-            )
-            if diag.fix_suggestions:
-                msg += "\nSuggestions:"
-                for s in diag.fix_suggestions:
-                    msg += f"\n  - {s}"
-            raise ImportError(msg) from None
+            diag = import_datashader()
+            raise CapabilityError(diag) from None
         xs, ys = xvals[0], yvals[:, 0]
         target = Image((xs, ys, np.empty(ys.shape + xs.shape)))
         poly = Polygons([geometry])
