@@ -120,9 +120,10 @@ class PlotlyRenderer(Renderer):
                         plot.update(i)
                         _, img_bytes = scope.create_bytesio(format="png")
                         figure = go.Figure(self.get_plot_state(plot))
-                        scope.register(
+                        scope.register_external_object(
                             ArtifactKind.PLOTLY_FIGURE,
-                            obj=figure,
+                            figure,
+                            source="renderer",
                             policy=CleanupPolicy.SCOPE_EXIT,
                             refs={"frame": i},
                         )
@@ -150,9 +151,10 @@ class PlotlyRenderer(Renderer):
 
                     fig_dict = self.get_plot_state(plot)
                     figure = go.Figure(fig_dict)
-                    scope.register(
+                    scope.register_external_object(
                         ArtifactKind.PLOTLY_FIGURE,
-                        obj=figure,
+                        figure,
+                        source="renderer",
                         policy=CleanupPolicy.SCOPE_EXIT,
                         refs={"plot_id": id(plot)},
                     )

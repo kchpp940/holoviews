@@ -100,28 +100,32 @@ static_template = """
 """
 
 
-class _PlotRegistryMirror(dict):
-    """A dict subclass that mirrors reads/writes to the artifact_manager
-    plot registry, eliminating dual-tracking between ``Renderer._plots``
-    and the artifact manager.
+from collections.abc import MutableMapping
 
-    The authoritative store is the artifact_manager.  This class exists
-    solely for backwards compatibility: any code that still writes or
-    reads through ``Renderer._plots`` (including Panel internals that
-    we cannot easily refactor) will have its operations transparently
-    forwarded to ``artifact_manager.register_plot / get_plot /
-    unregister_plot``, so there is only **one** lifecycle owner.
+
+class _PlotRegistryMirror(MutableMapping):
+    """A MutableMapping that forwards ALL operations to the artifact_manager
+    plot registry.  There is **no** local state — the authoritative store
+    is the artifact_manager.  This eliminates the dual-tracking risk
+    between ``Renderer._plots`` and the artifact_manager.
+
+    Unlike a dict subclass, MutableMapping has no internal storage, so
+    there is no second copy of data that could diverge.  Only the five
+    abstract methods are explicitly implemented; all other dict-style
+    methods (get, keys, values, items, pop, clear, update,
+    __contains__, etc.) are provided by MutableMapping based on those.
     """
 
     def __getitem__(self, plot_id):
         plot = artifact_manager.get_plot(str(plot_id))
         if plot is None:
             raise KeyError(plot_id)
-        return plot, None  # legacy tuple: (plot, pane); pane is None (unused path)
+        # Legacy convention: _plots returns (plot, pane) tuples; pane is
+        # unused in this path so we return None.
+        return plot, None
 
     def __setitem__(self, plot_id, value):
-        # legacy convention: value may be either a plot object or a
-        # (plot, pane) tuple — support both
+        # Legacy convention: value may be a plot object or (plot, pane) tuple
         if isinstance(value, tuple) and len(value) >= 1:
             plot_obj = value[0]
         else:
@@ -132,14 +136,28 @@ class _PlotRegistryMirror(dict):
         if not artifact_manager.unregister_plot(str(plot_id)):
             raise KeyError(plot_id)
 
-    def __contains__(self, plot_id):
-        return artifact_manager.get_plot(str(plot_id)) is not None
+    def __iter__(self):
+        for art in artifact_manager.list_artifacts(
+            kind=ArtifactKind.PLOT_REGISTRY, released=False
+        ):
+            yield art.refs.get("plot_id")
 
+    def __len__(self):
+        return len(
+            artifact_manager.list_artifacts(
+                kind=ArtifactKind.PLOT_REGISTRY, released=False
+            )
+        )
+
+    # Explicit override for common operations to avoid O(N) overhead
     def get(self, plot_id, default=None):
         plot = artifact_manager.get_plot(str(plot_id))
         if plot is None:
             return default
         return plot, None
+
+    def __contains__(self, plot_id):
+        return artifact_manager.get_plot(str(plot_id)) is not None
 
     def pop(self, plot_id, *args):
         plot = artifact_manager.get_plot(str(plot_id))
@@ -156,19 +174,6 @@ class _PlotRegistryMirror(dict):
         ):
             art.release()
 
-    def __len__(self):
-        return len(
-            artifact_manager.list_artifacts(
-                kind=ArtifactKind.PLOT_REGISTRY, released=False
-            )
-        )
-
-    def __iter__(self):
-        for art in artifact_manager.list_artifacts(
-            kind=ArtifactKind.PLOT_REGISTRY, released=False
-        ):
-            yield art.refs.get("plot_id")
-
     def keys(self):
         return list(self)
 
@@ -184,17 +189,6 @@ class _PlotRegistryMirror(dict):
                 kind=ArtifactKind.PLOT_REGISTRY, released=False
             )
         ]
-
-    def update(self, other=None, **kwargs):
-        if other is not None:
-            if hasattr(other, "items"):
-                for k, v in other.items():
-                    self[k] = v
-            else:
-                for k, v in other:
-                    self[k] = v
-        for k, v in kwargs.items():
-            self[k] = v
 
 
 class Renderer(Exporter):
@@ -629,16 +623,16 @@ class Renderer(Exporter):
         with config.set(embed=embed):
             model = plot.layout._render_model(doc, comm)
         with artifact_manager.default_owner(owner):
-            artifact_manager.register(
+            artifact_manager.register_external_object(
                 ArtifactKind.BOKEH_DOCUMENT,
-                obj=doc,
-                policy=CleanupPolicy.RENDER_CYCLE,
+                doc,
+                source="renderer",
                 refs={"embed": embed},
             )
-            artifact_manager.register(
+            artifact_manager.register_external_object(
                 ArtifactKind.BOKEH_MODEL,
-                obj=model,
-                policy=CleanupPolicy.RENDER_CYCLE,
+                model,
+                source="renderer",
                 refs={"doc_id": id(doc)},
             )
         if embed:
@@ -658,11 +652,11 @@ class Renderer(Exporter):
         # Handle rendering object as ipywidget
         widget = ipywidget(plot, combine_events=True)
         with artifact_manager.default_owner(type(self).__name__):
-            artifact_manager.register(
+            artifact_manager.register_external_object(
                 ArtifactKind.PANEL_VIEWABLE,
-                obj=widget,
+                widget,
+                source="renderer",
                 format="ipywidget",
-                policy=CleanupPolicy.RENDER_CYCLE,
                 refs={"plot_id": id(plot)},
             )
         if hasattr(widget, "_repr_mimebundle_"):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from collections.abc import MutableMapping
 from contextlib import contextmanager, suppress
 from itertools import chain
 
@@ -30,23 +31,27 @@ ANIMATION_OPTS = {
 }
 
 
-class _BboxCacheMirror(dict):
-    """A dict subclass that mirrors reads/writes to the artifact_manager LRU cache.
+class _BboxCacheMirror(MutableMapping):
+    """A MutableMapping that forwards ALL operations to the artifact_manager
+    LRU cache for MPL tight bounding boxes.  There is **no** local
+    storage — the authoritative single source of truth is the
+    artifact_manager cache.
 
-    The authoritative store for MPL tight-bounding-box values is the
-    artifact_manager LRU cache (keyed with ``("mpl_bbox", fig_id)``).
-    This subclass exists purely for backwards compatibility with any
-    code still using ``MPLRenderer.drawn[fig_id]`` directly — every
-    operation is transparently synced.  This eliminates the dual-
-    tracking (a.k.a. "double-entry bookkeeping") risk.
+    Unlike a dict subclass, MutableMapping has no internal state and
+    cannot diverge from the cache.  The five abstract methods
+    (__getitem__, __setitem__, __delitem__, __iter__, __len__) are
+    implemented explicitly; all other dict operations are provided by
+    MutableMapping based on those.  Common methods (get, __contains__,
+    pop, clear) are overridden for O(1) performance.
     """
 
     _CACHE_PREFIX = "mpl_bbox"
+    _SENTINEL = object()
 
     def __getitem__(self, fig_id):
         key = (self._CACHE_PREFIX, fig_id)
-        value = artifact_manager.cache_get(key, _SENTINEL)
-        if value is _SENTINEL:
+        value = artifact_manager.cache_get(key, self._SENTINEL)
+        if value is self._SENTINEL:
             raise KeyError(fig_id)
         return value
 
@@ -62,45 +67,13 @@ class _BboxCacheMirror(dict):
 
     def __delitem__(self, fig_id):
         key = (self._CACHE_PREFIX, fig_id)
-        if not artifact_manager.cache_has(key):
+        if not artifact_manager.cache_delete(key):
             raise KeyError(fig_id)
-        # cache has no explicit delete; overwrite with None then evict by LRU
-        artifact_manager.cache_put(key, None, format="bbox", policy=CleanupPolicy.SCOPE_EXIT)
-
-    def __contains__(self, fig_id):
-        return artifact_manager.cache_has((self._CACHE_PREFIX, fig_id))
-
-    def get(self, fig_id, default=None):
-        key = (self._CACHE_PREFIX, fig_id)
-        value = artifact_manager.cache_get(key, _SENTINEL)
-        return default if value is _SENTINEL else value
-
-    def pop(self, fig_id, *args):
-        key = (self._CACHE_PREFIX, fig_id)
-        value = artifact_manager.cache_get(key, _SENTINEL)
-        if value is _SENTINEL:
-            if args:
-                return args[0]
-            raise KeyError(fig_id)
-        # Remove by rewriting as short-lived; actual eviction happens via LRU
-        artifact_manager.cache_put(key, None, format="bbox", policy=CleanupPolicy.SCOPE_EXIT)
-        return value
-
-    def clear(self):
-        # Walk all CACHE_ENTRY artifacts and drop bbox ones
-        for art in list(artifact_manager.list_artifacts(kind=ArtifactKind.CACHE_ENTRY)):
-            if art.refs.get("cache_key", "").startswith("('mpl_bbox'"):
-                art.release()
-
-    def __len__(self):
-        return sum(
-            1
-            for art in artifact_manager.list_artifacts(kind=ArtifactKind.CACHE_ENTRY, released=False)
-            if art.refs.get("cache_key", "").startswith("('mpl_bbox'")
-        )
 
     def __iter__(self):
-        for art in artifact_manager.list_artifacts(kind=ArtifactKind.CACHE_ENTRY, released=False):
+        for art in artifact_manager.list_artifacts(
+            kind=ArtifactKind.CACHE_ENTRY, released=False
+        ):
             ck = art.refs.get("cache_key", "")
             if ck.startswith("('mpl_bbox'"):
                 try:
@@ -108,6 +81,41 @@ class _BboxCacheMirror(dict):
                 except (ValueError, IndexError):
                     continue
                 yield fig_id
+
+    def __len__(self):
+        return sum(
+            1
+            for art in artifact_manager.list_artifacts(
+                kind=ArtifactKind.CACHE_ENTRY, released=False
+            )
+            if art.refs.get("cache_key", "").startswith("('mpl_bbox'")
+        )
+
+    # --- O(1) overrides to avoid MutableMapping's default O(N) impls ---
+
+    def get(self, fig_id, default=None):
+        key = (self._CACHE_PREFIX, fig_id)
+        value = artifact_manager.cache_get(key, self._SENTINEL)
+        return default if value is self._SENTINEL else value
+
+    def __contains__(self, fig_id):
+        return artifact_manager.cache_has((self._CACHE_PREFIX, fig_id))
+
+    def pop(self, fig_id, *args):
+        key = (self._CACHE_PREFIX, fig_id)
+        value = artifact_manager.cache_pop(key, self._SENTINEL)
+        if value is self._SENTINEL:
+            if args:
+                return args[0]
+            raise KeyError(fig_id)
+        return value
+
+    def clear(self):
+        for art in list(
+            artifact_manager.list_artifacts(kind=ArtifactKind.CACHE_ENTRY)
+        ):
+            if art.refs.get("cache_key", "").startswith("('mpl_bbox'"):
+                art.release()
 
     def keys(self):
         return list(self)
@@ -117,9 +125,6 @@ class _BboxCacheMirror(dict):
 
     def items(self):
         return [(k, self[k]) for k in self]
-
-
-_SENTINEL = object()
 
 
 class MPLRenderer(Renderer):
@@ -249,10 +254,10 @@ class MPLRenderer(Renderer):
         owner = type(self).__name__
         with artifact_manager.default_owner(owner):
             with artifact_manager.scope(f"mpl-figdata-{id(plot)}") as scope:
-                artifact_manager.register(
+                scope.register_external_object(
                     ArtifactKind.MPL_FIGURE,
-                    obj=plot.state,
-                    policy=CleanupPolicy.RENDER_CYCLE,
+                    plot.state,
+                    source="renderer",
                     refs={"plot_id": id(plot), "format": fmt},
                 )
 
