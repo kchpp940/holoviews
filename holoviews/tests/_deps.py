@@ -5,28 +5,13 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from holoviews.core.util.capabilities import (
-    CapabilityDiagnostic,
-    CapabilityType,
-    get_backend_capability,
-    get_datashader_capability,
-)
 from holoviews.core.util.dependencies import _is_installed
 
 
 def optional_dependencies(*names: str):
-    if not all(map(_is_installed, names)):
-        return None
-    try:
+    """Check if a dependency is installed and return the module and a fixture that skips test."""
+    if all(map(_is_installed, names)):
         return importlib.import_module(names[0])
-    except Exception:
-        return None
-
-
-def _skip_reason_from_diag(diag: CapabilityDiagnostic) -> str:
-    if diag.available:
-        return ""
-    return diag.format_skip_reason()
 
 
 if TYPE_CHECKING:
@@ -80,12 +65,15 @@ cftime_skip = _skip(cftime, "cftime")
 dask_skip = _skip(dask, "dask")
 da_skip = _skip(da, "dask.array")
 dd_skip = _skip(dd, "dask.dataframe")
+ds_skip = _skip(ds, "datashader")
 duckdb_skip = _skip(duckdb, "duckdb")
 ibis_skip = _skip(ibis, "ibis")
 ipython_skip = _skip(IPython, "IPython")
+mpl_skip = _skip(mpl, "matplotlib")
 nx_skip = _skip(nx, "networkx")
 notebook_skip = _skip(notebook, "notebook")
 pd_skip = _skip(pd, "pandas")
+plotly_skip = _skip(plotly, "plotly")
 pl_skip = _skip(pl, "polars")
 pa_skip = _skip(pa, "pyarrow")
 scipy_skip = _skip(scipy, "scipy")
@@ -96,24 +84,7 @@ xr_skip = _skip(xr, "xarray")
 xyzservices_skip = _skip(xyzservices, "xyzservices")
 
 
-def _backend_skip(backend: str) -> pytest.mark:
-    diag = get_backend_capability(backend)
-    if diag.available:
-        return pytest.mark.skipif(False, reason="")
-    reason = _skip_reason_from_diag(diag)
-    return pytest.mark.skipif(True, reason=reason)
-
-
-bokeh_skip = _backend_skip("bokeh")
-mpl_skip = _backend_skip("matplotlib")
-plotly_skip = _backend_skip("plotly")
-
-_ds_diag = get_datashader_capability()
-if _ds_diag.available:
-    ds_skip = pytest.mark.skipif(False, reason="")
-else:
-    ds_skip = pytest.mark.skipif(True, reason=_skip_reason_from_diag(_ds_diag))
-
-
 if spd:
+    # Will import _posixshmem on Linux + Python 3.14 + spatialpandas
+    # which does not work with our pytest.fixture unimport
     import multiprocessing.resource_tracker  # noqa: F401

@@ -31,14 +31,6 @@ def pytest_addoption(parser):
 def pytest_configure(config):
     for marker in CUSTOM_MARKS:
         config.addinivalue_line("markers", f"{marker}: {marker} test marker")
-    config.addinivalue_line(
-        "markers",
-        "requires_datashader: Skip test if datashader is not available",
-    )
-    config.addinivalue_line(
-        "markers",
-        "requires_backend(backend): Skip test if the specified backend is not available",
-    )
 
 
 def pytest_collection_modifyitems(config, items):
@@ -56,6 +48,8 @@ def pytest_collection_modifyitems(config, items):
             skipped.append(item)
 
     config.hook.pytest_deselected(items=skipped)
+    # Sorted because pytest 8.4.0 and pytest-playwright
+    # https://github.com/microsoft/playwright-pytest/pull/284
     items[:] = sorted(selected, key=lambda x: x.path)
 
 
@@ -78,11 +72,7 @@ def ibis_sqlite_backend():
 
 
 def _plotting_backend(backend):
-    from holoviews.core.util import import_backend
-
-    diag = import_backend(backend)
-    if not diag.available:
-        pytest.skip(diag.format_skip_reason())
+    pytest.importorskip(backend)
     if not hv.extension._loaded:
         hv.extension(backend)
     hv.renderer(backend)
@@ -108,38 +98,20 @@ def plotly_backend():
 
 
 @pytest.fixture
-def datashader_available():
-    from holoviews.core.util import import_datashader
-
-    diag = import_datashader()
-    if not diag.available:
-        pytest.skip(diag.format_skip_reason())
-    yield True
-
-
-def pytest_runtest_setup(item):
-    from holoviews.core.util import import_backend, import_datashader
-
-    if "requires_datashader" in item.keywords:
-        diag = import_datashader()
-        if not diag.available:
-            pytest.skip(diag.format_skip_reason())
-
-    requires_backend_marker = item.get_closest_marker("requires_backend")
-    if requires_backend_marker:
-        backend = requires_backend_marker.args[0]
-        diag = import_backend(backend)
-        if not diag.available:
-            pytest.skip(diag.format_skip_reason())
-
-
-@pytest.fixture
 def unimport(monkeypatch: pytest.MonkeyPatch) -> Callable[[str], None]:
+    """
+    Return a function for unimporting modules and preventing reimport.
+
+    This will block any new modules from being imported.
+    """
+
     def unimport_module(modname: str) -> None:
+        # Remove if already imported
         monkeypatch.delitem(sys.modules, modname, raising=False)
         items = [m for m in sys.modules if m.startswith(f"{modname}.")]
         for item in items:
             monkeypatch.delitem(sys.modules, item, raising=False)
+        # Prevent import:
         monkeypatch.setattr(sys, "path", [])
 
     return unimport_module

@@ -57,23 +57,8 @@ Repository = "https://github.com/holoviz/holoviews"
 
 [project.optional-dependencies]
 recommended = ["matplotlib >=3", "plotly >=4.0"]
-bokeh = ["bokeh >=3.1"]
-matplotlib = ["matplotlib >=3"]
-plotly = ["plotly >=4.0"]
-datashader = ["datashader >=0.14"]
-notebook = [
-    "IPython",
-    "jupyter_bokeh",
-    "ipywidgets_bokeh",
-    "jupyterlab",
-    "notebook",
-]
-export = [
-    "selenium",
-    "pillow",
-    "ffmpeg-python",
-    "kaleido",
-]
+
+[dependency-groups]
 tests = ["pytest", "pytest-rerunfailures", "pytest-asyncio"]
 
 [project.scripts]

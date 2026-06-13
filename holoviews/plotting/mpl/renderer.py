@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 import base64
-import os
 from contextlib import contextmanager, suppress
-from io import BytesIO
 from itertools import chain
-from tempfile import NamedTemporaryFile
 
 import matplotlib as mpl
 import numpy as np
@@ -15,6 +12,7 @@ from param.parameterized import bothmethod
 
 from ...core import HoloMap
 from ...core.options import Store
+from ..artifact_manager import ArtifactKind, CleanupPolicy, artifact_manager
 from ..renderer import HTML_TAGS, MIME_TYPES, Renderer
 from .util import get_old_rcparams, get_tight_bbox
 
@@ -150,63 +148,72 @@ class MPLRenderer(Renderer):
         any IPython dependency.
 
         """
-        if fmt in ["gif", "mp4", "webm"]:
-            with mpl.rc_context(rc=plot.fig_rcparams):
-                if bbox_inches == "tight":
-                    self._adjust_figure_for_anim(plot, fmt)
-                anim = plot.anim(fps=self.fps)
-            try:
-                data = self._anim_data(anim, fmt)
-            except Exception as e:
-                from ...core.util.capabilities import (
-                    CapabilityError,
-                    get_backend_static_export_capability,
+        owner = type(self).__name__
+        with artifact_manager.default_owner(owner):
+            with artifact_manager.scope(f"mpl-figdata-{id(plot)}") as scope:
+                artifact_manager.register(
+                    ArtifactKind.MPL_FIGURE,
+                    obj=plot.state,
+                    policy=CleanupPolicy.RENDER_CYCLE,
+                    refs={"plot_id": id(plot), "format": fmt},
                 )
-                diag = get_backend_static_export_capability("matplotlib", fmt)
-                raise CapabilityError(diag.with_error(
-                    diag.status,
-                    f"Failed to render {fmt} animation: {e}",
-                    diag.fix_suggestions,
-                )) from e
-        else:
-            fig = plot.state
 
-            traverse_fn = lambda x: x.handles.get("bbox_extra_artists", None)
-            extra_artists = list(
-                chain.from_iterable(
-                    artists for artists in plot.traverse(traverse_fn) if artists is not None
+                if fmt in ["gif", "mp4", "webm"]:
+                    with mpl.rc_context(rc=plot.fig_rcparams):
+                        if bbox_inches == "tight":
+                            self._adjust_figure_for_anim(plot, fmt)
+                        anim = plot.anim(fps=self.fps)
+                    data = self._anim_data(anim, fmt, scope=scope)
+                else:
+                    fig = plot.state
+
+                    traverse_fn = lambda x: x.handles.get("bbox_extra_artists", None)
+                    extra_artists = list(
+                        chain.from_iterable(
+                            artists for artists in plot.traverse(traverse_fn) if artists is not None
+                        )
+                    )
+
+                    kw = dict(
+                        format=fmt,
+                        facecolor=fig.get_facecolor(),
+                        edgecolor=fig.get_edgecolor(),
+                        dpi=self.dpi,
+                        bbox_inches=bbox_inches,
+                        bbox_extra_artists=extra_artists,
+                    )
+                    kw.update(kwargs)
+
+                    with np.errstate(invalid="ignore"):
+                        with suppress(Exception):
+                            kw = self._compute_bbox(fig, kw)
+                        _, bytes_io = scope.create_bytesio(format=fmt)
+                        fig.canvas.print_figure(bytes_io, **kw)
+                    bytes_io.seek(0)
+                    data = bytes_io.read()
+
+                if as_script:
+                    b64 = base64.b64encode(data).decode("utf-8")
+                    (mime_type, tag) = MIME_TYPES[fmt], HTML_TAGS[fmt]
+                    src = HTML_TAGS["base64"].format(mime_type=mime_type, b64=b64)
+                    html = tag.format(src=src, mime_type=mime_type, css="")
+                    scope.register_data(
+                        html,
+                        format="html",
+                        policy=CleanupPolicy.SCOPE_EXIT,
+                        refs={"source_fmt": fmt},
+                    )
+                    return html
+                if fmt == "svg":
+                    data = data.decode("utf-8")
+                scope.register_data(
+                    data,
+                    format=fmt,
+                    policy=CleanupPolicy.SCOPE_EXIT,
                 )
-            )
+                return data
 
-            kw = dict(
-                format=fmt,
-                facecolor=fig.get_facecolor(),
-                edgecolor=fig.get_edgecolor(),
-                dpi=self.dpi,
-                bbox_inches=bbox_inches,
-                bbox_extra_artists=extra_artists,
-            )
-            kw.update(kwargs)
-
-            with np.errstate(invalid="ignore"):
-                with suppress(Exception):
-                    # Attempts to precompute the tight bounding box
-                    kw = self._compute_bbox(fig, kw)
-                bytes_io = BytesIO()
-                fig.canvas.print_figure(bytes_io, **kw)
-            data = bytes_io.getvalue()
-
-        if as_script:
-            b64 = base64.b64encode(data).decode("utf-8")
-            (mime_type, tag) = MIME_TYPES[fmt], HTML_TAGS[fmt]
-            src = HTML_TAGS["base64"].format(mime_type=mime_type, b64=b64)
-            html = tag.format(src=src, mime_type=mime_type, css="")
-            return html
-        if fmt == "svg":
-            data = data.decode("utf-8")
-        return data
-
-    def _anim_data(self, anim, fmt):
+    def _anim_data(self, anim, fmt, scope=None):
         """Render a matplotlib animation object and return the corresponding data."""
         (writer, _, anim_kwargs, extra_args) = ANIMATION_OPTS[fmt]
         if extra_args != []:
@@ -217,12 +224,25 @@ class MPLRenderer(Renderer):
         if self.dpi is not None:
             anim_kwargs["dpi"] = self.dpi
         if not hasattr(anim, "_encoded_video"):
-            # Windows will throw PermissionError with auto-delete
-            with NamedTemporaryFile(suffix=f".{fmt}", delete=False) as f:
-                anim.save(f.name, writer=writer, **anim_kwargs)
-                video = f.read()
-            f.close()
-            os.remove(f.name)
+            _manager = scope if scope is not None else artifact_manager
+            _scope_owner = type(self).__name__
+            with artifact_manager.default_owner(_scope_owner):
+                if scope is None:
+                    _ctx = artifact_manager.scope(f"mpl-anim-{id(anim)}")
+                    _manager = _ctx.__enter__()
+                else:
+                    _ctx = None
+                try:
+                    art, _ = _manager.create_tempfile(
+                        format=fmt,
+                        policy=CleanupPolicy.SCOPE_EXIT,
+                    )
+                    anim.save(art.path, writer=writer, **anim_kwargs)
+                    with open(art.path, "rb") as f:
+                        video = f.read()
+                finally:
+                    if _ctx is not None:
+                        _ctx.__exit__(None, None, None)
         return video
 
     def _compute_bbox(self, fig, kw):
@@ -234,19 +254,30 @@ class MPLRenderer(Renderer):
         matplotlib.backend_bases.FigureCanvasBase.print_figure
         as it hasn't been factored out as a function.
 
+        Uses the artifact manager's LRU cache in place of the legacy
+        ``MPLRenderer.drawn`` class-level dict.
         """
         fig_id = id(fig)
+        cache_key = ("mpl_bbox", fig_id)
         if kw["bbox_inches"] == "tight":
-            if fig_id not in MPLRenderer.drawn:
+            cached = artifact_manager.cache_get(cache_key)
+            if cached is None:
                 fig.set_dpi(self.dpi)
                 fig.canvas.draw()
                 extra_artists = kw.pop("bbox_extra_artists", [])
                 pad = mpl.rcParams["savefig.pad_inches"]
                 bbox_inches = get_tight_bbox(fig, extra_artists, pad=pad)
-                MPLRenderer.drawn[fig_id] = bbox_inches
+                artifact_manager.cache_put(
+                    cache_key,
+                    bbox_inches,
+                    format="bbox",
+                    policy=CleanupPolicy.RENDER_CYCLE,
+                    refs={"fig_id": fig_id},
+                )
                 kw["bbox_inches"] = bbox_inches
             else:
-                kw["bbox_inches"] = MPLRenderer.drawn[fig_id]
+                kw["bbox_inches"] = cached
+            MPLRenderer.drawn[fig_id] = kw["bbox_inches"]
         return kw
 
     def _adjust_figure_for_anim(self, plot, fmt):

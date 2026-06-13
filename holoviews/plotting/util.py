@@ -1556,12 +1556,10 @@ class flatten_stack(Operation):
     )
 
     def _process(self, element, key=None):
-        from ..core.util import CapabilityError, import_datashader
-
-        diag = import_datashader()
-        if not diag.available:
-            raise CapabilityError(diag)
-        from ..operation.datashader import shade
+        try:
+            from ..operation.datashader import shade
+        except ImportError as exc:
+            raise ImportError("Flattening ImageStacks requires datashader.") from exc
         return shade(element, **self.shade_params)
 
 
