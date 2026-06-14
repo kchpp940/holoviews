@@ -540,6 +540,25 @@ class OptionSchema:
         }
         return self.validate(filtered, context=context, warn=warn, coerce=False)
 
+    def validate_strict_partial(
+        self,
+        options: dict[str, t.Any],
+        *,
+        context: str | None = None,
+        warn: t.Callable[[str], None] | None = None,
+    ) -> dict[str, t.Any]:
+        """Like :meth:`validate_partial`, but *unknown* keys raise
+        :class:`ValidationError` just like :meth:`validate`.  The
+        difference from :meth:`validate` is that missing schema keys
+        are *not* filled in with defaults (*i.e.* ``coerce=False``
+        behaviour).
+
+        Use this helper when the caller knows that *every* key in
+        *options* should belong to this schema, but does not want to
+        require that *all* schema defaults be present.
+        """
+        return self.validate(options, context=context, warn=warn, coerce=False)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

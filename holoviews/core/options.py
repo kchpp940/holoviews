@@ -524,9 +524,10 @@ class Options:
                 else:
                     # Re-raise as OptionError to preserve the existing
                     # exception type that callers may be catching.
+                    bad_name = e.problems[0][0] if e.problems else "unknown"
                     raise OptionError(
-                        e.problems[0][0] if e.problems else "unknown",
-                        schema.allowed_names,
+                        bad_name,
+                        Keywords(schema.allowed_names),
                         group_name=key,
                     ) from e
             kwargs = cleaned
@@ -1818,7 +1819,36 @@ class StoreOptions:
                             if backend is not None
                             else None
                         )
-                        customization[k] = Options(key=k, schema=sch, **v)
+                        if sch is not None and Options.skip_invalid:
+                            # Fast path: validate with schema now, then
+                            # pass only the clean values to Options so
+                            # that skip_invalid never silently drops
+                            # keys that are actually invalid (they
+                            # would be lost without any record).
+                            try:
+                                cleaned = sch.validate_strict_partial(
+                                    v,
+                                    context=f"apply_customizations({element_name}.{k})",
+                                )
+                            except ValidationError as e:
+                                # Re-raise as OptionError so the
+                                # existing record_skipped_option path
+                                # works and validate_spec can aggregate
+                                # errors across backends.
+                                first_name = e.problems[0][0] if e.problems else "unknown"
+                                raise OptionError(
+                                    first_name,
+                                    Keywords(
+                                        sch.allowed_names, target=element_name
+                                    ),
+                                    group_name=k,
+                                ) from e
+                            customization[k] = Options(key=k, schema=sch, **cleaned)
+                        elif sch is not None:
+                            # skip_invalid=False: let Options raise
+                            customization[k] = Options(key=k, schema=sch, **v)
+                        else:
+                            customization[k] = Options(key=k, **v)
                     else:
                         customization[k] = v
                         if backend is not None and getattr(v, "schema", None) is None:

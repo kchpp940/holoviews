@@ -169,7 +169,15 @@ class opts(param.ParameterizedFunction, metaclass=OptsMeta):
 
     @classmethod
     def _apply_groups_to_backend(cls, obj, options, backend, clone):
-        """Apply the groups to a single specified backend"""
+        """Apply the groups to a single specified backend.
+
+        Before passing *options* downstream to ``StoreOptions.set_options``,
+        every ``{element: {group: kwargs}}`` entry is validated against
+        the unified :class:`OptionSchema` for that (``backend``,
+        ``element``, ``group``) triple so that invalid plot / style /
+        norm / output options are caught before the OptionTree is
+        modified.
+        """
         obj_handle = obj
         if options is None:
             if clone:
@@ -178,6 +186,27 @@ class opts(param.ParameterizedFunction, metaclass=OptsMeta):
                 obj.map(lambda x: setattr(x, "id", None))
         elif clone:
             obj_handle = obj.map(lambda x: x.clone(id=x.id))
+
+        if options is not None:
+            validated_options: dict[str, dict[str, dict[str, t.Any]]] = {}
+            for objspec, groups in options.items():
+                objtype = objspec.split(".")[0]
+                validated_groups: dict[str, dict[str, t.Any]] = {}
+                for group, kws in groups.items():
+                    sch = Store.options_schema(objtype, group, backend=backend)
+                    if sch is not None and kws:
+                        try:
+                            cleaned = sch.validate_strict_partial(
+                                kws,
+                                context=f"opts.apply_groups({objspec!r}.{group})",
+                            )
+                        except ValidationError as e:
+                            raise ValueError(str(e)) from e
+                        validated_groups[group] = cleaned
+                    else:
+                        validated_groups[group] = dict(kws)
+                validated_options[objspec] = validated_groups
+            options = validated_options
 
         return StoreOptions.set_options(obj_handle, options, backend=backend)
 
@@ -342,10 +371,10 @@ class opts(param.ParameterizedFunction, metaclass=OptsMeta):
         type[.group][.label] keys into separate style, plot, norm and
         output options. If the backend is not loaded, `None` is returned.
 
-        Uses the unified :class:`OptionSchema` machinery to validate
-        both the *name* (e.g. no misspellings) and the *value* (type,
-        bounds, allowed set) of every option before it propagates to
-        the backend.
+        Uses the unified :class:`OptionSchema` machinery via
+        :meth:`_validate_flat_kwargs` to validate both names and values
+        for every group (style / plot / norm / output) before any
+        option is written to the OptionTree.
 
             opts._expand_options({'Image': dict(cmap='viridis', show_title=False)})
 
@@ -376,69 +405,24 @@ class opts(param.ParameterizedFunction, metaclass=OptsMeta):
         except KeyError:
             return None
 
-        expanded = {}
         if isinstance(options, list):
             options = util.merge_options_to_dict(options)
 
         active_backend = backend or current_backend
+        expanded: dict[str, dict[str, dict[str, t.Any]]] = {}
 
         for objspec, option_values in options.items():
             objtype = objspec.split(".")[0]
             if objtype not in backend_options:
                 raise ValueError(f"{objtype} type not found, could not apply options.")
-            obj_options = backend_options[objtype]
-            expanded[objspec] = {g: {} for g in obj_options.groups}
 
-            # Build a combined schema for fuzzy matching across groups
-            all_group_schemas: dict[str, OptionSchema] = {}
-            for g in sorted(obj_options.groups.keys()):
-                sch = Store.options_schema(objtype, g, backend=active_backend)
-                if sch is not None:
-                    all_group_schemas[g] = sch
-            all_valid_names: list[str] = sorted(
-                {
-                    name
-                    for sch in all_group_schemas.values()
-                    for name in sch.allowed_names
-                }
+            grouped, _ = cls._validate_flat_kwargs(
+                objtype,
+                option_values,
+                backend=active_backend,
+                context=f"hv.opts({objspec}, ...)",
             )
-
-            for opt, value in option_values.items():
-                # --- Step 1: find which group this option belongs to ---
-                matched_group: str | None = None
-                for g, group_opts in sorted(obj_options.groups.items()):
-                    if opt in group_opts.allowed_keywords:
-                        matched_group = g
-                        break
-
-                # --- Step 2: unknown option → detailed error with source ---
-                if matched_group is None:
-                    cls._options_error(
-                        opt, objtype, active_backend, all_valid_names,
-                        group_schemas=all_group_schemas,
-                    )
-                    continue  # pragma: no cover - _options_error raises
-
-                # --- Step 3: validate value against the group schema ----
-                group_schema = all_group_schemas.get(matched_group)
-                if group_schema is not None:
-                    try:
-                        validated = group_schema.validate_partial(
-                            {opt: value},
-                            context=f"hv.opts({objtype}.{objspec}, ...)",
-                        )
-                        validated_value = validated[opt]
-                    except ValidationError as e:
-                        # Re-raise as ValueError with group context for
-                        # backwards compatibility with existing code that
-                        # catches ValueError.
-                        raise ValueError(str(e)) from e
-                else:
-                    # Schema not available for this group; fall back to
-                    # accepting any value (the old behaviour).
-                    validated_value = value
-
-                expanded[objspec][matched_group][opt] = validated_value
+            expanded[objspec] = grouped
 
         return expanded
 
@@ -548,44 +532,178 @@ class opts(param.ParameterizedFunction, metaclass=OptsMeta):
         return reprs
 
     @classmethod
+    def _collect_group_schemas(
+        cls,
+        element: str,
+        backend: str,
+    ) -> dict[str, OptionSchema]:
+        """Return a dict ``{group: OptionSchema}`` for the given
+        (element, backend) pair.
+
+        Always returns a non-empty dict for every registered group
+        (``style``, ``plot``, ``norm``, ``output``) so callers can
+        iterate safely.  If a schema has not been registered yet a
+        ``KeyError`` is raised.
+        """
+        result: dict[str, OptionSchema] = {}
+        for group in ("style", "plot", "norm", "output"):
+            sch = Store.options_schema(element, group, backend=backend)
+            if sch is not None:
+                result[group] = sch
+        return result
+
+    @classmethod
+    def _validate_flat_kwargs(
+        cls,
+        element: str,
+        kwargs: dict[str, t.Any],
+        *,
+        backend: str | None = None,
+        context: str | None = None,
+    ) -> tuple[dict[str, dict[str, t.Any]], dict[str, OptionSchema]]:
+        """Validate flat ``kwargs`` for ``element`` against the unified
+        group schemas for ``backend`` (or the current backend).
+
+        Returns
+        -------
+        grouped : dict
+            ``{group: {opt: value}}`` – validated and coerced values
+            split by their canonical option group.
+        group_schemas : dict
+            ``{group: OptionSchema}`` used during validation, useful
+            for subsequent fuzzy-matching error messages.
+
+        Raises
+        ------
+        ValueError
+            When a kwarg is unknown across all groups, or has a bad
+            type / value for its matched group.  The exception message
+            always includes the option category and source.
+        """
+        active_backend = backend or Store.current_backend
+        try:
+            backend_options = Store.options(backend=active_backend)
+        except KeyError as e:
+            raise ValueError(
+                f"No options registered for backend {active_backend!r}; "
+                "did you call hv.extension()?"
+            ) from e
+
+        if element not in backend_options:
+            raise ValueError(
+                f"{element!r} is not a registered view type for backend "
+                f"{active_backend!r}."
+            )
+        obj_options = backend_options[element]
+
+        group_schemas = cls._collect_group_schemas(element, active_backend)
+        all_valid_names: list[str] = sorted(
+            {name for sch in group_schemas.values() for name in sch.allowed_names}
+        )
+
+        grouped: dict[str, dict[str, t.Any]] = {g: {} for g in obj_options.groups}
+
+        for opt, value in kwargs.items():
+            # Step 1: find the canonical group for this option
+            matched_group: str | None = None
+            for g, group_opts in sorted(obj_options.groups.items()):
+                if opt in group_opts.allowed_keywords:
+                    matched_group = g
+                    break
+
+            if matched_group is None:
+                cls._options_error(
+                    opt, element, active_backend, all_valid_names,
+                    group_schemas=group_schemas,
+                )
+                continue  # pragma: no cover – _options_error raises
+
+            # Step 2: validate value against the matched group's schema
+            sch = group_schemas.get(matched_group)
+            ctx = context or f"opts.{element}(...)"
+            if sch is not None:
+                try:
+                    validated = sch.validate(
+                        {opt: value}, context=ctx, coerce=False,
+                    )
+                except ValidationError as e:
+                    raise ValueError(str(e)) from e
+                grouped[matched_group][opt] = validated[opt]
+            else:
+                grouped[matched_group][opt] = value
+
+        return grouped, group_schemas
+
+    @classmethod
     def _create_builder(cls, element, completions):
         def builder(cls, spec=None, **kws):
             spec = element if spec is None else f"{element}.{spec}"
             prefix = f"In opts.{element}(...), "
-            backend = kws.get("backend", None)
-            keys = set(kws.keys())
-            if backend:
-                keywords = cls._element_keywords(backend, elements=[element])
-                allowed_kws = keywords.get(element, keys)
-                invalid = keys - set(allowed_kws)
-            else:
-                mismatched = {}
-                all_valid_kws = set()
-                for loaded_backend in Store.loaded_backends():
-                    valid = set(cls._element_keywords(loaded_backend).get(element, []))
-                    all_valid_kws |= set(valid)
-                    if keys <= valid:  # Found a backend for which all keys are valid
-                        return Options(spec, **kws)
-                    mismatched[loaded_backend] = list(keys - valid)
 
-                invalid = keys - all_valid_kws  # Keys not found for any backend
-                if mismatched and not invalid:  # Keys found across multiple backends
-                    msg = "{prefix}keywords supplied are mixed across backends. Keyword(s) {info}"
-                    info = ", ".join(
-                        "{} are invalid for {}".format(", ".join(repr(el) for el in v), k)
-                        for k, v in mismatched.items()
-                    )
-                    raise ValueError(msg.format(info=info, prefix=prefix))
-                allowed_kws = completions
+            backend: str | None = kws.get("backend", None)
+            backend_for_validate = backend or Store.current_backend
+            # Always pop "backend" – it's an OptionTree routing key, not a
+            # plot/style/norm kwarg.
+            kws.pop("backend", None)
 
-            reraise = False
-            if invalid:
+            if Store.loaded_backends():
+                # Fast path: at least one backend is loaded, so we have
+                # proper schemas.  Validate everything in one pass.
                 try:
-                    cls._options_error(next(iter(invalid)), element, backend, allowed_kws)
+                    grouped, _ = cls._validate_flat_kwargs(
+                        element, kws,
+                        backend=backend_for_validate,
+                        context=f"opts.{element}(...)",
+                    )
                 except ValueError as e:
-                    msg = str(e)[0].lower() + str(e)[1:]
-                    reraise = True
+                    raise ValueError(prefix + str(e)[0].lower() + str(e)[1:])
 
+                # Flatten back into a single dict (Options accepts any
+                # group keys when built from an opts.* builder).
+                flat_kws: dict[str, t.Any] = {}
+                for v in grouped.values():
+                    flat_kws.update(v)
+                if backend is not None:
+                    flat_kws["backend"] = backend
+                return Options(spec, **flat_kws)
+
+            # Slow path: no backends loaded yet.  Replicate the legacy
+            # cross-backend name-only check so users still get helpful
+            # errors during early configuration.
+            mismatched: dict[str, list[str]] = {}
+            all_valid_kws: set[str] = set()
+            for loaded_backend in Store.loaded_backends():
+                valid = set(
+                    cls._element_keywords(loaded_backend).get(element, [])
+                )
+                all_valid_kws |= valid
+                keys = set(kws.keys())
+                if keys <= valid:  # All keys ok for this backend
+                    return Options(spec, **kws)
+                mismatched[loaded_backend] = list(keys - valid)
+
+            invalid = set(kws.keys()) - all_valid_kws
+            if mismatched and not invalid:  # Mixed across backends
+                info = ", ".join(
+                    "{} are invalid for {}".format(
+                        ", ".join(repr(el) for el in v), k
+                    )
+                    for k, v in mismatched.items()
+                )
+                raise ValueError(
+                    prefix + f"keywords supplied are mixed across backends. Keyword(s) {info}"
+                )
+
+            # Truly invalid keywords – raise with fuzzy suggestion
+            if invalid:
+                reraise = False
+                try:
+                    cls._options_error(
+                        next(iter(invalid)), element, backend, completions,
+                    )
+                except ValueError as e:
+                    reraise = True
+                    msg = str(e)[0].lower() + str(e)[1:]
                 if reraise:
                     raise ValueError(prefix + msg)
 

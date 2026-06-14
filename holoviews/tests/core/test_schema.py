@@ -621,3 +621,276 @@ class TestValidationErrorQuality:
         s = OptionSchema(OptionCategory.RENDERER, spec)
         # spec has a source recorded
         assert s.spec_for("x").source == "HardCodedSpec"
+
+
+# ---------------------------------------------------------------------------
+# Style / norm / builders / grouped-options integration
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def _load_bokeh_backend_once():
+    """Ensure the bokeh backend is loaded so Store has schemas registered."""
+    import holoviews as hv
+
+    hv.extension("bokeh")
+
+
+@pytest.mark.usefixtures("_load_bokeh_backend_once")
+class TestBuildStyleNormSchemas:
+    def test_build_style_schema_creates_style_category(self):
+        s = build_style_schema(["color", "line_width"], backend="test", element_name="X")
+        assert s.category == OptionCategory.STYLE
+        assert "color" in s and "line_width" in s
+
+    def test_build_style_schema_allows_any_value(self):
+        s = build_style_schema(["color"], backend="test", element_name="X")
+        cleaned = s.validate({"color": "red"})
+        assert cleaned["color"] == "red"
+        # style values are untyped (backend decides)
+        cleaned2 = s.validate({"color": object()})
+        assert cleaned2["color"] is not None
+
+    def test_build_norm_schema_basic(self):
+        s = build_norm_schema()
+        assert s.category == OptionCategory.NORM
+        assert "framewise" in s and "axiswise" in s
+        assert s.spec_for("framewise").type is bool
+        assert s.spec_for("framewise").default is False
+
+    def test_build_norm_schema_rejects_wrong_type(self):
+        s = build_norm_schema()
+        with pytest.raises(ValidationError):
+            s.validate({"framewise": "yes"})
+
+
+@pytest.mark.usefixtures("_load_bokeh_backend_once")
+class TestStoreOptionsSchemaLookup:
+    def test_store_options_schema_exists_for_curve_style(self):
+        s = Store.options_schema("Curve", "style", backend="bokeh")
+        assert s is not None
+        assert s.category == OptionCategory.STYLE
+        assert "line_color" in s
+
+    def test_store_options_schema_exists_for_curve_plot(self):
+        s = Store.options_schema("Curve", "plot", backend="bokeh")
+        assert s is not None
+        assert s.category == OptionCategory.PLOT
+        assert "show_title" in s
+
+    def test_store_options_schema_exists_for_norm(self):
+        s = Store.options_schema("Curve", "norm", backend="bokeh")
+        assert s is not None
+        assert s.category == OptionCategory.NORM
+        assert "framewise" in s
+
+    def test_store_options_schema_missing(self):
+        s = Store.options_schema("NotARealElement", "style", backend="bokeh")
+        assert s is None
+
+    def test_store_options_schema_none_for_bad_backend(self):
+        s = Store.options_schema("Curve", "style", backend="nonexistent")
+        assert s is None
+
+
+@pytest.mark.usefixtures("_load_bokeh_backend_once")
+class TestValidateStrictPartial:
+    def test_strict_partial_raises_on_unknown(self):
+        s = build_style_schema(["color"], backend="t", element_name="X")
+        with pytest.raises(ValidationError):
+            s.validate_strict_partial({"bogus": 1})
+
+    def test_strict_partial_accepts_valid(self):
+        s = build_style_schema(["color"], backend="t", element_name="X")
+        out = s.validate_strict_partial({"color": "red"})
+        assert out == {"color": "red"}
+
+    def test_strict_partial_does_not_fill_defaults(self):
+        s = build_norm_schema()
+        # framewise not in input, should NOT appear in output
+        out = s.validate_strict_partial({"axiswise": True})
+        assert "framewise" not in out
+        assert out["axiswise"] is True
+
+
+@pytest.mark.usefixtures("_load_bokeh_backend_once")
+class TestOptsBuilder:
+    def test_opts_curve_builder_accepts_valid(self):
+        from holoviews import opts
+
+        o = opts.Curve(show_title=False, line_color="red")
+        assert isinstance(o, Options)
+        assert o.kwargs.get("show_title") is False
+        assert o.kwargs.get("line_color") == "red"
+
+    def test_opts_curve_builder_rejects_unknown(self):
+        from holoviews import opts
+
+        with pytest.raises(ValueError):
+            opts.Curve(not_a_real_option=42)
+
+    def test_opts_curve_builder_rejects_wrong_type(self):
+        from holoviews import opts
+
+        with pytest.raises(ValueError):
+            opts.Curve(show_title="not_a_bool")
+
+    def test_opts_scatter_builder_suggests_on_typo(self):
+        from holoviews import opts
+
+        with pytest.raises(ValueError) as exc:
+            opts.Scatter(sizex=10)  # typo of size
+        msg = str(exc.value)
+        assert "size" in msg.lower() or "Similar" in msg
+
+
+@pytest.mark.usefixtures("_load_bokeh_backend_once")
+class TestOptionsConstructionWithSchema:
+    def test_options_with_schema_accepts_valid(self):
+        s = Store.options_schema("Curve", "plot", backend="bokeh")
+        o = Options(key="plot", schema=s, show_title=False)
+        assert o.kwargs.get("show_title") is False
+
+    def test_options_with_schema_rejects_wrong_type(self):
+        s = Store.options_schema("Curve", "plot", backend="bokeh")
+        # With default skip_invalid=True, Options silently drops bad keys
+        # but records an error — we test strict mode here
+        from holoviews.core.options import options_policy
+
+        with options_policy(skip_invalid=False, warn_on_skip=False):
+            from holoviews.core.options import OptionError
+
+            with pytest.raises(OptionError):
+                Options(key="plot", schema=s, show_title="notbool")
+
+    def test_options_with_schema_drops_unknown_when_skip_invalid(self):
+        s = Store.options_schema("Curve", "plot", backend="bokeh")
+        o = Options(key="plot", schema=s, definitely_unknown=42)
+        assert "definitely_unknown" not in o.kwargs
+
+    def test_options_schema_attribute_preserved_on_call(self):
+        s = Store.options_schema("Curve", "plot", backend="bokeh")
+        o1 = Options(key="plot", schema=s)
+        o2 = o1()
+        assert o2.schema is s
+
+    def test_options_schema_attribute_preserved_on_filtered(self):
+        s = Store.options_schema("Curve", "plot", backend="bokeh")
+        o1 = Options(key="plot", schema=s, show_title=False)
+        o2 = o1.filtered(["show_title"])
+        assert o2.schema is s
+
+
+@pytest.mark.usefixtures("_load_bokeh_backend_once")
+class TestOptsDefaults:
+    def test_defaults_accepts_valid(self):
+        from holoviews import opts
+
+        # Should not raise
+        opts.defaults(opts.Curve(show_title=False, line_color="blue"))
+
+    def test_defaults_rejects_invalid_builder(self):
+        from holoviews import opts
+
+        with pytest.raises(ValueError):
+            opts.defaults(opts.Curve(cmapp="viridis"))  # typo
+
+
+@pytest.mark.usefixtures("_load_bokeh_backend_once")
+class TestApplyGroupsValidation:
+    def test_apply_groups_accepts_valid(self):
+        import numpy as np
+        from holoviews import Curve, opts
+
+        c = Curve(np.array([[0, 0], [1, 1]]))
+        result = opts.apply_groups(
+            c,
+            style={"line_color": "green"},
+            plot={"show_title": False, "xaxis": "bare"},
+            norm={"framewise": True},
+        )
+        # Check that the returned object still has the correct id
+        assert hasattr(result, "id")
+
+    def test_apply_groups_rejects_invalid_style(self):
+        import numpy as np
+        from holoviews import Curve, opts
+
+        c = Curve(np.array([[0, 0], [1, 1]]))
+        with pytest.raises(ValueError):
+            opts.apply_groups(c, style={"not_a_real_style_option": 42})
+
+    def test_apply_groups_rejects_wrong_plot_type(self):
+        import numpy as np
+        from holoviews import Curve, opts
+
+        c = Curve(np.array([[0, 0], [1, 1]]))
+        with pytest.raises(ValueError):
+            opts.apply_groups(c, plot={"show_title": "not_a_bool"})
+
+    def test_apply_groups_rejects_wrong_norm_type(self):
+        import numpy as np
+        from holoviews import Curve, opts
+
+        c = Curve(np.array([[0, 0], [1, 1]]))
+        with pytest.raises(ValueError):
+            opts.apply_groups(c, norm={"framewise": "yes"})
+
+    def test_apply_groups_dict_spec_rejects_invalid_style(self):
+        import numpy as np
+        from holoviews import Curve, opts
+
+        c = Curve(np.array([[0, 0], [1, 1]]))
+        with pytest.raises(ValueError):
+            opts.apply_groups(
+                c,
+                options={
+                    "Curve": {
+                        "style": {"invalid_opt_xyz": "nope"},
+                    }
+                },
+            )
+
+
+@pytest.mark.usefixtures("_load_bokeh_backend_once")
+class TestPlotSelectorMergedSchemas:
+    def test_plot_selector_merged_schema_has_common_opts(self):
+        # Any PlotSelector-registered element should have all plot
+        # options from its candidate classes.
+        import holoviews as hv
+
+        s = Store.options_schema("Image", "plot", backend="bokeh")
+        assert s is not None
+        # Common plot options all Plot subclasses share
+        assert "show_title" in s
+        assert "xaxis" in s
+
+    def test_add_style_opts_updates_schema(self):
+        import holoviews as hv
+
+        hv.Store.add_style_opts(
+            hv.Points, ["_test_custom_opt_xyz"], backend="bokeh"
+        )
+        s = hv.Store.options_schema("Points", "style", backend="bokeh")
+        assert "_test_custom_opt_xyz" in s
+
+
+@pytest.mark.usefixtures("_load_bokeh_backend_once")
+class TestCategoryLabelsInErrors:
+    def test_style_error_uses_style_label(self):
+        s = Store.options_schema("Curve", "style", backend="bokeh")
+        with pytest.raises(ValidationError) as exc:
+            s.validate({"invalid_opt": 1}, context="test")
+        assert "style option" in str(exc.value).lower()
+
+    def test_plot_error_uses_plot_label(self):
+        s = Store.options_schema("Curve", "plot", backend="bokeh")
+        with pytest.raises(ValidationError) as exc:
+            s.validate({"another_bad_key": "x"}, context="test")
+        assert "plot option" in str(exc.value).lower()
+
+    def test_norm_error_uses_normalization_label(self):
+        s = build_norm_schema()
+        with pytest.raises(ValidationError) as exc:
+            s.validate({"bad_norm_key": 1}, context="test")
+        msg = str(exc.value).lower()
+        assert "norm" in msg or "normal" in msg
