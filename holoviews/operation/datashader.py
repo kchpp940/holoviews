@@ -63,13 +63,7 @@ from ..element import (
 )
 from ..element.util import connect_tri_edges_pd
 from ..streams import PointerXY
-from .resample import (
-    GuardedResampleOperation2D,
-    LinkableOperation,
-    OperationExecutionContext,
-    ResampleOperation2D,
-)
-from .guard import GuardedOperationMixin
+from .resample import LinkableOperation, OperationExecutionContext, ResampleOperation2D
 
 DATASHADER_VERSION = _no_import_version("datashader")
 DATASHADER_GE_0_14_0 = DATASHADER_VERSION >= (0, 14, 0)
@@ -112,16 +106,10 @@ class AggState(enum.Enum):
         return state in (AggState.AGG_BY, AggState.AGG_SEL_BY)
 
 
-class AggregationOperation(GuardedResampleOperation2D):
-    """AggregationOperation extends the GuardedResampleOperation2D defining an
+class AggregationOperation(ResampleOperation2D):
+    """AggregationOperation extends the ResampleOperation2D defining an
     aggregator parameter used to define a datashader Reduction.
 
-    All subclasses automatically get:
-    - Parameter normalization
-    - Empty data short-circuit
-    - Cache hit detection (via _precomputed + _plot_id)
-    - Exception wrapping with context info
-    - Execution time recording
     """
 
     aggregator = param.ClassSelector(
@@ -587,18 +575,17 @@ class aggregate(LineAggregationOperation):
             df[d.name] = cast_array_to_int64(vals)
         return x, y, Dataset(df, kdims=kdims, vdims=vdims), glyph
 
-    def _normalize_params(self, element, key=None):
-        """Normalize parameters: resolve agg state, check for overlay shortcut,
-        build execution context, and get aggregated data.
-
-        Returns a tuple of (element, ctx, agg_fn, sel_fn, agg_state,
-                            category_name, x, y, data, glyph, params)
-        """
+    def _process(self, element, key=None):
         agg_fn, sel_fn, agg_state = self._get_agg_state(element)
         category_name = self._get_category_column_name(agg_fn)
 
         if overlay_aggregate.applies(element, agg_fn, line_width=self.p.line_width, sel_fn=sel_fn):
-            return ("__overlay_shortcut__", element, agg_fn, sel_fn)
+            params = dict(
+                {p: v for p, v in self.param.values().items() if p != "name"},
+                dynamic=False,
+                **{p: v for p, v in self.p.items() if p not in ("name", "dynamic")},
+            )
+            return overlay_aggregate(element, **params)
 
         ctx = self._create_execution_context(element, None, None)
 
@@ -619,49 +606,19 @@ class aggregate(LineAggregationOperation):
         ctx._transform_datetimes()
 
         ((x0, x1), (y0, y1)), (xs, ys) = ctx.get_dt_transform_result()
+
         params = self._get_agg_params(element, x, y, agg_fn, (x0, y0, x1, y1))
 
-        return (element, ctx, agg_fn, sel_fn, agg_state,
-                category_name, x, y, data, glyph, params, xs, ys)
-
-    def _check_empty(self, normalized, key=None):
-        """Check empty conditions: overlay shortcut never empty, check ctx+data."""
-        if isinstance(normalized, tuple) and normalized and normalized[0] == "__overlay_shortcut__":
-            return False
-        if not isinstance(normalized, tuple) or len(normalized) < 13:
-            return super()._check_empty(normalized, key)
-        element, ctx, agg_fn, sel_fn, agg_state, cat, x, y, data, glyph, params, xs, ys = normalized
-        if x is None or y is None or ctx.is_empty():
-            return True
-        if getattr(data, "interface", None) is not DaskInterface and not len(data):
-            return True
-        return False
-
-    def _empty_result(self, normalized, key=None):
-        """Produce empty aggregation result."""
-        element, ctx, agg_fn, sel_fn, agg_state, cat, x, y, data, glyph, params, xs, ys = normalized
         if x is None or y is None or ctx.is_empty():
             return self._empty_agg(element, x, y, ctx.width, ctx.height, xs, ys, agg_fn, **params)
-        empty_val = 0 if isinstance(agg_fn, ds.count) else np.nan
-        xarray = xr.DataArray(
-            np.full((ctx.height, ctx.width), empty_val),
-            dims=[y.name, x.name],
-            coords={x.name: xs, y.name: ys},
-        )
-        return self.p.element_type(xarray, **params)
-
-    def _process_core(self, normalized, key=None):
-        """Core aggregation logic, after normalization and empty short-circuit."""
-        if isinstance(normalized, tuple) and normalized and normalized[0] == "__overlay_shortcut__":
-            _, element, agg_fn, sel_fn = normalized
-            params = dict(
-                {p: v for p, v in self.param.values().items() if p != "name"},
-                dynamic=False,
-                **{p: v for p, v in self.p.items() if p not in ("name", "dynamic")},
+        elif getattr(data, "interface", None) is not DaskInterface and not len(data):
+            empty_val = 0 if isinstance(agg_fn, ds.count) else np.nan
+            xarray = xr.DataArray(
+                np.full((ctx.height, ctx.width), empty_val),
+                dims=[y.name, x.name],
+                coords={x.name: xs, y.name: ys},
             )
-            return overlay_aggregate(element, **params)
-
-        element, ctx, agg_fn, sel_fn, agg_state, cat, x, y, data, glyph, params, xs, ys = normalized
+            return self.p.element_type(xarray, **params)
 
         cvs = ds.Canvas(plot_width=ctx.width, plot_height=ctx.height,
                         x_range=ctx.x_range, y_range=ctx.y_range)
@@ -742,7 +699,7 @@ class overlay_aggregate(aggregate):
             and len({id(el.data) for el in element}) > 1
         )
 
-    def _normalize_params(self, element, key=None):
+    def _process(self, element, key=None):
         agg_fn = self._get_aggregator(element, self.p.aggregator)
 
         if not self.applies(element, agg_fn, line_width=self.p.line_width):
@@ -767,6 +724,8 @@ class overlay_aggregate(aggregate):
         )
         bbox = ctx.bounds
 
+        # Create aggregate instance for sum, count operations, breaking mean
+        # into two aggregates
         column = agg_fn.column or "Count"
         if isinstance(agg_fn, ds.mean):
             agg_fn1 = aggregate.instance(**dict(agg_params, aggregator=ds.sum(column)))
@@ -777,27 +736,10 @@ class overlay_aggregate(aggregate):
         is_sum = isinstance(agg_fn, ds.sum)
         is_any = isinstance(agg_fn, ds.any)
 
-        return (element, agg_fn, column, agg_fn1, agg_fn2, is_sum, is_any, bbox)
-
-    def _check_empty(self, normalized, key=None):
-        if isinstance(normalized, tuple) and len(normalized) >= 1:
-            element = normalized[0]
-            return len(element) == 0
-        return super()._check_empty(normalized, key)
-
-    def _empty_result(self, normalized, key=None):
-        element, agg_fn, column, agg_fn1, agg_fn2, is_sum, is_any, bbox = normalized
-        first = element.last if len(element) else None
-        if first is not None:
-            result = agg_fn1.process_element(first, None)
-            return result.clone(bounds=bbox)
-        return element.clone(bounds=bbox)
-
-    def _process_core(self, normalized, key=None):
-        element, agg_fn, column, agg_fn1, agg_fn2, is_sum, is_any, bbox = normalized
-
+        # Accumulate into two aggregates and mask
         agg, agg2, mask = None, None, None
         for v in element:
+            # Compute aggregates and mask
             new_agg = agg_fn1.process_element(v, None)
             if is_sum:
                 new_mask = np.isnan(new_agg.data[column].values)
@@ -821,11 +763,13 @@ class overlay_aggregate(aggregate):
                 if agg_fn2:
                     agg2.data += new_agg2.data
 
+        # Divide sum by count to compute mean
         if agg2 is not None:
             agg2.data.rename({"Count": agg_fn.column}, inplace=True)
             with np.errstate(divide="ignore", invalid="ignore"):
                 agg.data /= agg2.data
 
+        # Fill masked with with NaNs
         if is_sum:
             agg.data[column].values[mask] = np.nan
 
@@ -839,7 +783,7 @@ class area_aggregate(AggregationOperation):
 
     """
 
-    def _normalize_params(self, element, key=None):
+    def _process(self, element, key=None):
         x, y = element.dimensions()[:2]
         agg_fn = self._get_aggregator(element, self.p.aggregator)
 
@@ -860,26 +804,14 @@ class area_aggregate(AggregationOperation):
         ((x0, x1), (y0, y1)), (xs, ys) = self._dt_transform(x_range, y_range, xs, ys, xtype, ytype)
 
         df = PandasInterface.as_dframe(element)
-        params = self._get_agg_params(element, x, y, agg_fn, (x0, y0, x1, y1))
-        return (element, x, y, agg_fn, x_range, y_range, xs, ys, width, height,
-                xtype, ytype, ystack, df, params, x0, y0, x1, y1)
-
-    def _check_empty(self, normalized, key=None):
-        if isinstance(normalized, tuple) and len(normalized) >= 11:
-            return normalized[8] == 0 or normalized[9] == 0
-        return super()._check_empty(normalized, key)
-
-    def _empty_result(self, normalized, key=None):
-        element, x, y, agg_fn = normalized[0], normalized[1], normalized[2], normalized[3]
-        width, height, xs, ys = normalized[8], normalized[9], normalized[6], normalized[7]
-        params = normalized[14]
-        return self._empty_agg(element, x, y, width, height, xs, ys, agg_fn, **params)
-
-    def _process_core(self, normalized, key=None):
-        (element, x, y, agg_fn, x_range, y_range, xs, ys, width, height,
-         xtype, ytype, ystack, df, params, x0, y0, x1, y1) = normalized
 
         cvs = ds.Canvas(plot_width=width, plot_height=height, x_range=x_range, y_range=y_range)
+
+        params = self._get_agg_params(element, x, y, agg_fn, (x0, y0, x1, y1))
+
+        if width == 0 or height == 0:
+            return self._empty_agg(element, x, y, width, height, xs, ys, agg_fn, **params)
+
         agg = cvs.area(df, x.name, y.name, agg_fn, axis=0, y_stack=ystack)
         if xtype == "datetime":
             agg[x.name] = agg[x.name].astype("datetime64[ns]")
@@ -893,7 +825,7 @@ class spread_aggregate(area_aggregate):
 
     """
 
-    def _normalize_params(self, element, key=None):
+    def _process(self, element, key=None):
         y = element.dimensions()[1]
         df = PandasInterface.as_dframe(element)
         if df is element.data:
@@ -904,7 +836,7 @@ class spread_aggregate(area_aggregate):
         df[y.name] = yvals + df[pos.name]
         df["_lower"] = yvals - df[neg.name]
         area = element.clone(df, vdims=[y, "_lower", *element.vdims[3:]], new_type=Area)
-        return super()._normalize_params(area, key)
+        return super()._process(area, key=None)
 
 
 class spikes_aggregate(LineAggregationOperation):
@@ -927,12 +859,11 @@ class spikes_aggregate(LineAggregationOperation):
         doc="The offset of the lower end of each spike.",
     )
 
-    def _normalize_params(self, element, key=None):
+    def _process(self, element, key=None):
         agg_fn = self._get_aggregator(element, self.p.aggregator)
         x, y = element.kdims[0], None
 
         spike_length = 0.5 if self.p.spike_length is None else self.p.spike_length
-        rename_dict = {"x": x.name}
         if element.vdims and self.p.spike_length is None:
             x, y = element.dimensions()[:2]
             rename_dict = {"x": x.name, "y": y.name}
@@ -947,16 +878,17 @@ class spikes_aggregate(LineAggregationOperation):
             else:
                 default = None
         else:
+            x, y = element.kdims[0], None
             default = (float(self.p.offset), float(self.p.offset + spike_length))
+            rename_dict = {"x": x.name}
         info = self._get_sampling(element, x, y, ndim=1, default=default)
         (x_range, y_range), (xs, ys), (width, height), (xtype, ytype) = info
         ((x0, x1), (y0, y1)), (xs, ys) = self._dt_transform(x_range, y_range, xs, ys, xtype, ytype)
 
         value_cols = [] if agg_fn.column is None else [agg_fn.column]
-        yagg_dim = y
         if y is None:
             df = element.dframe([x, *value_cols]).copy()
-            y_dim = Dimension("y")
+            y = Dimension("y")
             df["y0"] = float(self.p.offset)
             df["y1"] = float(self.p.offset + spike_length)
             yagg = ["y0", "y1"]
@@ -966,30 +898,16 @@ class spikes_aggregate(LineAggregationOperation):
             df = element.dframe([x, y, *value_cols]).copy()
             df["y0"] = np.array(0, df.dtypes[y.name])
             yagg = ["y0", y.name]
-            y_dim = y
         if xtype == "datetime":
             df[x.name] = cast_array_to_int64(df[x.name].astype("datetime64[ns]"))
 
-        params = self._get_agg_params(element, x, y_dim, agg_fn, (x0, y0, x1, y1))
-        return (element, x, y_dim, agg_fn, x_range, y_range, xs, ys, width, height,
-                xtype, ytype, df, yagg, params, rename_dict, x0, y0, x1, y1)
+        params = self._get_agg_params(element, x, y, agg_fn, (x0, y0, x1, y1))
 
-    def _check_empty(self, normalized, key=None):
-        if isinstance(normalized, tuple) and len(normalized) >= 11:
-            return normalized[8] == 0 or normalized[9] == 0
-        return super()._check_empty(normalized, key)
-
-    def _empty_result(self, normalized, key=None):
-        element, x, y, agg_fn = normalized[0], normalized[1], normalized[2], normalized[3]
-        width, height, xs, ys = normalized[8], normalized[9], normalized[6], normalized[7]
-        params = normalized[14]
-        return self._empty_agg(element, x, y, width, height, xs, ys, agg_fn, **params)
-
-    def _process_core(self, normalized, key=None):
-        (element, x, y, agg_fn, x_range, y_range, xs, ys, width, height,
-         xtype, ytype, df, yagg, params, rename_dict, x0, y0, x1, y1) = normalized
+        if width == 0 or height == 0:
+            return self._empty_agg(element, x, y, width, height, xs, ys, agg_fn, **params)
 
         cvs = ds.Canvas(plot_width=width, plot_height=height, x_range=x_range, y_range=y_range)
+
         agg_kwargs = {}
         if DATASHADER_GE_0_14_0:
             agg_kwargs["line_width"] = self.p.line_width
@@ -1018,7 +936,7 @@ class geom_aggregate(AggregationOperation):
         x_name, y_name = list(agg.coords)[:2]
         return self._apply_where_summary(df, x_name, y_name, agg_fn, agg, agg_state)
 
-    def _normalize_params(self, element, key=None):
+    def _process(self, element, key=None):
         agg_fn, sel_fn, agg_state = self._get_agg_state(element)
         x0d, y0d, x1d, y1d = element.kdims
         info = self._get_sampling(element, [x0d, x1d], [y0d, y1d], ndim=1)
@@ -1040,27 +958,12 @@ class geom_aggregate(AggregationOperation):
             df[category_name] = df[category_name].astype("category")
 
         params = self._get_agg_params(element, x0d, y0d, agg_fn, (x0, y0, x1, y1))
-        return (element, x0d, y0d, x1d, y1d, agg_fn, sel_fn, agg_state,
-                x_range, y_range, xs, ys, width, height, xtype, ytype, df, params,
-                x0, y0, x1, y1)
 
-    def _check_empty(self, normalized, key=None):
-        if isinstance(normalized, tuple) and len(normalized) >= 15:
-            return normalized[12] == 0 or normalized[13] == 0
-        return super()._check_empty(normalized, key)
-
-    def _empty_result(self, normalized, key=None):
-        element, x0d, y0d, agg_fn = normalized[0], normalized[1], normalized[2], normalized[5]
-        width, height, xs, ys = normalized[12], normalized[13], normalized[10], normalized[11]
-        params = normalized[17]
-        return self._empty_agg(element, x0d, y0d, width, height, xs, ys, agg_fn, **params)
-
-    def _process_core(self, normalized, key=None):
-        (element, x0d, y0d, x1d, y1d, agg_fn, sel_fn, agg_state,
-         x_range, y_range, xs, ys, width, height, xtype, ytype, df, params,
-         x0, y0, x1, y1) = normalized
+        if width == 0 or height == 0:
+            return self._empty_agg(element, x0d, y0d, width, height, xs, ys, agg_fn, **params)
 
         cvs = ds.Canvas(plot_width=width, plot_height=height, x_range=x_range, y_range=y_range)
+
         agg = self._apply_aggregate_with_agg_state(
             df, cvs, agg_fn, (x0d.name, x1d.name), (y0d.name, y1d.name), agg_state, sel_fn, params
         )
@@ -1175,16 +1078,19 @@ class regrid(AggregationOperation):
             arrays[vd.name] = xarr
         return arrays
 
-    def _normalize_params(self, element, key=None):
-        """Normalize params: compute coords, ranges, sizes, interpolation."""
+    def _process(self, element, key=None):
+        # Compute coords, anges and size
         x, y = element.kdims
         coords = tuple(element.dimension_values(d, expanded=False) for d in [x, y])
         info = self._get_sampling(element, x, y)
         (x_range, y_range), (xs, ys), (width, height), (xtype, ytype) = info
 
+        # Disable upsampling by clipping size and ranges
         (xstart, xend), (ystart, yend) = (x_range, y_range)
         xspan, yspan = (xend - xstart), (yend - ystart)
         interp = self.p.interpolation
+        # Convert interpolation method to datashader format
+        # False/None means no interpolation (use nearest neighbor)
         if interp in (False, None):
             interp = "nearest"
         elif interp == "bilinear":
@@ -1214,38 +1120,27 @@ class regrid(AggregationOperation):
                 np.linspace(ystart + yunit / 2.0, yend - yunit / 2.0, height),
             )
 
+        # Compute bounds (converting datetimes)
         ((x0, x1), (y0, y1)), (xs, ys) = self._dt_transform(x_range, y_range, xs, ys, xtype, ytype)
-        return (element, x, y, coords, x_range, y_range, xs, ys, width, height,
-                xtype, ytype, interp, x0, y0, x1, y1)
-
-    def _check_empty(self, normalized, key=None):
-        if isinstance(normalized, tuple) and len(normalized) >= 11:
-            width, height = normalized[8], normalized[9]
-            return width == 0 or height == 0
-        return super()._check_empty(normalized, key)
-
-    def _empty_result(self, normalized, key=None):
-        element, x, y, coords, x_range, y_range, xs, ys, width, height, \
-            xtype, ytype, interp, x0, y0, x1, y1 = normalized
-        params = dict(bounds=(x0, y0, x1, y1))
-        if width == 0:
-            params["xdensity"] = 1
-        if height == 0:
-            params["ydensity"] = 1
-        return element.clone((xs, ys, np.zeros((height, width))), **params)
-
-    def _process_core(self, normalized, key=None):
-        element, x, y, coords, x_range, y_range, xs, ys, width, height, \
-            xtype, ytype, interp, x0, y0, x1, y1 = normalized
 
         params = dict(bounds=(x0, y0, x1, y1))
+        if width == 0 or height == 0:
+            if width == 0:
+                params["xdensity"] = 1
+            if height == 0:
+                params["ydensity"] = 1
+            return element.clone((xs, ys, np.zeros((height, width))), **params)
+
         cvs = ds.Canvas(plot_width=width, plot_height=height, x_range=x_range, y_range=y_range)
 
+        # Apply regridding to each value dimension
         regridded = {}
         arrays = self._get_xarrays(element, coords, xtype, ytype)
         agg_fn = self._get_aggregator(element, self.p.aggregator, add_field=False)
         for vd, xarr in arrays.items():
             rarray = cvs.raster(xarr, upsample_method=interp, downsample_method=agg_fn)
+
+            # Convert datetime coordinates
             if xtype == "datetime":
                 rarray[x.name] = rarray[x.name].astype("datetime64[ns]")
             if ytype == "datetime":
@@ -1334,7 +1229,7 @@ class trimesh_rasterize(aggregate):
             element._wireframe = Dataset(segments, datatype=["dataframe", "dask"])
         return {"segments": segments}
 
-    def _normalize_params(self, element, key=None):
+    def _process(self, element, key=None):
         if isinstance(element, TriMesh):
             x, y = element.nodes.kdims[:2]
         else:
@@ -1348,17 +1243,16 @@ class trimesh_rasterize(aggregate):
         if interp == "linear":
             interp = "bilinear"
         wireframe = False
-        delegate_to_aggregate = False
         if (
             not (element.vdims or (isinstance(element, TriMesh) and element.nodes.vdims))
         ) and DATASHADER_VERSION <= (0, 6, 9):
             self.p.aggregator = ds.any() if isinstance(agg, ds.any) or agg == "any" else ds.count()
-            delegate_to_aggregate = True
+            return aggregate._process(self, element, key)
         elif (
             not interp and (isinstance(agg, (ds.any, ds.count)) or agg in ["any", "count"])
         ) or not (element.vdims or element.nodes.vdims):
             wireframe = True
-            precompute = False
+            precompute = False  # TriMesh itself caches wireframe
             if isinstance(agg, (ds.any, ds.count)):
                 agg = self._get_aggregator(element, self.p.aggregator)
             else:
@@ -1375,32 +1269,12 @@ class trimesh_rasterize(aggregate):
         bounds = (x_range[0], y_range[0], x_range[1], y_range[1])
         params = self._get_agg_params(element, x, y, agg, bounds)
 
-        return (element, x, y, x_range, y_range, xs, ys, width, height,
-                agg, interp, wireframe, precompute, precomputed, params,
-                delegate_to_aggregate, bounds)
-
-    def _check_empty(self, normalized, key=None):
-        if isinstance(normalized, tuple) and len(normalized) >= 9:
-            return normalized[7] == 0 or normalized[8] == 0
-        return super()._check_empty(normalized, key)
-
-    def _empty_result(self, normalized, key=None):
-        element, x, y, x_range, y_range, xs, ys, width, height = normalized[:9]
-        params = normalized[14]
-        if width == 0:
-            params["xdensity"] = 1
-        if height == 0:
-            params["ydensity"] = 1
-        return Image((xs, ys, np.zeros((height, width))), **params)
-
-    def _process_core(self, normalized, key=None):
-        (element, x, y, x_range, y_range, xs, ys, width, height,
-         agg, interp, wireframe, precompute, precomputed, params,
-         delegate_to_aggregate, bounds) = normalized
-
-        if delegate_to_aggregate:
-            agg_norm = aggregate._normalize_params(self, element, key)
-            return aggregate._process_core(self, agg_norm, key)
+        if width == 0 or height == 0:
+            if width == 0:
+                params["xdensity"] = 1
+            if height == 0:
+                params["ydensity"] = 1
+            return Image((xs, ys, np.zeros((height, width))), **params)
 
         if wireframe:
             segments = precomputed["segments"]
@@ -1414,13 +1288,13 @@ class trimesh_rasterize(aggregate):
         cvs = ds.Canvas(plot_width=width, plot_height=height, x_range=x_range, y_range=y_range)
         if wireframe:
             rename_dict = {k: v for k, v in zip("xy", (x.name, y.name), strict=None) if k != v}
-            agg_result = cvs.line(
+            agg = cvs.line(
                 segments, x=["x0", "x1", "x2", "x0"], y=["y0", "y1", "y2", "y0"], axis=1, agg=agg
             ).rename(rename_dict)
         else:
             interpolate = bool(self.p.interpolation)
-            agg_result = cvs.trimesh(pts, simplices, agg=agg, interp=interpolate, mesh=mesh)
-        return Image(agg_result, **params)
+            agg = cvs.trimesh(pts, simplices, agg=agg, interp=interpolate, mesh=mesh)
+        return Image(agg, **params)
 
 
 class quadmesh_rasterize(trimesh_rasterize):
@@ -1434,9 +1308,9 @@ class quadmesh_rasterize(trimesh_rasterize):
         if DATASHADER_VERSION <= (0, 7, 0):
             return super()._precompute(element.trimesh(), agg)
 
-    def _process_core(self, element, key=None):
+    def _process(self, element, key=None):
         if DATASHADER_VERSION <= (0, 7, 0):
-            return trimesh_rasterize._process_core(self, element, key)
+            return super()._process(element, key)
 
         if element.interface.datatype != "xarray":
             element = element.clone(datatype=["xarray"])
@@ -1471,7 +1345,7 @@ class quadmesh_rasterize(trimesh_rasterize):
         return Image(agg, **params)
 
 
-class shade(GuardedOperationMixin, LinkableOperation):
+class shade(LinkableOperation):
     """shade applies a normalization function followed by colormapping to
     an Image or NdOverlay of Images, returning an RGB Element.
     The data must be in the form of a 2D or 3D DataArray, but NdOverlays
@@ -1482,10 +1356,6 @@ class shade(GuardedOperationMixin, LinkableOperation):
     key for each category. The colormap (cmap) for the 2D case may be
     supplied as an Iterable or a Callable.
 
-    All execution is routed through the unified guard which provides:
-    - Empty data short-circuit
-    - Exception wrapping with operation context
-    - Execution time recording
     """
 
     alpha = param.Integer(
@@ -1649,7 +1519,7 @@ class shade(GuardedOperationMixin, LinkableOperation):
 
         return array
 
-    def _process_core(self, element, key=None):
+    def _process(self, element, key=None):
         element = element.map(self.to_xarray, Image)
         if isinstance(element, NdOverlay):
             bounds = element.last.bounds
@@ -1657,7 +1527,7 @@ class shade(GuardedOperationMixin, LinkableOperation):
             ydensity = element.last.ydensity
             element = self.concatenate(element)
         elif isinstance(element, Overlay):
-            return element.map(partial(shade._process_core, self), [Element])
+            return element.map(partial(shade._process, self), [Element])
         else:
             xdensity = element.xdensity
             ydensity = element.ydensity
@@ -1772,7 +1642,7 @@ class geometry_rasterize(LineAggregationOperation):
             return ds.count()
         return super()._get_aggregator(element, agg, add_field)
 
-    def _process_core(self, element, key=None):
+    def _process(self, element, key=None):
         agg_fn = self._get_aggregator(element, self.p.aggregator)
         xdim, ydim = element.kdims
         info = self._get_sampling(element, xdim, ydim)
@@ -1900,7 +1770,7 @@ class rasterize(AggregationOperation):
         inst.__instance_kwargs = {k: v for k, v in params.items() if k in kwargs}
         return inst
 
-    def _process_core(self, element, key=None):
+    def _process(self, element, key=None):
         # Potentially needs traverse to find element types first?
         all_allowed_kws = set()
         all_supplied_kws = set()
@@ -1954,9 +1824,9 @@ class datashade(rasterize, shade):
 
     """
 
-    def _process_core(self, element, key=None):
-        agg = rasterize._process_core(self, element, key)
-        shaded = shade._process_core(self, agg, key)
+    def _process(self, element, key=None):
+        agg = rasterize._process(self, element, key)
+        shaded = shade._process(self, agg, key)
         return shaded
 
 
@@ -2018,16 +1888,12 @@ class stack(Operation):
         return rgb.clone(data, datatype=[rgb.interface.datatype, *rgb.datatype])
 
 
-class SpreadingOperation(GuardedOperationMixin, LinkableOperation):
+class SpreadingOperation(LinkableOperation):
     """Spreading expands each pixel in an Image based Element a certain
     number of pixels on all sides according to a given shape, merging
     pixels using a specified compositing operator. This can be useful
     to make sparse plots more visible.
 
-    All execution is routed through the unified guard which provides:
-    - Empty data short-circuit
-    - Exception wrapping with operation context
-    - Execution time recording
     """
 
     how = param.Selector(
@@ -2066,7 +1932,7 @@ class SpreadingOperation(GuardedOperationMixin, LinkableOperation):
             rgbarray = rgbarray * 255
         return tf.Image(self.uint8_to_uint32(rgbarray.astype("uint8")))
 
-    def _process_core(self, element, key=None):
+    def _process(self, element, key=None):
         if isinstance(element, RGB):
             rgb = element.rgb
             data = self._preprocess_rgb(rgb)

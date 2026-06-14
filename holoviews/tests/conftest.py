@@ -15,7 +15,18 @@ import holoviews as hv
 if t.TYPE_CHECKING:
     from collections.abc import Callable
 
-CUSTOM_MARKS = ("ui", "gpu")
+CUSTOM_MARKS = (
+    "ui",
+    "gpu",
+    "core",
+    "plotting",
+    "plotting_bokeh",
+    "plotting_mpl",
+    "plotting_plotly",
+    "ipython",
+    "datashader",
+    "operation",
+)
 
 
 def pytest_addoption(parser):
@@ -29,8 +40,20 @@ def pytest_addoption(parser):
 
 
 def pytest_configure(config):
+    markers = {
+        "ui": "Browser-based UI tests using Playwright",
+        "gpu": "GPU-accelerated tests requiring CUDA",
+        "core": "Core data structure and logic tests",
+        "plotting": "All plotting/rendering backend tests",
+        "plotting_bokeh": "Bokeh plotting backend tests",
+        "plotting_mpl": "Matplotlib plotting backend tests",
+        "plotting_plotly": "Plotly plotting backend tests",
+        "ipython": "IPython notebook and display hook tests",
+        "datashader": "Datashader-related operation tests",
+        "operation": "All operation tests including datashader",
+    }
     for marker in CUSTOM_MARKS:
-        config.addinivalue_line("markers", f"{marker}: {marker} test marker")
+        config.addinivalue_line("markers", f"{marker}: {markers.get(marker, marker + ' test marker')}")
 
 
 def pytest_collection_modifyitems(config, items):

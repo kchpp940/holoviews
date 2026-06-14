@@ -190,7 +190,99 @@ pre-commit run --all-files  # To run on all files
 
 To help keep HoloViews maintainable, all Pull Requests (PR) with code changes should typically be accompanied by relevant tests. While exceptions may be made for specific circumstances, the default assumption should be that a Pull Request without tests will not be merged.
 
-There are three types of tasks and five environments related to tests.
+HoloViews provides a layered set of test commands, from quick local checks to full release regression. Choose the appropriate level based on your changes.
+
+### Quick reference table
+
+| Scenario | Command | What it covers | Est. time |
+|----------|---------|----------------|-----------|
+| **本地快速检查** | `pixi run check` | lint + type + 核心单元测试 | ~5-10 min |
+| **核心单元验证** | `pixi run test-unit-core` | core/ + element/ + util/ + testing/ | ~3-8 min |
+| **Bokeh 后端渲染** | `pixi run test-plotting-bokeh` | plotting/bokeh/ | ~5-15 min |
+| **Matplotlib 后端渲染** | `pixi run test-plotting-mpl` | plotting/matplotlib/ | ~5-15 min |
+| **Plotly 后端渲染** | `pixi run test-plotting-plotly` | plotting/plotly/ | ~3-10 min |
+| **所有后端渲染** | `pixi run test-plotting` | 三个后端 + plotting/ 根 | ~15-40 min |
+| **Notebook/Display 验证** | `pixi run test-ipython` | ipython/ display hooks | ~1-3 min |
+| **Datashader 相关验证** | `pixi run test-datashader` | operation/test_datashader.py + downsample + decollation | ~3-10 min |
+| **所有 Operation 测试** | `pixi run test-operation` | operation/ | ~5-15 min |
+| **完整单元测试** | `pixi run test-unit` | holoviews/tests/ 全部 | ~20-60 min |
+| **文档示例构建** | `pixi run test-example` | examples/ notebook 执行 | ~30-90 min |
+| **完整回归** | `pixi run test-all` | test-unit + test-example | ~1-3 hr |
+| **UI 测试** | `pixi run test-ui` | holoviews/tests/ui/ (Playwright) | ~5-20 min |
+| **发布前检查** | `pixi run test-release` | lint + type + test-all | ~1-3 hr |
+
+### Three levels of testing workflow
+
+#### 1. 本地快速检查（日常开发）
+
+在提交代码前，运行快速检查确保没有基本问题：
+
+```bash
+pixi run check
+```
+
+这会依次执行：
+- `lint` — 代码格式和静态检查（ruff, typos, prettier 等）
+- `type-ty` — 类型注解检查
+- `test-unit-core` — 核心单元测试（不涉及渲染后端）
+
+如果你的改动只涉及核心逻辑，这通常足够了。
+
+#### 2. 专项验证（按模块修改）
+
+根据你修改的模块，运行针对性的测试：
+
+**修改了核心数据结构（core/, element/, util/）：**
+```bash
+pixi run test-unit-core
+```
+
+**修改了 Bokeh 后端：**
+```bash
+pixi run test-plotting-bokeh
+```
+
+**修改了 Matplotlib 后端：**
+```bash
+pixi run test-plotting-mpl
+```
+
+**修改了 Plotly 后端：**
+```bash
+pixi run test-plotting-plotly
+```
+
+**修改了跨后端渲染逻辑：**
+```bash
+pixi run test-plotting
+```
+
+**修改了 datashader / 大数据处理：**
+```bash
+pixi run test-datashader
+```
+
+**修改了 IPython notebook 集成 / display hooks：**
+```bash
+pixi run test-ipython
+```
+
+**修改了 Operation 系统：**
+```bash
+pixi run test-operation
+```
+
+#### 3. 完整回归和发布前检查
+
+**PR 提交前完整回归：**
+```bash
+pixi run test-all
+```
+
+**发布前最终检查：**
+```bash
+pixi run test-release
+```
 
 ### Unit tests
 
@@ -204,13 +296,22 @@ pixi run test-unit
 :::{admonition} Advanced usage
 :class: tip
 
-The task is available in the following environments: `test-39`, `test-310`, `test-311`, `test-312`, and `test-core`. Where the first ones have the same environments except for different Python versions, and `test-core` only has a core set of dependencies.
+The task is available in the following environments: `test-310`, `test-311`, `test-312`, `test-313`, `test-314`, and `test-core`. Where the first ones have the same environments except for different Python versions, and `test-core` only has a core set of dependencies.
 
-You can run the task in a specific environment with the `-e` flag. For example, to run the `test-unit` task in the `test-39` environment, you can run:
+You can run the task in a specific environment with the `-e` flag. For example, to run the `test-unit` task in the `test-310` environment, you can run:
 
 ```bash
-pixi run -e test-39 test-unit
+pixi run -e test-310 test-unit
 ```
+
+You can also use pytest markers directly with pytest CLI:
+
+```bash
+pytest -m plotting_bokeh
+pytest --plotting-bokeh
+```
+
+Available markers: `core`, `plotting`, `plotting_bokeh`, `plotting_mpl`, `plotting_plotly`, `ipython`, `datashader`, `operation`, `ui`, `gpu`
 
 :::
 
@@ -235,19 +336,44 @@ UI tests can be run with the following task. This task is only available in the 
 pixi run test-ui
 ```
 
+### GPU tests
+
+For GPU-accelerated code paths (cuDF, CuPy), use the `test-gpu` environment:
+
+```bash
+pixi run -e test-gpu test-gpu
+```
+
+Requires CUDA-compatible hardware and Linux.
+
 ## Documentation
 
-The documentation can be built with the command:
+### Full documentation build
+
+The complete documentation can be built with the command:
 
 ```bash
 pixi run docs-build
 ```
 
 As HoloViews uses notebooks for much of the documentation, this will take significant time to run (around an hour).
-If you want to run it locally, you can temporarily disable the gallery by setting the environment variable `export HV_DOC_GALLERY=False`.
-You can also disable the reference gallery by setting the environment variable `export HV_DOC_REF_GALLERY=False`.
 
 A development version of HoloViews can be found [here](https://dev.holoviews.org/). You can ask a maintainer if they want to make a dev release for your PR, but there is no guarantee they will say yes.
+
+### Quick documentation build
+
+For faster local iteration during documentation-only changes, use the quick build which disables both the user gallery and reference gallery:
+
+```bash
+pixi run docs-build-quick
+```
+
+This is equivalent to setting:
+```bash
+export HV_DOC_GALLERY=False
+export HV_DOC_REF_GALLERY=False
+pixi run docs-build
+```
 
 ## Build
 

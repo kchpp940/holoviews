@@ -88,6 +88,18 @@ minversion = "7"
 xfail_strict = "true"
 log_cli_level = "INFO"
 python_classes = "*Test*"
+markers = [
+    "ui: Browser-based UI tests using Playwright",
+    "gpu: GPU-accelerated tests requiring CUDA",
+    "core: Core data structure and logic tests",
+    "plotting: All plotting/rendering backend tests",
+    "plotting_bokeh: Bokeh plotting backend tests",
+    "plotting_mpl: Matplotlib plotting backend tests",
+    "plotting_plotly: Plotly plotting backend tests",
+    "ipython: IPython notebook and display hook tests",
+    "datashader: Datashader-related operation tests",
+    "operation: All operation tests including datashader",
+]
 filterwarnings = [
     "error",
     # Numpy warning triggered in Bokeh, when timedelta or datetime numpy scalar are compared to a numerical scalar
