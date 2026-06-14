@@ -497,10 +497,12 @@ class Options:
         schema: OptionSchema | None = None,
         **kwargs,
     ):
+        invalid_kws: list[str] = []
+
         # When a schema is provided, use it for full validation (name +
-        # type + value).  Otherwise fall back to the legacy
-        # ``allowed_keywords`` name-only check for backwards
-        # compatibility.
+        # type + value).  Obey the ``skip_invalid`` class flag: if True,
+        # silently drop invalid options (with a warning); if False,
+        # raise immediately.
         if schema is not None:
             try:
                 cleaned = schema.validate(
@@ -509,25 +511,38 @@ class Options:
                     coerce=False,
                 )
             except ValidationError as e:
-                # Re-raise as OptionError to preserve the existing
-                # exception type that callers may be catching.
-                raise OptionError(
-                    e.problems[0][0] if e.problems else "unknown",
-                    schema.allowed_names,
-                    group_name=key,
-                ) from e
+                if self.skip_invalid:
+                    # Drop the bad keys, keep the rest.  Re-validate
+                    # with just the good keys to get a cleaned dict.
+                    bad_names = {name for name, _ in e.problems}
+                    good_kwargs = {k: v for k, v in kwargs.items() if k not in bad_names}
+                    cleaned = schema.validate_partial(
+                        good_kwargs,
+                        context=f"Options({key!r})" if key else "Options",
+                    )
+                    invalid_kws = sorted(bad_names)
+                else:
+                    # Re-raise as OptionError to preserve the existing
+                    # exception type that callers may be catching.
+                    raise OptionError(
+                        e.problems[0][0] if e.problems else "unknown",
+                        schema.allowed_names,
+                        group_name=key,
+                    ) from e
             kwargs = cleaned
             allowed_keywords = schema.allowed_names
 
         if allowed_keywords is None:
             allowed_keywords = []
-        invalid_kws = []
         for kwarg in sorted(kwargs.keys()):
             if allowed_keywords and kwarg not in allowed_keywords:
                 if self.skip_invalid:
                     invalid_kws.append(kwarg)
                 else:
                     raise OptionError(kwarg, allowed_keywords, group_name=key)
+        # Deduplicate: a key might have been flagged both by the schema
+        # check and by the allowed_keywords check.
+        invalid_kws = sorted(set(invalid_kws))
 
         if key and key[0].islower() and key not in self._option_groups:
             raise ValueError(
@@ -1594,17 +1609,24 @@ class Store:
                 cls._option_schemas[backend] = {}
             name = view_class.__name__
 
-            # Plot may be a PlotSelector proxy; pick a concrete class for
-            # schema generation (all selectable classes have identical
-            # options per PlotSelector._define_interface).
+            # Plot may be a PlotSelector proxy; merge schemas from all
+            # candidate plot classes so that every valid parameter is
+            # recognised, even when allow_mismatch=True.
             from holoviews.plotting.plot import PlotSelector
             if isinstance(plot, PlotSelector):
-                concrete_plot = next(iter(plot.plot_classes.values()))
+                plot_schemas = [
+                    build_plot_schema(plot_class=cls)
+                    for cls in plot.plot_classes.values()
+                ]
+                merged_plot_schema = plot_schemas[0]
+                for s in plot_schemas[1:]:
+                    merged_plot_schema = merged_plot_schema.merge(s)
+                plot_schema = merged_plot_schema
             else:
-                concrete_plot = plot
+                plot_schema = build_plot_schema(plot_class=plot)
 
             cls._option_schemas[backend][name] = {
-                "plot": build_plot_schema(plot_class=concrete_plot),
+                "plot": plot_schema,
                 "style": build_style_schema(
                     list(style_opts.values),
                     backend=backend,
@@ -1768,14 +1790,41 @@ class StoreOptions:
 
     @classmethod
     def apply_customizations(cls, spec, options):
-        """Apply the given option specs to the supplied options tree."""
+        """Apply the given option specs to the supplied options tree.
+
+        When the ``options`` tree has a known ``backend``, each group's
+        :class:`Options` object is constructed with its corresponding
+        :class:`OptionSchema` so that invalid style / plot / norm /
+        output options are caught at apply-time rather than deferred
+        until rendering.
+        """
+        backend = getattr(options, "backend", None)
         for key in sorted(spec.keys()):
+            element_name = key.split(".")[0]
             if isinstance(spec[key], (list, tuple)):
                 customization = {v.key: v for v in spec[key]}
+                # If we have schemas for this backend, attach them
+                if backend is not None:
+                    for grp, opt in customization.items():
+                        sch = Store.options_schema(element_name, grp, backend=backend)
+                        if sch is not None and opt.schema is None:
+                            object.__setattr__(opt, "schema", sch)
             else:
-                customization = {
-                    k: (Options(**v) if isinstance(v, dict) else v) for k, v in spec[key].items()
-                }
+                customization = {}
+                for k, v in spec[key].items():
+                    if isinstance(v, dict):
+                        sch = (
+                            Store.options_schema(element_name, k, backend=backend)
+                            if backend is not None
+                            else None
+                        )
+                        customization[k] = Options(key=k, schema=sch, **v)
+                    else:
+                        customization[k] = v
+                        if backend is not None and getattr(v, "schema", None) is None:
+                            sch = Store.options_schema(element_name, k, backend=backend)
+                            if sch is not None:
+                                object.__setattr__(v, "schema", sch)
 
             # Set the Keywords target on Options from the {type} part of the key.
             customization = {
