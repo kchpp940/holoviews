@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-pytestmark = [pytest.mark.operation, pytest.mark.datashader]
+pytestmark = [pytest.mark.datashader, pytest.mark.operation]
 
 import numpy as np
 import pandas as pd

@@ -10,7 +10,7 @@ from holoviews.testing import assert_data_equal
 
 from .base import HeterogeneousColumnTests, InterfaceTests
 
-pytestmark = pytest.mark.gpu
+pytestmark = pytest.mark.core
 
 
 class cuDFInterfaceTests(HeterogeneousColumnTests, InterfaceTests):

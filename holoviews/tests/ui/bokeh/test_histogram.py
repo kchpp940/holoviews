@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.ui
+
 import pytest
 from bokeh.models import CustomJS
 

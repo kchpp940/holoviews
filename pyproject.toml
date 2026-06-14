@@ -89,16 +89,16 @@ xfail_strict = "true"
 log_cli_level = "INFO"
 python_classes = "*Test*"
 markers = [
+    "core: Core data structure and logic tests (core/, element/, util/, testing/)",
+    "datashader: Datashader-related tests (datashader + downsample + decollation)",
+    "gpu: GPU-accelerated tests requiring CUDA (cuDF, CuPy)",
+    "ipython: IPython notebook and display hook tests (ipython/)",
+    "operation: All operation tests (operation/)",
+    "plotting: Plotting root tests (comms, plotutils, renderclass)",
+    "plotting_bokeh: Bokeh plotting backend tests (plotting/bokeh/)",
+    "plotting_mpl: Matplotlib plotting backend tests (plotting/matplotlib/)",
+    "plotting_plotly: Plotly plotting backend tests (plotting/plotly/)",
     "ui: Browser-based UI tests using Playwright",
-    "gpu: GPU-accelerated tests requiring CUDA",
-    "core: Core data structure and logic tests",
-    "plotting: All plotting/rendering backend tests",
-    "plotting_bokeh: Bokeh plotting backend tests",
-    "plotting_mpl: Matplotlib plotting backend tests",
-    "plotting_plotly: Plotly plotting backend tests",
-    "ipython: IPython notebook and display hook tests",
-    "datashader: Datashader-related operation tests",
-    "operation: All operation tests including datashader",
 ]
 filterwarnings = [
     "error",

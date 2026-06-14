@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-pytestmark = [pytest.mark.plotting, pytest.mark.plotting_mpl]
+pytestmark = [pytest.mark.plotting_mpl, pytest.mark.plotting]
 
 import numpy as np
 from matplotlib.colors import ListedColormap

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-pytestmark = [pytest.mark.plotting, pytest.mark.plotting_mpl]
+pytestmark = [pytest.mark.plotting_mpl, pytest.mark.plotting]
 
 import matplotlib.pyplot as plt
 import pyviz_comms as comms

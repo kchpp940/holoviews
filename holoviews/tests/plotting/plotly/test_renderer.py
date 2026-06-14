@@ -5,7 +5,7 @@ Test cases for rendering exporters
 from __future__ import annotations
 
 
-pytestmark = [pytest.mark.plotting, pytest.mark.plotting_plotly]
+pytestmark = [pytest.mark.plotting_plotly, pytest.mark.plotting]
 
 import panel as pn
 import param

@@ -368,6 +368,47 @@ pixi run -e test-gpu test-gpu
 
 Requires CUDA-compatible hardware and Linux.
 
+### Workflow map — single source of truth
+
+All test groups, their markers, pixi tasks, and CI jobs are defined in a single place:
+[`scripts/workflow_map.py`](https://github.com/holoviz/holoviews/blob/main/scripts/workflow_map.py).
+This file is the **single source of truth (SSOT)** for the entire developer workflow.
+
+How it works:
+
+1. **The map** defines each group with its path patterns, marker name, description,
+   and whether it's excluded by default.
+2. **Dynamic marking** — [conftest.py](file:///Users/pkcha/holoviews/holoviews/tests/conftest.py)
+   loads the map at collection time and applies markers to each test based on its file path.
+   No need to add `pytestmark` to individual files (though you can if you want grep-friendly markers).
+3. **Consistency guard** — `python scripts/workflow_sync.py check` verifies that
+   `conftest.py` fallback list, `pyproject.toml` markers, `pixi.toml` tasks, and
+   documentation are all in sync with the map. This runs automatically in CI.
+4. **Sync helper** — `python scripts/workflow_sync.py sync` auto-updates derived
+   artifacts (conftest fallback, pyproject.toml markers, file-level pytestmarks)
+   to match the map.
+
+Common commands:
+
+```bash
+# See current state and all checks
+python scripts/workflow_sync.py status
+
+# Verify consistency (CI runs this)
+python scripts/workflow_sync.py check
+
+# Auto-update derived files after modifying the map
+python scripts/workflow_sync.py sync
+```
+
+To add a new test group or reorganize existing ones:
+
+1. Edit `scripts/workflow_map.py` — add/modify `WorkflowGroup` entries
+2. Run `python scripts/workflow_sync.py sync` — updates conftest, pyproject.toml, file markers
+3. Manually update `pixi.toml` tasks and docs if needed
+4. Run `python scripts/workflow_sync.py check` — confirm everything is consistent
+5. Commit both the map changes and the synchronized files
+
 ## Documentation
 
 ### Full documentation build

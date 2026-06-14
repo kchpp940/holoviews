@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-pytestmark = [pytest.mark.plotting, pytest.mark.plotting_bokeh]
+pytestmark = [pytest.mark.plotting_bokeh, pytest.mark.plotting]
 
 import pytest
 from bokeh.models import Tool

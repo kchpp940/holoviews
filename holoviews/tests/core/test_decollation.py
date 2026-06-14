@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-pytestmark = [pytest.mark.core, pytest.mark.datashader]
+pytestmark = [pytest.mark.core, pytest.mark.datashader, pytest.mark.operation]
 
 import param
 

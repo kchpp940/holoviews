@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-pytestmark = [pytest.mark.plotting, pytest.mark.plotting_plotly]
+pytestmark = [pytest.mark.plotting_plotly, pytest.mark.plotting]
 
 import numpy as np
 import pandas as pd
