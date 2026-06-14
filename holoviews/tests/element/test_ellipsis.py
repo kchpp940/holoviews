@@ -4,6 +4,9 @@ Unit tests of Ellipsis (...) in __getitem__
 
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.core
+
 import numpy as np
 import pytest
 

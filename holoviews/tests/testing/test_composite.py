@@ -9,6 +9,9 @@ HoloMaps are not tested in this file.
 
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.core
+
 import pytest
 
 import holoviews as hv

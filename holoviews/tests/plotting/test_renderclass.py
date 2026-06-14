@@ -4,6 +4,9 @@ Test cases for rendering exporters
 
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.plotting
+
 from holoviews.plotting import Renderer
 
 

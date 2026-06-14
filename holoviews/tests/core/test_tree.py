@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.core
+
 import pytest
 
 from holoviews.core.element import AttrTree

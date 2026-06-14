@@ -28,11 +28,13 @@ CUSTOM_MARKS = (
     "operation",
 )
 
+EXCLUDED_BY_DEFAULT = ("ui", "gpu")
+
 
 def pytest_addoption(parser):
     for marker in CUSTOM_MARKS:
         parser.addoption(
-            f"--{marker}",
+            f"--{marker.replace('_', '-')}",
             action="store_true",
             default=False,
             help=f"Run {marker} related tests",
@@ -43,36 +45,43 @@ def pytest_configure(config):
     markers = {
         "ui": "Browser-based UI tests using Playwright",
         "gpu": "GPU-accelerated tests requiring CUDA",
-        "core": "Core data structure and logic tests",
+        "core": "Core data structure and logic tests (core/, element/, util/, testing/)",
         "plotting": "All plotting/rendering backend tests",
-        "plotting_bokeh": "Bokeh plotting backend tests",
-        "plotting_mpl": "Matplotlib plotting backend tests",
-        "plotting_plotly": "Plotly plotting backend tests",
-        "ipython": "IPython notebook and display hook tests",
+        "plotting_bokeh": "Bokeh plotting backend tests (plotting/bokeh/)",
+        "plotting_mpl": "Matplotlib plotting backend tests (plotting/matplotlib/)",
+        "plotting_plotly": "Plotly plotting backend tests (plotting/plotly/)",
+        "ipython": "IPython notebook and display hook tests (ipython/)",
         "datashader": "Datashader-related operation tests",
-        "operation": "All operation tests including datashader",
+        "operation": "All operation tests including datashader (operation/)",
     }
     for marker in CUSTOM_MARKS:
         config.addinivalue_line("markers", f"{marker}: {markers.get(marker, marker + ' test marker')}")
 
 
 def pytest_collection_modifyitems(config, items):
-    skipped, selected = [], []
-    markers = [m for m in CUSTOM_MARKS if config.getoption(f"--{m}")]
-    empty = not markers
-    for item in items:
-        if empty and any(m in item.keywords for m in CUSTOM_MARKS):
-            skipped.append(item)
-        elif empty:
-            selected.append(item)
-        elif not empty and any(m in item.keywords for m in markers):
-            selected.append(item)
-        else:
-            skipped.append(item)
+    """
+    Filter tests based on custom --marker CLI flags.
+
+    Default behavior (no flags): run all tests EXCEPT those marked ui/gpu.
+    With --<marker> flags: run ONLY tests matching ANY of the specified markers.
+
+    Note: This is independent of pytest's built-in -m / -k filtering,
+    which can still be combined (e.g. pytest -m plotting_bokeh -k raster).
+    """
+    requested = []
+    for marker in CUSTOM_MARKS:
+        if config.getoption(marker):
+            requested.append(marker)
+
+    if not requested:
+        excluded = EXCLUDED_BY_DEFAULT
+        skipped = [item for item in items if any(m in item.keywords for m in excluded)]
+        selected = [item for item in items if item not in skipped]
+    else:
+        selected = [item for item in items if any(m in item.keywords for m in requested)]
+        skipped = [item for item in items if item not in selected]
 
     config.hook.pytest_deselected(items=skipped)
-    # Sorted because pytest 8.4.0 and pytest-playwright
-    # https://github.com/microsoft/playwright-pytest/pull/284
     items[:] = sorted(selected, key=lambda x: x.path)
 
 

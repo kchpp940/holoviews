@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.core
+
 import numpy as np
 import pytest
 

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+
+pytestmark = [pytest.mark.plotting, pytest.mark.plotting_plotly]
+
 import holoviews as hv
 
 from ..._deps import scipy_skip

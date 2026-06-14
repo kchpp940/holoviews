@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+
+pytestmark = [pytest.mark.plotting, pytest.mark.plotting_mpl]
+
 import datetime as dt
 
 import numpy as np

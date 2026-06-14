@@ -4,6 +4,9 @@ Unit test of the streams system
 
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.core
+
 import weakref
 from collections import defaultdict
 

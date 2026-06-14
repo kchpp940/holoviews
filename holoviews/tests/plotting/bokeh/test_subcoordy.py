@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+
+pytestmark = [pytest.mark.plotting, pytest.mark.plotting_bokeh]
+
 import numpy as np
 import pytest
 from bokeh.models.tools import WheelZoomTool, ZoomInTool, ZoomOutTool

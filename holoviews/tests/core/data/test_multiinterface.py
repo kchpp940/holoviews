@@ -4,6 +4,9 @@ Tests for the Dataset Element types.
 
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.core
+
 import logging
 
 import numpy as np

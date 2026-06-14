@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+
+pytestmark = [pytest.mark.plotting, pytest.mark.plotting_bokeh]
+
 import holoviews as hv
 
 from .test_plot import TestBokehPlot, bokeh_renderer

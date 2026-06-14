@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.core
+
 import importlib
 import json
 from pathlib import Path

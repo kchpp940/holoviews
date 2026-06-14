@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.core
+
 import time
 import uuid
 from collections import deque

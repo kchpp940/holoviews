@@ -4,6 +4,9 @@ Unit test of the (non-rendering) exporters and importers.
 
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.core
+
 import numpy as np
 
 import holoviews as hv

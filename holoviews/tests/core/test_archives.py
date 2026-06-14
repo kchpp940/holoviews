@@ -5,6 +5,9 @@ exporters (not including renderers).
 
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.core
+
 import json
 import os
 import tarfile

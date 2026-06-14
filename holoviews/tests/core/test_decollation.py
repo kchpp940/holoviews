@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+
+pytestmark = [pytest.mark.core, pytest.mark.datashader]
+
 import param
 
 import holoviews as hv

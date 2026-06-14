@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+
+pytestmark = [pytest.mark.operation, pytest.mark.datashader]
+
 import datetime as dt
 import logging
 from contextlib import suppress

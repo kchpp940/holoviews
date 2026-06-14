@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+
+pytestmark = [pytest.mark.plotting, pytest.mark.plotting_bokeh]
+
 import numpy as np
 from bokeh.models import CategoricalColorMapper, LinearColorMapper
 

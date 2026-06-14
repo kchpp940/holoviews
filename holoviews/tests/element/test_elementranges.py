@@ -5,6 +5,9 @@ the (min, max) of the dimension values array.
 
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.core
+
 import holoviews as hv
 
 

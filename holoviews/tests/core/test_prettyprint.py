@@ -4,6 +4,9 @@ Test cases for the pretty printing system.
 
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.core
+
 import holoviews as hv
 from holoviews.core.pprint import PrettyPrinter
 

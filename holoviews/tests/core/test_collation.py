@@ -4,6 +4,9 @@ Test cases for Collator
 
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.core
+
 import itertools
 
 import numpy as np

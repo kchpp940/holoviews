@@ -4,6 +4,9 @@ Unit tests for dim transforms
 
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.core
+
 import pickle
 import warnings
 

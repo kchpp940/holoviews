@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.ipython
+
 import holoviews as hv
 
 from .utils import IPythonCase

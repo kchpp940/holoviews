@@ -4,6 +4,9 @@ Unit tests of the helper functions in core.utils
 
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.core
+
 import datetime
 import math
 import os

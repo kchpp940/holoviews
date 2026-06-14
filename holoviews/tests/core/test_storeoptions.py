@@ -5,6 +5,9 @@ Store as used by the %opts magic.
 
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.core
+
 import itertools
 import sys
 import threading

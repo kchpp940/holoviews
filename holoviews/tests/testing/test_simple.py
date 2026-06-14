@@ -6,6 +6,9 @@ Int, float, numpy array and BoundingBox comparisons are tested.
 
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.core
+
 import re
 
 import numpy as np

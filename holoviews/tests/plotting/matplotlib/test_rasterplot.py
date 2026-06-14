@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+
+pytestmark = [pytest.mark.plotting, pytest.mark.plotting_mpl]
+
 import numpy as np
 from matplotlib.colors import ListedColormap
 

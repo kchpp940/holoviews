@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+
+pytestmark = [pytest.mark.plotting, pytest.mark.plotting_plotly]
+
 from unittest.mock import Mock
 
 import numpy as np

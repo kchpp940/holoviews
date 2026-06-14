@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.core
+
 import sys
 from subprocess import check_output
 from textwrap import dedent

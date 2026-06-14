@@ -293,25 +293,47 @@ Unit tests can be run with the `test-unit` task:
 pixi run test-unit
 ```
 
-:::{admonition} Advanced usage
+:::{admonition} Single source of truth: Command ↔ Marker ↔ Directory mapping
 :class: tip
 
-The task is available in the following environments: `test-310`, `test-311`, `test-312`, `test-313`, `test-314`, and `test-core`. Where the first ones have the same environments except for different Python versions, and `test-core` only has a core set of dependencies.
+All three layers (pixi tasks, pytest markers, and directory structure) are **one-to-one aligned**.
+If you update one, update all three.
 
-You can run the task in a specific environment with the `-e` flag. For example, to run the `test-unit` task in the `test-310` environment, you can run:
+| Pixi task              | pytest marker       | Directories / files                                                 |
+|------------------------|---------------------|---------------------------------------------------------------------|
+| `test-unit-core`       | `core`              | `tests/core/`, `tests/element/`, `tests/util/`, `tests/testing/`,  `tests/test_{annotators,selection,streams,all}.py` |
+| `test-plotting-bokeh`  | `plotting_bokeh`    | `tests/plotting/bokeh/`                                             |
+| `test-plotting-mpl`    | `plotting_mpl`      | `tests/plotting/matplotlib/`                                        |
+| `test-plotting-plotly` | `plotting_plotly`   | `tests/plotting/plotly/`                                            |
+| `test-plotting`        | `plotting`          | all of the above + `tests/plotting/test_{comms,plotutils,renderclass}.py` |
+| `test-ipython`         | `ipython`           | `tests/ipython/`                                                    |
+| `test-datashader`      | `datashader`        | `tests/operation/test_datashader.py`, `tests/operation/test_downsample.py`, `tests/core/test_decollation.py` |
+| `test-operation`       | `operation`         | `tests/operation/` (includes datashader)                            |
+| `test-ui`              | `ui`                | `tests/ui/` (also needs `--ui` flag)                                |
+| `test-gpu`             | `gpu`               | requires `--gpu` flag, GPU hardware                                 |
+
+**Equivalent invocations** — pick whichever layer fits your workflow:
 
 ```bash
-pixi run -e test-310 test-unit
+# Via pixi (recommended for local dev)
+pixi run test-plotting-bokeh
+
+# Via pytest marker (works inside any pixi shell)
+pytest holoviews/tests -m plotting_bokeh
+
+# Via pytest CLI flag (same set as marker)
+pytest holoviews/tests --plotting-bokeh
+
+# Via raw directory (legacy, not recommended — may drift)
+pytest holoviews/tests/plotting/bokeh
 ```
 
-You can also use pytest markers directly with pytest CLI:
+Task environments: `test-310`, `test-311`, `test-312`, `test-313`, `test-314`, and `test-core`.
+The first five differ only in Python version; `test-core` has only the minimal dependency set.
 
 ```bash
-pytest -m plotting_bokeh
-pytest --plotting-bokeh
+pixi run -e test-310 test-unit-core
 ```
-
-Available markers: `core`, `plotting`, `plotting_bokeh`, `plotting_mpl`, `plotting_plotly`, `ipython`, `datashader`, `operation`, `ui`, `gpu`
 
 :::
 

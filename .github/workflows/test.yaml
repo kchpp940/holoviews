@@ -39,6 +39,23 @@ env:
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   COV: "--cov=./holoviews --cov-report=xml"
 
+# =====================================================================
+# CI workflow ↔ local pixi command mapping (single source of truth):
+#
+#   Local quick check   : pixi run check             → lint + type-ty + test-unit-core
+#   Core unit suite     : pixi run test-unit-core    → -m core
+#   Plotting backends   : pixi run test-plotting      → -m plotting (bokeh+mpl+plotly)
+#   IPython/display     : pixi run test-ipython       → -m ipython
+#   Datashader path     : pixi run test-datashader    → -m datashader
+#   Full regression     : pixi run test-all           → test-unit + test-example
+#   Release pre-check   : pixi run test-release       → lint + type-ty + test-all
+#   Docs                : pixi run docs-build / docs-build-quick
+#
+# All of the above ultimately resolve to the same pytest markers
+# registered in pyproject.toml [tool.pytest.ini_options] markers
+# and applied to individual test files via pytestmark module globals.
+# =====================================================================
+
 jobs:
   pre_commit:
     name: pre-commit
@@ -136,10 +153,12 @@ jobs:
       - name: Check packages latest version
         run: |
           pixi run -e "${ENV}" check-latest-packages bokeh panel param datashader
-      - name: Test Unit
+      # Maps to: pixi run test-unit-core + test-plotting + test-ipython + test-operation
+      - name: Test Unit (core + plotting + ipython + operation)
         run: |
           pixi run -e "${ENV}" test-unit $COV
-      - name: Test Examples
+      # Maps to: pixi run test-example
+      - name: Test Examples (notebook docs)
         run: |
           pixi run -e "${ENV}" test-example
       - uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354 # v6.0.1
@@ -164,7 +183,8 @@ jobs:
       - uses: holoviz-dev/holoviz_tasks/pixi-install@1a9884850782b0b80ba2e91b573e7d63d9d3c3dc # v1.0.1
         with:
           environments: ${{ matrix.environment }}
-      - name: Test UI
+      # Maps to: pixi run test-ui
+      - name: Test UI (Playwright browser tests)
         run: |
           # Create a .uicoveragerc file to set the concurrency library to greenlet
           # https://github.com/microsoft/playwright-python/issues/313
@@ -201,9 +221,10 @@ jobs:
       - name: Check packages latest version
         run: |
           pixi run -e "${ENV}" check-latest-packages pandas bokeh panel param numpy
-      - name: Test Unit
+      # Maps to: pixi run test-unit-core
+      - name: Test Unit Core (core + element + util + testing)
         run: |
-          pixi run -e "${ENV}" test-unit
+          pixi run -e "${ENV}" test-unit-core
 
   type_suite:
     name: type:${{ matrix.environment }}:${{ matrix.os }}
@@ -222,7 +243,8 @@ jobs:
       - uses: holoviz-dev/holoviz_tasks/pixi-install@1a9884850782b0b80ba2e91b573e7d63d9d3c3dc # v1.0.1
         with:
           environments: ${{ matrix.environment }}
-      - name: Type TY
+      # Maps to: pixi run type-ty (part of `pixi run check`)
+      - name: Type check (ty)
         run: |
           pixi run -e "${ENV}" type-ty
 

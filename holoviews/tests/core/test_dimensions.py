@@ -4,6 +4,9 @@ Test cases for Dimension and Dimensioned object behaviour.
 
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.core
+
 import numpy as np
 import pandas as pd
 import pytest

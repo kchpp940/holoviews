@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.core
+
 import sqlite3
 from tempfile import NamedTemporaryFile
 

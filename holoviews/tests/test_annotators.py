@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.core
+
 import holoviews as hv
 from holoviews.annotators import PathAnnotator, PointAnnotator
 from holoviews.element.tiles import EsriStreet

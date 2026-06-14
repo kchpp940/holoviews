@@ -4,6 +4,9 @@ Tests for the spatialpandas interface.
 
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.core
+
 import numpy as np
 import pandas as pd
 import pytest

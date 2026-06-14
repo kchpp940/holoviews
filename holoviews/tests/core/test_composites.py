@@ -5,6 +5,9 @@ and Overlay (does *not* test HoloMaps).
 
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.core
+
 import re
 
 import pytest

@@ -5,6 +5,9 @@ how DynamicMap validates and invokes Callable based on its signature.
 
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.core
+
 from functools import partial
 
 import param

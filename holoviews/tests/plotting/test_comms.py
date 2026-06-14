@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.plotting
+
 from pyviz_comms import Comm, JupyterComm
 
 

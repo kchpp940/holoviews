@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+
+pytestmark = [pytest.mark.plotting, pytest.mark.plotting_mpl]
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest

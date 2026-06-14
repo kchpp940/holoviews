@@ -4,6 +4,9 @@ Test cases for Dimension and Dimensioned object comparison.
 
 from __future__ import annotations
 
+
+pytestmark = pytest.mark.core
+
 import pytest
 
 import holoviews as hv
