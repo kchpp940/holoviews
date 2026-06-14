@@ -13,6 +13,7 @@ from .element import Element
 from .layout import Layout
 from .options import Store
 from .overlay import NdOverlay, Overlay
+from .schema import ValidationError, build_operation_schema
 from .spaces import Callable, HoloMap
 
 
@@ -101,6 +102,13 @@ class Operation(param.ParameterizedFunction):
 
     # Options to transfer from the input element to the transformed element
     _transfer_options = []
+
+    @classmethod
+    def _get_schema(cls):
+        """Return the :class:`OptionSchema` describing the valid
+        parameters for this Operation.  Subclasses automatically gain
+        specs derived from their ``param`` declarations."""
+        return build_operation_schema(operation_class=cls)
 
     @classmethod
     def search(cls, element, pattern):
@@ -196,6 +204,18 @@ class Operation(param.ParameterizedFunction):
             return element.clone(
                 {k: self.process_element(el, key, **params) for k, el in element.items()}
             )
+        # ---- Unified schema validation at entry point --------------
+        if params and not self._allow_extra_keywords:
+            schema = self._get_schema()
+            try:
+                params = schema.validate(
+                    params,
+                    context=f"{type(self).__name__}.process_element(...)",
+                    coerce=False,
+                )
+            except ValidationError as exc:
+                raise ValueError(str(exc)) from exc
+        # -------------------------------------------------------------
         if hasattr(self, "p"):
             if self._allow_extra_keywords:
                 extras = self.p._extract_extra_keywords(params)
@@ -216,6 +236,18 @@ class Operation(param.ParameterizedFunction):
                 params[k] = v()
             elif isinstance(v, param.Parameter) and isinstance(v.owner, param.Parameterized):
                 params[k] = getattr(v.owner, v.name)
+        # ---- Unified schema validation before creating ParamOverrides
+        if params and not self._allow_extra_keywords:
+            schema = self._get_schema()
+            try:
+                params = schema.validate(
+                    params,
+                    context=f"{type(self).__name__}(...)",
+                    coerce=False,
+                )
+            except ValidationError as exc:
+                raise ValueError(str(exc)) from exc
+        # -------------------------------------------------------------
         self.p = param.ParamOverrides(
             self, params, allow_extra_keywords=self._allow_extra_keywords
         )

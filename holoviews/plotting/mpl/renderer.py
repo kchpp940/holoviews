@@ -15,6 +15,7 @@ from param.parameterized import bothmethod
 
 from ...core import HoloMap
 from ...core.options import Store
+from ...core.schema import build_renderer_schema
 from ..renderer import HTML_TAGS, MIME_TYPES, Renderer
 from .util import get_old_rcparams, get_tight_bbox
 
@@ -86,6 +87,13 @@ class MPLRenderer(Renderer):
     }
 
     counter = 0
+
+    @classmethod
+    def _get_schema(cls):
+        return build_renderer_schema(
+            backend="matplotlib",
+            renderer_class=cls,
+        )
 
     def show(self, obj):
         """Renders the supplied object and displays it using the active

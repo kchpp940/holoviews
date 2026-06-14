@@ -37,6 +37,7 @@ from ..core import AdjointLayout, DynamicMap, HoloMap, Layout
 from ..core.data import disable_pipeline
 from ..core.io import Exporter
 from ..core.options import Compositor, SkipRendering, Store, StoreOptions
+from ..core.schema import ValidationError, build_renderer_schema
 from ..core.util import unbound_dimensions
 from ..core.util.dependencies import _no_import_version
 from ..streams import Stream
@@ -245,7 +246,27 @@ class Renderer(Exporter):
     def __init__(self, **params):
         self.last_plot = None
         self._last_artifact: Optional[RenderArtifact] = None
+        schema = self._get_schema()
+        if params:
+            try:
+                params = schema.validate(
+                    params,
+                    context=f"{type(self).__name__}(...)",
+                    coerce=False,
+                )
+            except ValidationError as exc:
+                raise ValueError(str(exc)) from exc
         super().__init__(**params)
+
+    @classmethod
+    def _get_schema(cls):
+        """Return the :class:`OptionSchema` used to validate this
+        Renderer's parameters.  Subclasses may override to mix in
+        backend-specific specs."""
+        return build_renderer_schema(
+            backend=getattr(cls, "backend", None) or None,
+            renderer_class=cls,
+        )
 
     def __call__(self, obj, fmt="auto", **kwargs):
         plot, fmt = self._validate(obj, fmt)
@@ -732,8 +753,19 @@ class Renderer(Exporter):
 
     @classmethod
     def validate(cls, options):
-        """Validate an options dictionary for the renderer."""
-        return options
+        """Validate an options dictionary for the renderer using the
+        unified option schema.  Returns a cleaned copy with deprecated
+        aliases rewritten and defaults filled in.  Raises ``ValueError``
+        with a user-friendly message on failure."""
+        schema = cls._get_schema()
+        try:
+            return schema.validate(
+                options,
+                context=f"{cls.__name__}.validate()",
+                coerce=True,
+            )
+        except ValidationError as exc:
+            raise ValueError(str(exc)) from exc
 
     @classmethod
     def load_nb(cls, inline=False, reloading=False, enable_mathjax=False):

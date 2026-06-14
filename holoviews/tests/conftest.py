@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import contextlib
-import importlib.util
 import sys
 import typing as t
-from pathlib import Path
 
 import numpy as np
 import panel as pn
@@ -17,44 +15,24 @@ import holoviews as hv
 if t.TYPE_CHECKING:
     from collections.abc import Callable
 
-# ---------------------------------------------------------------------------
-# Load workflow map — single source of truth for marker definitions.
-# The map lives in scripts/workflow_map.py and is shared by conftest,
-# pixi tasks, CI, and developer documentation.
-# Run `python scripts/workflow_sync.py check` to verify all layers are in sync.
-# ---------------------------------------------------------------------------
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_WORKFLOW_MAP_PATH = _PROJECT_ROOT / "scripts" / "workflow_map.py"
-
-if _WORKFLOW_MAP_PATH.exists():
-    _spec = importlib.util.spec_from_file_location("workflow_map", _WORKFLOW_MAP_PATH)
-    _workflow_map = importlib.util.module_from_spec(_spec)
-    _spec.loader.exec_module(_workflow_map)
-    _GROUPS = _workflow_map.GROUPS
-    _MARKERS = _workflow_map.get_all_markers()
-    _EXCLUDED_BY_DEFAULT = _workflow_map.get_excluded_by_default_markers()
-else:
-    # Fallback: static list (kept in sync by workflow_sync.py --check)
-    _MARKERS = (
-    "core",
-    "datashader",
+CUSTOM_MARKS = (
+    "ui",
     "gpu",
-    "ipython",
-    "operation",
+    "core",
     "plotting",
     "plotting_bokeh",
     "plotting_mpl",
     "plotting_plotly",
-    "ui",
+    "ipython",
+    "datashader",
+    "operation",
 )
-    _EXCLUDED_BY_DEFAULT = ("ui", "gpu")
-    _GROUPS = None
 
 
 def pytest_addoption(parser):
-    for marker in _MARKERS:
+    for marker in CUSTOM_MARKS:
         parser.addoption(
-            f"--{marker.replace('_', '-')}",
+            f"--{marker}",
             action="store_true",
             default=False,
             help=f"Run {marker} related tests",
@@ -62,54 +40,39 @@ def pytest_addoption(parser):
 
 
 def pytest_configure(config):
-    if _GROUPS is not None:
-        for group in _GROUPS:
-            config.addinivalue_line("markers", f"{group.marker}: {group.description}")
-    else:
-        for marker in _MARKERS:
-            config.addinivalue_line("markers", f"{marker}: {marker} test marker")
+    markers = {
+        "ui": "Browser-based UI tests using Playwright",
+        "gpu": "GPU-accelerated tests requiring CUDA",
+        "core": "Core data structure and logic tests",
+        "plotting": "All plotting/rendering backend tests",
+        "plotting_bokeh": "Bokeh plotting backend tests",
+        "plotting_mpl": "Matplotlib plotting backend tests",
+        "plotting_plotly": "Plotly plotting backend tests",
+        "ipython": "IPython notebook and display hook tests",
+        "datashader": "Datashader-related operation tests",
+        "operation": "All operation tests including datashader",
+    }
+    for marker in CUSTOM_MARKS:
+        config.addinivalue_line("markers", f"{marker}: {markers.get(marker, marker + ' test marker')}")
 
 
 def pytest_collection_modifyitems(config, items):
-    """
-    Filter and mark tests based on the workflow map (single source of truth).
-
-    Two mechanisms work together:
-    1. Dynamic marking: if workflow_map.py is available, markers are applied
-       to each test item based on its file path (no hard-coded pytestmark needed).
-    2. CLI flag filtering: --<marker-name> flags select only tests with that marker.
-       By default, markers in EXCLUDED_BY_DEFAULT (ui, gpu) are skipped.
-
-    Note: This is independent of pytest's built-in -m / -k filtering,
-    which can still be combined (e.g. pytest -m plotting_bokeh -k raster).
-    """
-    tests_dir = Path(__file__).resolve().parent  # holoviews/tests/
-
-    # Step 1: Apply dynamic markers based on file path (from workflow map)
-    if _GROUPS is not None:
-        for item in items:
-            rel_path = str(Path(item.path).resolve().relative_to(tests_dir))
-            for group in _GROUPS:
-                if _workflow_map.file_matches_group(rel_path, group):
-                    item.add_marker(group.marker)
-                    for also in group.also_markers:
-                        item.add_marker(also)
-
-    # Step 2: Filter based on CLI flags
-    requested = []
-    for marker in _MARKERS:
-        if config.getoption(marker):
-            requested.append(marker)
-
-    if not requested:
-        excluded = _EXCLUDED_BY_DEFAULT
-        skipped = [item for item in items if any(m in item.keywords for m in excluded)]
-        selected = [item for item in items if item not in skipped]
-    else:
-        selected = [item for item in items if any(m in item.keywords for m in requested)]
-        skipped = [item for item in items if item not in selected]
+    skipped, selected = [], []
+    markers = [m for m in CUSTOM_MARKS if config.getoption(f"--{m}")]
+    empty = not markers
+    for item in items:
+        if empty and any(m in item.keywords for m in CUSTOM_MARKS):
+            skipped.append(item)
+        elif empty:
+            selected.append(item)
+        elif not empty and any(m in item.keywords for m in markers):
+            selected.append(item)
+        else:
+            skipped.append(item)
 
     config.hook.pytest_deselected(items=skipped)
+    # Sorted because pytest 8.4.0 and pytest-playwright
+    # https://github.com/microsoft/playwright-pytest/pull/284
     items[:] = sorted(selected, key=lambda x: x.path)
 
 

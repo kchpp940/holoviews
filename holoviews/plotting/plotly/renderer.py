@@ -9,6 +9,7 @@ from param.parameterized import bothmethod
 
 from ...core import HoloMap
 from ...core.options import Store
+from ...core.schema import build_renderer_schema
 from ..renderer import HTML_TAGS, MIME_TYPES, Renderer
 from .callbacks import callbacks
 from .util import (
@@ -74,6 +75,13 @@ class PlotlyRenderer(Renderer):
     _loaded = False
 
     _render_with_panel = True
+
+    @classmethod
+    def _get_schema(cls):
+        return build_renderer_schema(
+            backend="plotly",
+            renderer_class=cls,
+        )
 
     @bothmethod
     def get_plot_state(self_or_cls, obj, doc=None, renderer=None, numpy_convert=False, **kwargs):

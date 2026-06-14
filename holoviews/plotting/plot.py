@@ -27,6 +27,7 @@ from ..core.element import Element, Element3D
 from ..core.layout import Empty, Layout, NdLayout
 from ..core.options import Compositor, SkipRendering, Store, lookup_options
 from ..core.overlay import CompositeOverlay, NdOverlay, Overlay
+from ..core.schema import ValidationError, build_plot_schema
 from ..core.spaces import DynamicMap, HoloMap, get_nested_streams
 from ..core.util import dtype_kind, isfinite, stream_parameters, unique_iterator
 from ..element import Graph, Table
@@ -67,7 +68,18 @@ class Plot(param.Parameterized):
     _disabled_opts = []
 
     def __init__(self, renderer=None, root=None, **params):
-        params = {k: v for k, v in params.items() if k in self.param}
+        # ---- Unified schema validation at entry point --------------
+        if params:
+            schema = self._get_schema()
+            try:
+                params = schema.validate(
+                    params,
+                    context=f"{type(self).__name__}(...)",
+                    coerce=False,
+                )
+            except ValidationError as exc:
+                raise ValueError(str(exc)) from exc
+        # -------------------------------------------------------------
         super().__init__(**params)
         self.renderer = renderer if renderer else Store.renderers[self.backend].instance()
         self._force = False
@@ -78,6 +90,14 @@ class Plot(param.Parameterized):
         self._triggering = []
         self._trigger = []
         self.set_root(root)
+
+    @classmethod
+    def _get_schema(cls):
+        """Return the :class:`OptionSchema` describing the valid plot
+        parameters for this class.  Subclasses inherit the base schema
+        and automatically gain specs derived from their ``param``
+        declarations."""
+        return build_plot_schema(plot_class=cls)
 
     @property
     def state(self):

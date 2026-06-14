@@ -24,6 +24,7 @@ from ..core import (
 from ..core.operation import Operation, OperationCallable
 from ..core.options import Keywords, Options, options_policy
 from ..core.overlay import Overlay
+from ..core.schema import ValidationError, build_extension_schema
 from ..operation.element import function
 from ..streams import Params, Stream, streams_list_from_dict
 from .settings import OutputSettings, list_backends, list_formats
@@ -644,9 +645,21 @@ class output(param.ParameterizedFunction):
         if isinstance(obj, Dimensioned):
             if line:
                 options = Store.output_settings.extract_keywords(line, {})
-            for k in options.keys():
-                if k not in Store.output_settings.allowed:
-                    raise KeyError(f"Invalid keyword: {k}")
+            if options:
+                schema = build_extension_schema(
+                    fig_formats=list_formats("fig"),
+                    holomap_formats=list_formats("holomap"),
+                    backend_list=list_backends() or None,
+                )
+                try:
+                    cleaned = schema.validate(
+                        options,
+                        context="hv.output(obj, ...)",
+                        coerce=False,
+                    )
+                except ValidationError as exc:
+                    raise ValueError(str(exc)) from exc
+                options = cleaned
 
             def display_fn(obj, renderer):
                 try:
@@ -716,6 +729,19 @@ class extension(_pyviz_extension):
         return super().__new__(cls, *backends, **kwargs)
 
     def __call__(self, *backends, **params):
+        # ---- Unified schema validation before any side effects -----
+        schema = build_extension_schema()
+        # backends (positional) are not part of the kwarg schema
+        if params:
+            try:
+                params = schema.validate(
+                    params,
+                    context="hv.extension(...)",
+                    coerce=False,
+                )
+            except ValidationError as exc:
+                raise ValueError(str(exc)) from exc
+        # -------------------------------------------------------------
         # Get requested backends
         config = params.pop("config", {})
         util.config.param.update(**config)
@@ -855,6 +881,15 @@ def save(
         ):
             obj = obj.opts(toolbar=None, backend="bokeh", clone=True)
     if kwargs:
+        schema = renderer_obj._get_schema()
+        try:
+            kwargs = schema.validate(
+                kwargs,
+                context=f"hv.save(..., backend={backend!r})",
+                coerce=False,
+            )
+        except ValidationError as exc:
+            raise ValueError(str(exc)) from exc
         renderer_obj = renderer_obj.instance(**kwargs)
     if isinstance(filename, Path):
         filename = str(filename.absolute())
@@ -909,6 +944,15 @@ def render(obj, backend: _BackendT | None = None, **kwargs):
     backend = backend or Store.current_backend
     renderer_obj = renderer(backend)
     if kwargs:
+        schema = renderer_obj._get_schema()
+        try:
+            kwargs = schema.validate(
+                kwargs,
+                context=f"hv.render(..., backend={backend!r})",
+                coerce=False,
+            )
+        except ValidationError as exc:
+            raise ValueError(str(exc)) from exc
         renderer_obj = renderer_obj.instance(**kwargs)
     if backend == "matplotlib":
         plot = renderer_obj.get_plot(obj)

@@ -4,6 +4,7 @@ import typing as t
 from collections import defaultdict
 
 from ..core import Store
+from ..core.schema import ValidationError, build_extension_schema
 
 if t.TYPE_CHECKING:
     from collections.abc import Sequence
@@ -37,42 +38,35 @@ class KeywordSettings:
     def get_options(cls, items, options, warnfn):
         """Given a keyword specification, validate and compute options"""
         options = cls.update_options(options, items)
+        # ---- Unified schema validation with dynamic per-backend values --
+        if items:
+            backend_spec = options.get("backend", Store.current_backend)
+            fig_formats = (
+                cls.allowed["fig"] if backend_spec in cls.backend_list or not cls.allowed["fig"]
+                else None
+            )
+            holomap_formats = (
+                cls.allowed["holomap"] if backend_spec in cls.backend_list or not cls.allowed["holomap"]
+                else None
+            )
+            schema = build_extension_schema(
+                fig_formats=fig_formats,
+                holomap_formats=holomap_formats,
+                backend_list=list_backends() or None,
+            )
+            try:
+                cleaned = schema.validate(
+                    items,
+                    context=f"{cls.__name__}.get_options()",
+                    coerce=False,
+                )
+            except ValidationError as exc:
+                raise ValueError(str(exc)) from exc
+            items = cleaned
+        # --- Build result with defaults ---------------------------------
         for keyword in cls.defaults:
             if keyword in items:
-                value = items[keyword]
-                allowed = cls.allowed[keyword]
-                if isinstance(allowed, set):
-                    pass
-                elif isinstance(allowed, dict):
-                    if not isinstance(value, dict):
-                        raise ValueError(f"Value {value!r} not a dict type")
-                    disallowed = set(value.keys()) - set(allowed.keys())
-                    if disallowed:
-                        raise ValueError(
-                            f"Keywords {disallowed!r} for {keyword!r} option not one of {allowed}"
-                        )
-                    wrong_type = {k: v for k, v in value.items() if not isinstance(v, allowed[k])}
-                    if wrong_type:
-                        errors = []
-                        for k, v in wrong_type.items():
-                            errors.append(
-                                f"Value {v!r} for {keyword!r} option's {k!r} attribute not of type {allowed[k]!r}"
-                            )
-                        raise ValueError("\n".join(errors))
-                elif isinstance(allowed, list) and value not in allowed:
-                    if keyword in cls.custom_exceptions:
-                        cls.custom_exceptions[keyword](value, keyword, allowed)
-                    else:
-                        raise ValueError(
-                            f"Value {value!r} for key {keyword!r} not one of {allowed}"
-                        )
-                elif isinstance(allowed, tuple):
-                    if not (allowed[0] <= value <= allowed[1]):
-                        info = (keyword, value, *allowed)
-                        raise ValueError(
-                            "Value {!r} for key {!r} not between {} and {}".format(*info)
-                        )
-                options[keyword] = value
+                options[keyword] = items[keyword]
         return cls._validate(options, items, warnfn)
 
     @classmethod
@@ -338,8 +332,24 @@ class OutputSettings(KeywordSettings):
         return Signature([Parameter(kw, Parameter.KEYWORD_ONLY) for kw in keywords])
 
     @classmethod
+    def _get_schema(cls):
+        """Return the :class:`OptionSchema` used for ``hv.output`` /
+        ``hv.extension`` option validation."""
+        return build_extension_schema()
+
+    @classmethod
     def _validate(cls, options, items, warnfn):
-        """Validation of edge cases and incompatible options"""
+        """Validation of edge cases and incompatible options.
+
+        The incoming ``options`` dict contains keys from both the
+        extension schema (``hv.extension`` / ``hv.output``) and the
+        active Renderer's own parameter schema.  We only forward keys
+        that the Renderer actually recognises to its
+        :meth:`Renderer.validate` method, then stitch the
+        extension-only keys (``max_frames``, ``filename``, ``info``,
+        …) back into the returned dictionary so downstream code can
+        still find them.
+        """
         if "html" in Store.display_formats:
             pass
         elif "fig" in items and items["fig"] not in Store.display_formats:
@@ -353,7 +363,37 @@ class OutputSettings(KeywordSettings):
                 warnfn(msg)
 
         backend = Store.current_backend
-        return Store.renderers[backend].validate(options)
+        renderer_cls = type(Store.renderers[backend])
+        renderer_schema = renderer_cls._get_schema()
+
+        # Split options into "renderer knows" vs "extension-only".
+        # Deprecated aliases in the renderer schema count too.
+        renderer_known: set[str] = set(renderer_schema.allowed_names)
+        for spec in renderer_schema.specs.values():
+            renderer_known.update(spec.deprecated_aliases)
+
+        renderer_opts = {}
+        for k, v in options.items():
+            if k not in renderer_known:
+                continue
+            # ``None`` coming from the extension schema means "fall back
+            # to the renderer's own default".  Only forward it if the
+            # renderer actually allows None (e.g. base Renderer.dpi has
+            # ``allow_None=True``, but MPLRenderer.dpi overrides it to
+            # ``allow_None=False`` with a concrete default like 72).
+            if v is None:
+                spec = renderer_schema.spec_for(k)
+                if spec is None or not spec.allow_None:
+                    continue
+            renderer_opts[k] = v
+
+        extension_only = {k: v for k, v in options.items() if k not in renderer_known}
+
+        validated = Store.renderers[backend].validate(renderer_opts)
+        # Merge extension-only keys back - they take precedence over
+        # any defaults the renderer validation might have filled in.
+        validated.update(extension_only)
+        return validated
 
     @classmethod
     def output(

@@ -15,6 +15,7 @@ from panel.io.state import state
 from param.parameterized import bothmethod
 
 from ...core import HoloMap, Store
+from ...core.schema import build_renderer_schema
 from ..plot import Plot
 from ..renderer import HTML_TAGS, MIME_TYPES, Renderer
 from .util import compute_plot_size
@@ -61,6 +62,13 @@ class BokehRenderer(Renderer):
 
     _loaded = False
     _render_with_panel = True
+
+    @classmethod
+    def _get_schema(cls):
+        return build_renderer_schema(
+            backend="bokeh",
+            renderer_class=cls,
+        )
 
     @bothmethod
     def _save_prefix(self_or_cls, ext):
