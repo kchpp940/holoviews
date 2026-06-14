@@ -24,7 +24,7 @@ from ..core import (
 from ..core.operation import Operation, OperationCallable
 from ..core.options import Keywords, Options, options_policy
 from ..core.overlay import Overlay
-from ..core.schema import ValidationError, build_extension_schema
+from ..core.schema import OptionSchema, ValidationError, build_extension_schema
 from ..operation.element import function
 from ..streams import Params, Stream, streams_list_from_dict
 from .settings import OutputSettings, list_backends, list_formats
@@ -342,6 +342,11 @@ class opts(param.ParameterizedFunction, metaclass=OptsMeta):
         type[.group][.label] keys into separate style, plot, norm and
         output options. If the backend is not loaded, `None` is returned.
 
+        Uses the unified :class:`OptionSchema` machinery to validate
+        both the *name* (e.g. no misspellings) and the *value* (type,
+        bounds, allowed set) of every option before it propagates to
+        the backend.
+
             opts._expand_options({'Image': dict(cmap='viridis', show_title=False)})
 
         Returns
@@ -375,44 +380,108 @@ class opts(param.ParameterizedFunction, metaclass=OptsMeta):
         if isinstance(options, list):
             options = util.merge_options_to_dict(options)
 
+        active_backend = backend or current_backend
+
         for objspec, option_values in options.items():
             objtype = objspec.split(".")[0]
             if objtype not in backend_options:
                 raise ValueError(f"{objtype} type not found, could not apply options.")
             obj_options = backend_options[objtype]
             expanded[objspec] = {g: {} for g in obj_options.groups}
+
+            # Build a combined schema for fuzzy matching across groups
+            all_group_schemas: dict[str, OptionSchema] = {}
+            for g in sorted(obj_options.groups.keys()):
+                sch = Store.options_schema(objtype, g, backend=active_backend)
+                if sch is not None:
+                    all_group_schemas[g] = sch
+            all_valid_names: list[str] = sorted(
+                {
+                    name
+                    for sch in all_group_schemas.values()
+                    for name in sch.allowed_names
+                }
+            )
+
             for opt, value in option_values.items():
+                # --- Step 1: find which group this option belongs to ---
+                matched_group: str | None = None
                 for g, group_opts in sorted(obj_options.groups.items()):
                     if opt in group_opts.allowed_keywords:
-                        expanded[objspec][g][opt] = value
+                        matched_group = g
                         break
-                else:
-                    valid_options = sorted(
-                        {
-                            keyword
-                            for group_opts in obj_options.groups.values()
-                            for keyword in group_opts.allowed_keywords
-                        }
+
+                # --- Step 2: unknown option → detailed error with source ---
+                if matched_group is None:
+                    cls._options_error(
+                        opt, objtype, active_backend, all_valid_names,
+                        group_schemas=all_group_schemas,
                     )
-                    cls._options_error(opt, objtype, backend, valid_options)
+                    continue  # pragma: no cover - _options_error raises
+
+                # --- Step 3: validate value against the group schema ----
+                group_schema = all_group_schemas.get(matched_group)
+                if group_schema is not None:
+                    try:
+                        validated = group_schema.validate_partial(
+                            {opt: value},
+                            context=f"hv.opts({objtype}.{objspec}, ...)",
+                        )
+                        validated_value = validated[opt]
+                    except ValidationError as e:
+                        # Re-raise as ValueError with group context for
+                        # backwards compatibility with existing code that
+                        # catches ValueError.
+                        raise ValueError(str(e)) from e
+                else:
+                    # Schema not available for this group; fall back to
+                    # accepting any value (the old behaviour).
+                    validated_value = value
+
+                expanded[objspec][matched_group][opt] = validated_value
+
         return expanded
 
     @classmethod
-    def _options_error(cls, opt, objtype, backend, valid_options):
+    def _options_error(cls, opt, objtype, backend, valid_options, group_schemas=None):
         """Generates an error message for an invalid option suggesting
         similar options through fuzzy matching.
 
+        When *group_schemas* is supplied, each suggested option is
+        annotated with its category (``plot``, ``style``, ``norm``,
+        ``output``) so the user can tell whether they misspelled a
+        style option vs. a plot option etc.
         """
         current_backend = Store.current_backend
         loaded_backends = Store.loaded_backends()
         kws = Keywords(values=valid_options)
         matches = sorted(kws.fuzzy_match(opt))
+
+        # Build a map {option_name: category_label} from group_schemas
+        option_to_category: dict[str, str] = {}
+        if group_schemas:
+            for group, sch in group_schemas.items():
+                category_label = {
+                    "style": "style",
+                    "plot": "plot",
+                    "norm": "normalization",
+                    "output": "display",
+                }.get(group, group)
+                for name in sch.allowed_names:
+                    option_to_category[name] = category_label
+
+        def _format_match(name: str) -> str:
+            cat = option_to_category.get(name)
+            return f"{name!r} [{cat}]" if cat else repr(name)
+
+        formatted_matches = [_format_match(m) for m in matches]
+
         if backend is not None:
             if matches:
                 raise ValueError(
                     f"Unexpected option {opt!r} for {objtype} type "
                     f"when using the {backend!r} extension. Similar "
-                    f"options are: {matches}."
+                    f"options are: {', '.join(formatted_matches)}."
                 )
             else:
                 raise ValueError(
@@ -442,7 +511,8 @@ class opts(param.ParameterizedFunction, metaclass=OptsMeta):
             raise ValueError(
                 f"Unexpected option {opt!r} for {objtype} type "
                 "across all extensions. Similar options "
-                f"for current extension ({current_backend!r}) are: {matches}."
+                f"for current extension ({current_backend!r}) are: "
+                f"{', '.join(formatted_matches)}."
             )
         else:
             raise ValueError(

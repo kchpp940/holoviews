@@ -51,18 +51,35 @@ if t.TYPE_CHECKING:
 _F = t.TypeVar("_F")
 _T = t.TypeVar("_T")
 
-OptionCategoryT = t.Literal["renderer", "plot", "operation", "extension"]
+OptionCategoryT = t.Literal[
+    "renderer", "plot", "style", "norm", "operation", "extension"
+]
 
 
 class OptionCategory:
-    """Enumeration of the four top-level option categories."""
+    """Enumeration of the six top-level option categories.
+
+    The categories map directly to the four option groups used in
+    HoloViews' options system (``style``, ``plot``, ``norm``,
+    ``output``) plus the two standalone subsystems (``renderer`` and
+    ``operation``).
+    """
 
     RENDERER: OptionCategoryT = "renderer"
     PLOT: OptionCategoryT = "plot"
+    STYLE: OptionCategoryT = "style"
+    NORM: OptionCategoryT = "norm"
     OPERATION: OptionCategoryT = "operation"
     EXTENSION: OptionCategoryT = "extension"
 
-    ALL: tuple[OptionCategoryT, ...] = ("renderer", "plot", "operation", "extension")
+    ALL: tuple[OptionCategoryT, ...] = (
+        "renderer",
+        "plot",
+        "style",
+        "norm",
+        "operation",
+        "extension",
+    )
 
 
 @dataclass(frozen=True)
@@ -252,8 +269,9 @@ class ValidationError(ValueError):
         lines: list[str] = []
         where = f" in {self.context}" if self.context else ""
         owner = f" ({self.source})" if self.source else ""
+        category_label = _CATEGORY_LABELS.get(self.category, f"{self.category} option")
         lines.append(
-            f"Invalid {self.category} option(s){where}{owner}:"
+            f"Invalid {category_label}(s){where}{owner}:"
         )
         for name, msg in self.problems:
             suggestion = self._fuzzy(name)
@@ -261,7 +279,7 @@ class ValidationError(ValueError):
             lines.append(f"  - {name!r}: {msg}{hint}")
         lines.append("")
         lines.append(
-            f"Valid {self.category} options: "
+            f"Valid {category_label}s: "
             f"{', '.join(sorted(self.allowed)) or '(none)'}"
         )
         return "\n".join(lines)
@@ -1184,7 +1202,11 @@ def build_plot_schema(
     )
     if plot_class is not None:
         param_specs = _specs_from_param_class(plot_class)
-        schema = schema.merge(
+        # NOTE: use overlay() rather than merge() here.  Param-derived
+        # specs supply authoritative type / default info but typically
+        # lack bounds/allowed constraints, which we keep from the
+        # hand-curated base specs.
+        schema = schema.overlay(
             OptionSchema(OptionCategory.PLOT, *param_specs)
         )
     if extra_specs:
@@ -1348,7 +1370,118 @@ __all__ = [
     "OptionSchema",
     "ValidationError",
     "build_extension_schema",
+    "build_norm_schema",
     "build_operation_schema",
     "build_plot_schema",
     "build_renderer_schema",
+    "build_style_schema",
 ]
+
+
+# ======================================================================
+# Friendly labels used in error messages for each category
+# ======================================================================
+
+_CATEGORY_LABELS: dict[OptionCategoryT, str] = {
+    "renderer": "renderer option",
+    "plot": "plot option",
+    "style": "style option",
+    "norm": "normalization option",
+    "operation": "operation option",
+    "extension": "display extension option",
+}
+
+
+# ======================================================================
+# Norm / style option schemas
+# ======================================================================
+
+_NORM_BASE_SPECS: tuple[OptionSpec, ...] = (
+    OptionSpec(
+        "framewise",
+        type=bool,
+        default=False,
+        source="holoviews.plotting.plot.DimensionedPlot",
+        description="Whether normalization is applied per-frame.",
+    ),
+    OptionSpec(
+        "axiswise",
+        type=bool,
+        default=False,
+        source="holoviews.plotting.plot.DimensionedPlot",
+        description="Whether normalization is applied per-axis.",
+    ),
+)
+
+
+def build_norm_schema(extra_specs: Iterable[OptionSpec] | None = None) -> OptionSchema:
+    """Build the canonical :class:`OptionSchema` for norm options.
+
+    Norm options control how data is normalised across frames and axes
+    in animated and multi-element plots.
+    """
+    schema = OptionSchema(
+        OptionCategory.NORM,
+        *_NORM_BASE_SPECS,
+        name="norm_schema",
+        source="holoviews.plotting.plot.DimensionedPlot",
+    )
+    if extra_specs:
+        schema = schema.extend(*extra_specs)
+    return schema
+
+
+def build_style_schema(
+    style_opts: Iterable[str],
+    *,
+    backend: str | None = None,
+    element_name: str | None = None,
+    extra_specs: Iterable[OptionSpec] | None = None,
+) -> OptionSchema:
+    """Build an :class:`OptionSchema` for a Plot subclass's style options.
+
+    Style options are the keyword arguments forwarded directly to the
+    underlying backend's drawing calls (e.g. ``color``, ``line_width``,
+    ``marker``).  They are inherently backend-specific and are declared
+    as lists of strings on each Plot class (``Plot.style_opts``).
+
+    Parameters
+    ----------
+    style_opts : iterable of str
+        The list of allowed style option names (from ``Plot.style_opts``
+        after alias expansion).
+    backend : str, optional
+        Name of the plotting backend (e.g. ``"bokeh"``).  Used in error
+        messages and for the schema's default ``source``.
+    element_name : str, optional
+        Name of the element/view class these style options apply to
+        (e.g. ``"Curve"``).  Used in error messages.
+    extra_specs : iterable of OptionSpec, optional
+        Additional specs to mix in (e.g. for backend-specific aliases
+        or deprecations).
+    """
+    source = (
+        f"holoviews.plotting.{backend}.{element_name or 'Element'}"
+        if backend
+        else "holoviews.plotting.plot.Plot"
+    )
+    name_parts = [element_name or "element", backend, "style_schema"]
+    name = "_".join(p for p in name_parts if p)
+
+    specs: list[OptionSpec] = []
+    for opt in style_opts:
+        specs.append(
+            OptionSpec(
+                name=opt,
+                type=object,
+                default=None,
+                allow_None=True,
+                source=source,
+                description=f"Style option forwarded to the {backend or 'backend'} renderer.",
+            )
+        )
+
+    schema = OptionSchema(OptionCategory.STYLE, *specs, name=name, source=source)
+    if extra_specs:
+        schema = schema.extend(*extra_specs)
+    return schema

@@ -23,10 +23,13 @@ from holoviews.core.schema import (
     ValidationError,
     _specs_from_param_class,
     build_extension_schema,
+    build_norm_schema,
     build_operation_schema,
     build_plot_schema,
     build_renderer_schema,
+    build_style_schema,
 )
+from holoviews.core.options import Options, Store
 from holoviews.plotting.plot import Plot
 from holoviews.plotting.renderer import Renderer
 from holoviews.core.operation import Operation

@@ -48,6 +48,16 @@ import param
 
 from ..util.warnings import HoloviewsUserWarning, warn
 from .pprint import InfoPrinter
+from .schema import (
+    OptionCategory,
+    OptionSchema,
+    OptionSpec,
+    ValidationError,
+    build_norm_schema,
+    build_plot_schema,
+    build_style_schema,
+    build_extension_schema,
+)
 from .tree import AttrTree
 from .util import group_sanitizer, label_sanitizer, sanitize_identifier
 
@@ -479,8 +489,35 @@ class Options:
     _output_allowed_kws = ["backend"]
 
     def __init__(
-        self, key=None, allowed_keywords=None, merge_keywords=True, max_cycles=None, **kwargs
+        self,
+        key=None,
+        allowed_keywords=None,
+        merge_keywords=True,
+        max_cycles=None,
+        schema: OptionSchema | None = None,
+        **kwargs,
     ):
+        # When a schema is provided, use it for full validation (name +
+        # type + value).  Otherwise fall back to the legacy
+        # ``allowed_keywords`` name-only check for backwards
+        # compatibility.
+        if schema is not None:
+            try:
+                cleaned = schema.validate(
+                    kwargs,
+                    context=f"Options({key!r})" if key else "Options",
+                    coerce=False,
+                )
+            except ValidationError as e:
+                # Re-raise as OptionError to preserve the existing
+                # exception type that callers may be catching.
+                raise OptionError(
+                    e.problems[0][0] if e.problems else "unknown",
+                    schema.allowed_names,
+                    group_name=key,
+                ) from e
+            kwargs = cleaned
+            allowed_keywords = schema.allowed_names
 
         if allowed_keywords is None:
             allowed_keywords = []
@@ -490,7 +527,7 @@ class Options:
                 if self.skip_invalid:
                     invalid_kws.append(kwarg)
                 else:
-                    raise OptionError(kwarg, allowed_keywords)
+                    raise OptionError(kwarg, allowed_keywords, group_name=key)
 
         if key and key[0].islower() and key not in self._option_groups:
             raise ValueError(
@@ -511,6 +548,7 @@ class Options:
         self.kwargs = {k: kwargs[k] for k in sorted(kwargs.keys()) if k not in invalid_kws}
         self._options = []
         self._max_cycles = max_cycles
+        self.schema = schema
 
         allowed_keywords = (
             allowed_keywords
@@ -537,6 +575,7 @@ class Options:
             key=self.key,
             allowed_keywords=self.allowed_keywords,
             merge_keywords=self.merge_keywords,
+            schema=self.schema,
             **kws,
         )
 
@@ -547,7 +586,9 @@ class Options:
         allowed_keywords = (
             self.allowed_keywords if allowed_keywords in [None, []] else allowed_keywords
         )
-        inherited_style = dict(allowed_keywords=allowed_keywords, **kwargs)
+        inherited_style = dict(
+            allowed_keywords=allowed_keywords, schema=self.schema, **kwargs
+        )
         return self.__class__(**dict(self.kwargs, **inherited_style))
 
     def keys(self):
@@ -1226,6 +1267,13 @@ class Store:
 
     # A dictionary of custom OptionTree by custom object id by backend
     _custom_options = {"matplotlib": {}}
+
+    # Unified option schemas for each (backend, element, group).
+    # Structure: _option_schemas[backend][element_name][group] = OptionSchema
+    # Populated lazily during Store.register() so that schemas always
+    # reflect the currently-registered Plot classes and their style_opts.
+    _option_schemas: dict[str, dict[str, dict[str, OptionSchema]]] = {}
+
     load_counter_offset = None
     save_option_state = False
 
@@ -1250,6 +1298,39 @@ class Store:
         else:
             cls._lookup_cache[backend] = {}
             cls._options[backend] = val
+
+    @classmethod
+    def options_schema(
+        cls,
+        element_name: str,
+        group: str,
+        *,
+        backend: str | None = None,
+    ) -> OptionSchema | None:
+        """Return the unified :class:`OptionSchema` for the given
+        (backend, element, group) triple.
+
+        Parameters
+        ----------
+        element_name : str
+            Name of the view class (e.g. ``"Curve"``, ``"Image"``).
+        group : str
+            One of ``"style"``, ``"plot"``, ``"norm"``, ``"output"``.
+        backend : str, optional
+            Backend name.  Defaults to the currently active backend.
+
+        Returns
+        -------
+        OptionSchema or ``None``
+            The schema if one has been registered for this triple,
+            ``None`` otherwise.
+        """
+        backend = cls.current_backend if backend is None else backend
+        if backend not in cls._option_schemas:
+            return None
+        if element_name not in cls._option_schemas[backend]:
+            return None
+        return cls._option_schemas[backend][element_name].get(group)
 
     @classmethod
     def loaded_backends(cls):
@@ -1438,6 +1519,28 @@ class Store:
             "style", merge_keywords=True, allowed_keywords=new_options
         )
 
+        # Update the unified schema so subsequent validation picks up
+        # the newly-added style options.
+        if backend in cls._option_schemas and component.__name__ in cls._option_schemas[backend]:
+            existing = cls._option_schemas[backend][component.__name__].get("style")
+            if existing is not None:
+                new_specs = [
+                    OptionSpec(
+                        name=opt,
+                        type=object,
+                        default=None,
+                        allow_None=True,
+                        source=existing.source,
+                        description=f"Style option forwarded to the {backend} renderer.",
+                    )
+                    for opt in new_options
+                    if opt not in existing._specs
+                ]
+                if new_specs:
+                    cls._option_schemas[backend][component.__name__]["style"] = existing.extend(
+                        *new_specs
+                    )
+
     @classmethod
     def register(cls, associations, backend, style_aliases=None):
         """Register the supplied dictionary of associations between
@@ -1485,7 +1588,32 @@ class Store:
                 ),
             }
 
+            # Build unified schemas for each group and register them on
+            # Store so they're available for validation before plotting.
+            if backend not in cls._option_schemas:
+                cls._option_schemas[backend] = {}
             name = view_class.__name__
+
+            # Plot may be a PlotSelector proxy; pick a concrete class for
+            # schema generation (all selectable classes have identical
+            # options per PlotSelector._define_interface).
+            from holoviews.plotting.plot import PlotSelector
+            if isinstance(plot, PlotSelector):
+                concrete_plot = next(iter(plot.plot_classes.values()))
+            else:
+                concrete_plot = plot
+
+            cls._option_schemas[backend][name] = {
+                "plot": build_plot_schema(plot_class=concrete_plot),
+                "style": build_style_schema(
+                    list(style_opts.values),
+                    backend=backend,
+                    element_name=name,
+                ),
+                "norm": build_norm_schema(),
+                "output": build_extension_schema(),
+            }
+
             cls._options[backend][name] = opt_groups
 
     @classmethod
