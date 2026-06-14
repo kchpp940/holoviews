@@ -299,3 +299,107 @@ def get_markers_for_file(rel_path: str) -> list[str]:
                 if m not in markers:
                     markers.append(m)
     return markers
+
+
+# =====================================================================
+# Content generators — produce auto-generated blocks for derived files
+# =====================================================================
+
+def generate_pixi_test_tasks_block() -> str:
+    """Generate the [feature.test-unit-task.tasks] block for pixi.toml.
+
+    Returns just the task lines (without the section header),
+    sorted by category then name.
+    """
+    cmds = [c for c in get_pixi_commands() if c.feature == "test-unit-task"]
+
+    # Sort: core → plotting → special → composite
+    cat_order = {"core": 0, "plotting": 1, "special": 2, "composite": 3}
+    cmds.sort(key=lambda c: (cat_order.get(c.category, 99), c.name))
+
+    lines: list[str] = []
+    for cmd in cmds:
+        if cmd.depends_on:
+            deps = ", ".join(f'"{d}"' for d in cmd.depends_on)
+            lines.append(f'{cmd.name} = {{ depends-on = [{deps}] }}')
+        else:
+            lines.append(f'{cmd.name} = \'{cmd.cmd}\'')
+    return "\n".join(lines) + "\n"
+
+
+def generate_ci_mapping_comment() -> str:
+    """Generate the CI workflow ↔ local command mapping comment block.
+
+    Returns a YAML comment block (lines starting with #) that documents
+    the mapping between CI jobs and local pixi commands.
+    """
+    lines = [
+        "CI workflow ↔ local pixi command mapping (auto-generated from scripts/workflow_map.py):",
+        "",
+    ]
+
+    # Organize by logical group
+    sections = [
+        ("Local quick check", ["check"]),
+        ("Core unit suite", ["test-unit-core"]),
+        ("Plotting backends", ["test-plotting"]),
+        ("IPython/display", ["test-ipython"]),
+        ("Datashader path", ["test-datashader"]),
+        ("Full regression", ["test-all"]),
+        ("Pre-release check", ["test-release"]),
+        ("Docs", ["docs-build-quick", "docs-build"]),
+    ]
+
+    cmd_map = {c.name: c for c in get_pixi_commands()}
+
+    for label, cmd_names in sections:
+        for i, cmd_name in enumerate(cmd_names):
+            cmd = cmd_map.get(cmd_name)
+            if not cmd:
+                continue
+            prefix = f"  {label:<20s}: " if i == 0 else " " * 24
+            marker_info = ""
+            # Extract marker from command if present
+            if "-m " in cmd.cmd:
+                import re
+                m = re.search(r"-m (\w+)", cmd.cmd)
+                if m:
+                    marker_info = f" → -m {m.group(1)}"
+            lines.append(f"{prefix}pixi run {cmd_name}{marker_info}")
+
+    lines.append("")
+    lines.append("All of the above ultimately resolve to pytest markers defined in")
+    lines.append("workflow_map.py and applied dynamically by conftest.py.")
+
+    # Prefix every line with "# "
+    return "\n".join(f"# {line}" if line else "#" for line in lines) + "\n"
+
+
+def generate_docs_mapping_table() -> str:
+    """Generate the Command ↔ Marker ↔ Directory mapping table for docs.
+
+    Returns a markdown table that documents the three-layer mapping.
+    """
+    header = (
+        "| Pixi task              | pytest marker       | "
+        "Directories / files                                                 |"
+    )
+    separator = (
+        "|------------------------|---------------------|"
+        "---------------------------------------------------------------------|"
+    )
+
+    rows: list[str] = []
+    for g in GROUPS:
+        if not g.paths and not g.also_markers and g.marker not in ("ui", "gpu"):
+            continue
+        task_name = g.pixi_task_override or f"test-{g.name.replace('_', '-')}"
+        paths_str = ", ".join(g.paths[:3])
+        if len(g.paths) > 3:
+            paths_str += f", … ({len(g.paths)} total)"
+        if not g.paths:
+            paths_str = f"marked explicitly with `@pytest.mark.{g.marker}`"
+        rows.append(f"| `{task_name:<20s}` | `{g.marker:<19s}` | {paths_str:<67s} |")
+
+    return "\n".join([header, separator] + rows) + "\n"
+
